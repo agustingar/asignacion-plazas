@@ -2,7 +2,66 @@ import React, { useState, useEffect, useCallback } from 'react';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
 import { db } from './firebase';
-import { collection, addDoc, getDocs, doc, updateDoc, onSnapshot, query, orderBy, deleteDoc, setDoc } from 'firebase/firestore';
+import { collection, addDoc, getDocs, doc, updateDoc, onSnapshot, query, orderBy, deleteDoc, setDoc, limit, where, writeBatch } from 'firebase/firestore';
+
+// Utilidades de caché local
+const localCache = {
+  // Guardar datos en localStorage con tiempo de expiración
+  setWithExpiry: (key, value, ttl = 3600000) => { // 1 hora por defecto
+    const now = new Date();
+    const item = {
+      value: value,
+      expiry: now.getTime() + ttl,
+    };
+    try {
+      localStorage.setItem(key, JSON.stringify(item));
+      return true;
+    } catch (error) {
+      console.warn("Error al guardar en localStorage:", error);
+      return false;
+    }
+  },
+  
+  // Obtener datos del caché local
+  getWithExpiry: (key) => {
+    try {
+      const itemStr = localStorage.getItem(key);
+      if (!itemStr) return null;
+      
+      const item = JSON.parse(itemStr);
+      const now = new Date();
+      
+      // Verificar si el caché ha expirado
+      if (now.getTime() > item.expiry) {
+        localStorage.removeItem(key);
+        return null;
+      }
+      
+      return item.value;
+    } catch (error) {
+      console.warn("Error al leer localStorage:", error);
+      return null;
+    }
+  },
+  
+  // Borrar un elemento del caché
+  remove: (key) => {
+    try {
+      localStorage.removeItem(key);
+    } catch (error) {
+      console.warn("Error al eliminar de localStorage:", error);
+    }
+  },
+  
+  // Borrar todo el caché
+  clear: () => {
+    try {
+      localStorage.clear();
+    } catch (error) {
+      console.warn("Error al limpiar localStorage:", error);
+    }
+  }
+};
 
 // Definir el estilo para la animación del spinner
 const spinnerAnimation = `
@@ -55,6 +114,9 @@ const nursingDecoration = (
   </div>
 );
 
+// Variable para almacenar las funciones de cancelación de escuchas
+let unsubscribeFunc = () => {}; // Inicializar como función vacía
+
 function App() {
   const [excelData, setExcelData] = useState([]);
   const [orderNumber, setOrderNumber] = useState('');
@@ -73,488 +135,164 @@ function App() {
   const [solicitudesPage, setSolicitudesPage] = useState(1);
   const [solicitudesPerPage, setSolicitudesPerPage] = useState(10);
   const [solicitudesSearch, setSolicitudesSearch] = useState('');
+  // Estado para controlar si estamos en modo de ahorro de cuota
+  const [ahorroActivo, setAhorroActivo] = useState(false);
+  // Última actualización (timestamp)
+  const [ultimaActualizacion, setUltimaActualizacion] = useState(null);
 
   // Cargar datos del CSV al iniciar y configurar la escucha de Firebase
   useEffect(() => {
-    setIsLoading(true);
+    // Cargar datos iniciales
+    cargarDatosOptimizados();
     
-    // Función para usar datos simulados (solo como respaldo)
-    const usarDatosSimulados = () => {
-      // Datos simulados de centros de trabajo (como respaldo)
-      const datosSimulados = [
-        { id: 1, localidad: "Valencia", centro: "Hospital La Fe", municipio: "Valencia", plazas: 5 },
-        { id: 2, localidad: "Alicante", centro: "Hospital General", municipio: "Alicante", plazas: 3 },
-        { id: 3, localidad: "Castellón", centro: "Hospital Provincial", municipio: "Castellón", plazas: 4 },
-        { id: 4, localidad: "Elche", centro: "Hospital del Vinalopó", municipio: "Elche", plazas: 2 },
-        { id: 5, localidad: "Torrevieja", centro: "Hospital de Torrevieja", municipio: "Torrevieja", plazas: 3 },
-        { id: 6, localidad: "Gandía", centro: "Hospital Francesc de Borja", municipio: "Gandía", plazas: 2 },
-        { id: 7, localidad: "Alcoy", centro: "Hospital Virgen de los Lirios", municipio: "Alcoy", plazas: 3 },
-        { id: 8, localidad: "Dénia", centro: "Hospital Marina Salud", municipio: "Dénia", plazas: 2 },
-        { id: 9, localidad: "Valencia", centro: "Hospital Clínico", municipio: "Valencia", plazas: 4 },
-        { id: 10, localidad: "Valencia", centro: "Hospital Dr. Peset", municipio: "Valencia", plazas: 3 },
-        { id: 11, localidad: "Alicante", centro: "Hospital San Juan", municipio: "San Juan", plazas: 2 },
-        { id: 12, localidad: "Sagunto", centro: "Hospital de Sagunto", municipio: "Sagunto", plazas: 1 },
-        { id: 13, localidad: "Requena", centro: "Hospital de Requena", municipio: "Requena", plazas: 2 },
-        { id: 14, localidad: "Alcira", centro: "Hospital La Ribera", municipio: "Alcira", plazas: 3 },
-        { id: 15, localidad: "Játiva", centro: "Hospital Lluís Alcanyís", municipio: "Játiva", plazas: 2 }
-      ];
-      
-      setExcelData(datosSimulados);
-      setAvailablePlazas(datosSimulados.map(plaza => ({...plaza, asignadas: 0})));
-      
-      // Calcular total de plazas
-      const total = datosSimulados.reduce((sum, item) => sum + item.plazas, 0);
-      setTotalPlazas(total);
-      setIsLoading(false);
-      console.log("Usando datos simulados con éxito. Total centros: " + datosSimulados.length);
-      
-      // Inicializar colección en Firebase si no existe
-      initializeFirebaseCollections(datosSimulados);
-    };
-
-    // Inicializar colecciones de Firebase
-    const initializeFirebaseCollections = async (centros) => {
-      try {
-        // Verificar si ya existen datos en Firebase
-        const centrosSnapshot = await getDocs(collection(db, "centros"));
-        
-        if (centrosSnapshot.empty) {
-          console.log("Inicializando colección de centros en Firebase...");
-          // Guardar los centros en Firebase
-          for (const centro of centros) {
-            await addDoc(collection(db, "centros"), {
-              ...centro,
-              asignadas: 0,
-              timestamp: new Date().getTime()
-            });
-          }
-        }
-      } catch (error) {
-        console.error("Error al inicializar colecciones Firebase:", error);
-      }
-    };
-
-    // Función para cargar datos de Firebase y procesar solicitudes automáticamente
-    const cargarTodosLosDatos = async () => {
-      setIsLoading(true);
-      
-      try {
-        // Cargar datos de Firebase
-        const unsubscribeCentros = onSnapshot(collection(db, "centros"), (snapshot) => {
-          const centrosData = snapshot.docs.map(doc => {
-            return {
-              ...doc.data(),
-              docId: doc.id
-            };
-          });
-          
-          if (centrosData.length > 0) {
-            console.log(`Cargados ${centrosData.length} centros de Firebase`);
-            
-            // Calcular plazas totales
-            const totalPlazas = centrosData.reduce((suma, centro) => suma + centro.plazas, 0);
-            
-            setAvailablePlazas(centrosData);
-            setTotalPlazas(totalPlazas);
-          } else {
-            console.warn("No hay centros en Firebase, intentando cargar desde CSV");
-            cargarCSV();
-          }
-          
-          setIsLoading(false);
-        });
-        
-        // Cargar asignaciones
-        const unsubscribeAsignaciones = onSnapshot(collection(db, "asignaciones"), (snapshot) => {
-          const asignacionesData = snapshot.docs.map(doc => ({
-            ...doc.data(),
-            docId: doc.id
-          }));
-          
-          console.log(`Cargadas ${asignacionesData.length} asignaciones`);
-          setAssignments(asignacionesData);
-        });
-        
-        // Cargar solicitudes y procesar automáticamente
-        const unsubscribeSolicitudes = onSnapshot(collection(db, "solicitudesPendientes"), (snapshot) => {
-          const solicitudesData = snapshot.docs.map(doc => ({
-            ...doc.data(),
-            docId: doc.id
-          }));
-          
-          console.log(`Cargadas ${solicitudesData.length} solicitudes pendientes`);
-          setSolicitudes(solicitudesData);
-          
-          // Si hay solicitudes pendientes, procesarlas automáticamente
-          // Pero esperar a que la carga inicial esté completa
-          if (solicitudesData.length > 0 && !isLoading) {
-            console.log("Procesando solicitudes automáticamente...");
-            setTimeout(() => {
-              procesarSolicitudes();
-            }, 2000); // Esperar 2 segundos para asegurar que todos los datos estén cargados
-          }
-        });
-        
-        // Devolver función de limpieza
-        return () => {
-          unsubscribeCentros();
-          unsubscribeAsignaciones();
-          unsubscribeSolicitudes();
-        };
-      } catch (error) {
-        console.error("Error al cargar datos:", error);
-        setIsLoading(false);
-      }
-    };
-
-    // Intentaremos primero cargar el CSV
-    const cargarCSV = async () => {
-      try {
-        setIsLoading(true);
-        
-        // Rutas posibles para el archivo CSV (intentar varias opciones)
-        const posiblesRutas = [
-          '/plazas.csv',            // Carpeta public
-          './plazas.csv',           // Relativa a public
-          '/src/plazas.csv',        // Src en public
-          './src/plazas.csv',       // Relativa a src
-          `${process.env.PUBLIC_URL}/plazas.csv` // Con PUBLIC_URL
-        ];
-        
-        let texto = null;
-        let rutaCargada = '';
-        
-        // Intentar cargar el archivo de cada ruta posible
-        for (const ruta of posiblesRutas) {
-          try {
-            console.log(`Intentando cargar desde: ${ruta}`);
-            const respuesta = await fetch(ruta);
-            if (respuesta.ok) {
-              texto = await respuesta.text();
-              rutaCargada = ruta;
-              console.log(`Archivo CSV cargado correctamente desde: ${ruta}`);
-              break;
-            }
-          } catch (e) {
-            console.warn(`No se pudo cargar desde ${ruta}: ${e.message}`);
-          }
-        }
-        
-        if (!texto) {
-          throw new Error('No se pudo cargar el archivo CSV desde ninguna ruta');
-        }
-        
-        // Parsear el CSV con PapaParse
-        Papa.parse(texto, {
-          delimiter: ';', // Especificar punto y coma como delimitador
-          skipEmptyLines: true,
-          complete: (resultado) => {
-            console.log('CSV cargado. Total de filas:', resultado.data.length);
-            
-            // Saltamos las primeras 3 filas (encabezados y títulos del documento)
-            const datosSinEncabezados = resultado.data.slice(3);
-            
-            if (datosSinEncabezados.length === 0) {
-              throw new Error('El archivo CSV no contiene datos después de saltar encabezados');
-            }
-            
-            // Usar la cuarta fila como nombres de columna
-            const nombresColumnas = resultado.data[3];
-            console.log('Nombres de columnas detectados:', nombresColumnas);
-            
-            // Procesar datos a partir de la quinta fila
-            const datosCentros = resultado.data.slice(4);
-            console.log('Total de centros en CSV (sin procesar):', datosCentros.length);
-            
-            // Función para examinar las filas con problemas
-            const diagnosticarDatos = (filas) => {
-              // Conteo de filas con diferentes longitudes
-              const conteoLongitud = {};
-              filas.forEach((fila, idx) => {
-                const longitud = fila.length;
-                if (!conteoLongitud[longitud]) {
-                  conteoLongitud[longitud] = [];
-                }
-                // Guardar solo las primeras 5 filas de cada longitud para no sobrecargar el log
-                if (conteoLongitud[longitud].length < 5) {
-                  conteoLongitud[longitud].push({
-                    indice: idx + 4, // Ajustar el índice al archivo original
-                    contenido: fila
-                  });
-                }
-              });
-              
-              console.log('Distribución de longitudes de filas:', Object.keys(conteoLongitud).map(k => 
-                `${k} columnas: ${filas.filter(f => f.length == k).length} filas`
-              ).join(', '));
-              
-              // Examinar algunas filas de cada longitud
-              Object.keys(conteoLongitud).forEach(longitud => {
-                if (longitud < 6) { // Solo mostrar filas potencialmente problemáticas
-                  console.log(`Ejemplos de filas con ${longitud} columnas:`, conteoLongitud[longitud]);
-                }
-              });
-              
-              // Verificar valores de plazas
-              const valoresPlazas = filas
-                .filter(fila => fila.length >= 6 && fila[5])
-                .map(fila => {
-                  // Guardar el valor original para diagnóstico
-                  const valorOriginal = fila[5].toString().trim();
-                  
-                  // Intentar varias formas de parseo
-                  const valorInt = parseInt(valorOriginal.replace(',', '.'), 10);
-                  const valorFloat = parseFloat(valorOriginal.replace(',', '.'));
-                  
-                  return {
-                    original: valorOriginal,
-                    comoCadena: valorOriginal,
-                    comoEntero: valorInt,
-                    comoDecimal: valorFloat,
-                    esNaN: isNaN(valorInt)
-                  };
-                });
-              
-              // Filtrar por valores problemáticos
-              const valoresProblematicos = valoresPlazas.filter(v => 
-                isNaN(v.comoEntero) || v.comoEntero === 0 || v.comoEntero !== v.comoDecimal
-              );
-              
-              if (valoresProblematicos.length > 0) {
-                console.log(`Encontrados ${valoresProblematicos.length} valores de plazas problemáticos.`);
-                console.log('Primeros 10 ejemplos:', valoresProblematicos.slice(0, 10));
-              }
-              
-              // Verificar valores extremos
-              const valoresExtremos = valoresPlazas
-                .filter(v => !isNaN(v.comoEntero) && v.comoEntero > 100)
-                .sort((a, b) => b.comoEntero - a.comoEntero);
-                
-              if (valoresExtremos.length > 0) {
-                console.log(`Encontrados ${valoresExtremos.length} valores de plazas inusualmente altos (>100).`);
-                console.log('Primeros 5 ejemplos:', valoresExtremos.slice(0, 5));
-              }
-            };
-            
-            // Ejecutar diagnóstico sobre los datos
-            diagnosticarDatos(datosCentros);
-            
-            // Procesar cada fila en el formato específico de este CSV
-            const centrosProcesados = datosCentros
-              .filter(fila => fila.length >= 6) // Asegurar que la fila tiene suficientes columnas
-              .map((fila, index) => {
-                // En este CSV específico:
-                // fila[0] = A.S.I. (Localidad)
-                // fila[1] = Departamento
-                // fila[2] = Código Centro Trabajo
-                // fila[3] = Centro de Trabajo
-                // fila[4] = Municipio
-                // fila[5] = Número de plazas
-                
-                // Procesar el número de plazas correctamente
-                let plazas = 0;
-                if (fila[5]) {
-                  // Limpiar el valor y asegurar que sea un número
-                  let plazasStr = fila[5].toString().trim();
-                  
-                  // Formatos especiales conocidos - ajustar manualmente casos problemáticos
-                  if (plazasStr === "1 - (0'5 JS)") plazasStr = "1";
-                  if (plazasStr === "4 - (3 JS)") plazasStr = "4";
-                  
-                  // Quitar cualquier texto adicional y quedarse solo con los números
-                  plazasStr = plazasStr.replace(/[^\d.,]/g, '').replace(/\./g, '').replace(',', '.');
-                  
-                  // Intentar convertir a entero primero
-                  plazas = parseInt(plazasStr, 10);
-                  // Si no es un entero válido, probar como float y redondear
-                  if (isNaN(plazas)) {
-                    const plazasFloat = parseFloat(plazasStr);
-                    if (!isNaN(plazasFloat)) {
-                      plazas = Math.round(plazasFloat);
-                    }
-                  }
-                  
-                  // Para diagnóstico, verificar casos específicos
-                  if (plazas > 100) {
-                    console.log(`Valor inusualmente alto de plazas: ${plazas} (original: "${fila[5]}") en centro: ${fila[3] || 'sin nombre'}`);
-                  }
-                  
-                  // Asegurar que sea al menos 0
-                  plazas = plazas || 0;
-                }
-                
-                return {
-                  id: index + 1,
-                  codigo: fila[2] ? fila[2].toString().trim() : '',
-                  localidad: fila[0] ? fila[0].toString().trim() : '',
-                  departamento: fila[1] ? fila[1].toString().trim() : '',
-                  centro: fila[3] ? fila[3].toString().trim() : '',
-                  municipio: fila[4] ? fila[4].toString().trim() : '',
-                  plazas: plazas
-                };
-              })
-              .filter(centro => {
-                // Filtrar solo los que tienen datos válidos y plazas > 0
-                const esValido = centro.centro && centro.plazas > 0;
-                if (!esValido) {
-                  console.warn(`Centro inválido descartado: ${JSON.stringify(centro)}`);
-                }
-                return esValido;
-              });
-            
-            console.log('Centros procesados del CSV:', centrosProcesados.length);
-            console.log('Primeros 5 centros procesados:', centrosProcesados.slice(0, 5));
-            console.log('Últimos 5 centros procesados:', centrosProcesados.slice(-5));
-            
-            // Verificar si el total de plazas es el esperado
-            const totalPlazas = centrosProcesados.reduce((suma, centro) => suma + centro.plazas, 0);
-            console.log(`Total de plazas calculado: ${totalPlazas}`);
-            
-            // Si el total no coincide con el esperado, ajustar para corregir la discrepancia
-            const totalEsperado = 7066; // Total exacto del PDF
-            if (totalPlazas !== totalEsperado && centrosProcesados.length > 0) {
-              console.warn(`Ajustando manualmente para que coincida con las ${totalEsperado} plazas del PDF`);
-              
-              // Calcular la diferencia que hay que distribuir
-              const diferencia = totalEsperado - totalPlazas;
-              
-              if (diferencia > 0) {
-                console.log(`Faltan ${diferencia} plazas. Añadiendo al centro más grande...`);
-                // Encontrar el centro con más plazas para añadir las faltantes
-                const indiceMayor = centrosProcesados.reduce((iMax, x, i, arr) => 
-                  x.plazas > arr[iMax].plazas ? i : iMax, 0);
-                centrosProcesados[indiceMayor].plazas += diferencia;
-                console.log(`Añadidas ${diferencia} plazas al centro: ${centrosProcesados[indiceMayor].centro}`);
-              } else if (diferencia < 0) {
-                console.log(`Sobran ${-diferencia} plazas. Reduciendo de los centros más pequeños...`);
-                // Si sobran, ir reduciendo de los centros más pequeños que tengan al menos 2 plazas
-                let restantes = -diferencia;
-                const centrosOrdenados = [...centrosProcesados]
-                  .sort((a, b) => a.plazas - b.plazas)
-                  .filter(c => c.plazas >= 2);
-                
-                for (let i = 0; i < centrosOrdenados.length && restantes > 0; i++) {
-                  const idCentro = centrosOrdenados[i].id;
-                  const idx = centrosProcesados.findIndex(c => c.id === idCentro);
-                  if (idx >= 0) {
-                    const reducir = Math.min(restantes, centrosProcesados[idx].plazas - 1);
-                    centrosProcesados[idx].plazas -= reducir;
-                    restantes -= reducir;
-                    console.log(`Reducidas ${reducir} plazas del centro: ${centrosProcesados[idx].centro}`);
-                  }
-                }
-              }
-              
-              // Recalcular el total después del ajuste
-              const totalAjustado = centrosProcesados.reduce((suma, centro) => suma + centro.plazas, 0);
-              console.log(`Total de plazas después del ajuste: ${totalAjustado}`);
-            }
-            
-            if (centrosProcesados.length === 0) {
-              console.error('No se pudieron extraer centros con plazas > 0');
-              usarDatosSimulados();
-              return;
-            }
-            
-            // Inicializar el estado de plazas disponibles
-            const plazasIniciales = centrosProcesados.map(centro => ({
-              ...centro,
-              asignadas: 0
-            }));
-            
-            console.log(`CSV procesado con éxito. Total de centros: ${centrosProcesados.length}, Total plazas: ${totalPlazas}`);
-            
-            // Actualizar el estado de la aplicación
-            setExcelData(centrosProcesados);
-            setAvailablePlazas(plazasIniciales);
-            setTotalPlazas(totalPlazas);
-            setIsLoading(false);
-            
-            // Inicializar datos en Firebase
-            limpiarYActualizarFirebase(plazasIniciales);
-          },
-          error: (error) => {
-            console.error('Error al parsear el CSV:', error);
-            usarDatosSimulados();
-          }
-        });
-      } catch (error) {
-        console.error('Error al cargar el CSV:', error);
-        // Usar datos simulados como respaldo en caso de error
-        usarDatosSimulados();
-      }
-    };
-    
-    // Función para limpiar colecciones previas y actualizar con nuevos datos
-    const limpiarYActualizarFirebase = async (centros) => {
-      try {
-        console.log("Limpiando y actualizando datos en Firebase...");
-        
-        // 1. Limpiar las colecciones existentes
-        const centrosSnapshot = await getDocs(collection(db, "centros"));
-        const borradosCentros = [];
-        
-        // Borrar documentos existentes en la colección de centros
-        for (const docSnap of centrosSnapshot.docs) {
-          borradosCentros.push(deleteDoc(doc(db, "centros", docSnap.id)));
-        }
-        
-        // Esperar a que se completen todas las operaciones de borrado
-        await Promise.all(borradosCentros);
-        console.log(`Borrados ${borradosCentros.length} centros antiguos de Firebase`);
-        
-        // 2. Crear nuevos documentos con los centros procesados
-        console.log(`Iniciando carga de ${centros.length} centros en Firebase...`);
-        const lotes = [];
-        const tamanoLote = 100; // Procesar en lotes para evitar sobrecargar Firestore
-        
-        for (let i = 0; i < centros.length; i += tamanoLote) {
-          const lote = centros.slice(i, i + tamanoLote);
-          const promesasLote = lote.map(centro => 
-            addDoc(collection(db, "centros"), {
-              ...centro,
-              timestamp: Date.now()
-            })
-          );
-          
-          // Ejecutar el lote y esperar a que termine
-          await Promise.all(promesasLote);
-          console.log(`Procesado lote ${i/tamanoLote + 1} de ${Math.ceil(centros.length/tamanoLote)}`);
-        }
-        
-        console.log("Firebase actualizado correctamente con todos los centros");
-      } catch (error) {
-        console.error("Error al limpiar y actualizar Firebase:", error);
-      }
-    };
-
-    // Comenzar la carga de datos
-    let unsubscribeFunc = () => {};
-    cargarTodosLosDatos().then(unsubscribe => {
-      unsubscribeFunc = unsubscribe;
-    });
-    
-    // Limpieza al desmontar el componente
+    // Limpiar las escuchas al desmontar
     return () => {
-      unsubscribeFunc();
+      if (typeof unsubscribeFunc === 'function') {
+        unsubscribeFunc();
+      }
     };
   }, []);
 
-  // Procesar solicitudes
-  const procesarSolicitudes = useCallback(async () => {
-    setIsProcessing(true);
-    console.log("Iniciando procesamiento de solicitudes...");
+  // Función optimizada para cargar datos con menor consumo de Firebase
+  const cargarDatosOptimizados = async () => {
+    setIsLoading(true);
+    console.log("Iniciando carga de datos optimizada...");
     
     try {
-      // 1. Obtener todas las solicitudes directamente de Firebase para tener datos frescos
-      console.log("Obteniendo solicitudes desde Firebase...");
-      const solicitudesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
-      const todasLasSolicitudes = solicitudesSnapshot.docs.map(doc => ({
+      // 1. Cargar centros
+      console.log("Cargando centros...");
+      const centrosQuery = query(collection(db, "centros"), limit(500));
+      const centrosSnapshot = await getDocs(centrosQuery);
+      const centrosData = centrosSnapshot.docs.map(doc => ({
         docId: doc.id,
         ...doc.data()
       }));
       
-      console.log(`Total de solicitudes encontradas: ${todasLasSolicitudes.length}`);
+      setAvailablePlazas(centrosData);
+      
+      // Calcular total de plazas
+      const total = centrosData.reduce((acc, centro) => {
+        // Convertir a número y asegurarse de que sea válido
+        const plazas = parseInt(centro.plazas, 10);
+        return acc + (isNaN(plazas) ? 0 : plazas);
+      }, 0);
+      
+      setTotalPlazas(total);
+      
+      // 2. Cargar asignaciones (con límite)
+      console.log("Cargando asignaciones...");
+      const asignacionesQuery = query(collection(db, "asignaciones"), limit(500));
+      const asignacionesSnapshot = await getDocs(asignacionesQuery);
+      const asignacionesData = asignacionesSnapshot.docs.map(doc => ({
+        docId: doc.id,
+        ...doc.data()
+      }));
+      
+      setAssignments(asignacionesData);
+      
+      // 3. Cargar solicitudes pendientes (con límite)
+      console.log("Cargando solicitudes pendientes...");
+      const solicitudesQuery = query(collection(db, "solicitudesPendientes"), limit(500));
+      const solicitudesSnapshot = await getDocs(solicitudesQuery);
+      const solicitudesData = solicitudesSnapshot.docs.map(doc => ({
+        docId: doc.id,
+        ...doc.data()
+      }));
+      
+      setSolicitudes(solicitudesData);
+      
+      // Registrar fecha de última actualización
+      const ahora = new Date();
+      setUltimaActualizacion(ahora.toLocaleString());
+      
+      // Configurar actualizaciones periódicas (cada 5 minutos)
+      const interval = setInterval(() => {
+        cargarDatosOptimizados();
+        console.log("Actualizando datos periódicamente...");
+      }, 300000); // 5 minutos
+      
+      // Limpiar intervalo cuando se desmonte el componente
+      unsubscribeFunc = () => {
+        clearInterval(interval);
+      };
+      
+      setIsLoading(false);
+    } catch (error) {
+      console.error("Error al cargar datos:", error);
+      
+      if (error.code === 'resource-exhausted') {
+        setAhorroActivo(true);
+        alert("Se ha excedido la cuota de Firebase. Activando modo de ahorro de recursos.");
+      } else {
+        alert(`Error al cargar datos: ${error.message}`);
+      }
+      
+      setIsLoading(false);
+    }
+  };
+
+  // Función para procesar todas las solicitudes al enviar una nueva
+  const procesarAutomaticamente = async () => {
+    // Mostrar mensaje de procesamiento
+    setIsProcessing(true);
+    
+    try {
+      await procesarSolicitudes();
+      // Esperar un momento para mostrar el éxito
+      setTimeout(() => {
+        // Ocultar el indicador de carga
+        setIsProcessing(false);
+        // Recargar para asegurar que los datos estén actualizados
+        window.location.reload();
+      }, 2000);
+    } catch (error) {
+      console.error("Error al procesar automáticamente:", error);
+      setIsProcessing(false);
+      alert("Error al actualizar asignaciones: " + error.message);
+    }
+  };
+
+  // Procesar solicitudes (con optimización para reducir operaciones)
+  const procesarSolicitudes = useCallback(async () => {
+    setIsProcessing(true);
+    console.log("Iniciando procesamiento de solicitudes (optimizado)...");
+    
+    try {
+      // 1. Usar los datos ya cargados en memoria si están disponibles
+      // Esto reduce las lecturas a Firebase
+      let todasLasSolicitudes = [...solicitudes];
+      let centros = [...availablePlazas];
+      let asignacionesExistentes = [...assignments];
+      
+      // Si los datos son antiguos o el usuario fuerza la recarga, obtener datos frescos
+      const solicitarDatosFrescos = confirm("¿Desea obtener los datos más recientes de Firebase para asegurar que las asignaciones sean precisas? (Recomendado)");
+      
+      if (solicitarDatosFrescos) {
+        console.log("Obteniendo datos frescos para el procesamiento...");
+        
+        // Obtener solicitudes
+        const solicitudesSnapshot = await getDocs(query(collection(db, "solicitudesPendientes"), limit(500)));
+        todasLasSolicitudes = solicitudesSnapshot.docs.map(doc => ({
+          docId: doc.id,
+          ...doc.data()
+        }));
+        
+        // Obtener centros
+        const centrosSnapshot = await getDocs(query(collection(db, "centros"), limit(500)));
+        centros = centrosSnapshot.docs.map(doc => ({
+          docId: doc.id,
+          ...doc.data()
+        }));
+        
+        // Obtener asignaciones existentes
+        const asignacionesSnapshot = await getDocs(query(collection(db, "asignaciones"), limit(500)));
+        asignacionesExistentes = asignacionesSnapshot.docs.map(doc => ({
+          docId: doc.id,
+          ...doc.data()
+        }));
+      }
+      
+      console.log(`Procesando con: ${todasLasSolicitudes.length} solicitudes, ${centros.length} centros, ${asignacionesExistentes.length} asignaciones existentes`);
       
       if (todasLasSolicitudes.length === 0) {
         console.log("No hay solicitudes para procesar");
@@ -562,24 +300,6 @@ function App() {
         alert("No hay solicitudes pendientes para procesar");
         return;
       }
-      
-      // 2. Obtener las plazas actualizadas directamente de Firebase
-      console.log("Obteniendo centros desde Firebase...");
-      const centrosSnapshot = await getDocs(collection(db, "centros"));
-      const centros = centrosSnapshot.docs.map(doc => ({
-        docId: doc.id,
-        ...doc.data()
-      }));
-      
-      console.log(`Total de centros encontrados: ${centros.length}`);
-      
-      // 3. Obtener todas las asignaciones existentes
-      console.log("Obteniendo asignaciones existentes...");
-      const asignacionesSnapshot = await getDocs(collection(db, "asignaciones"));
-      const asignacionesExistentes = asignacionesSnapshot.docs.map(doc => ({
-        docId: doc.id,
-        ...doc.data()
-      }));
       
       // Crear conjunto de órdenes ya asignados
       const ordenesYaAsignados = new Set();
@@ -589,15 +309,18 @@ function App() {
       
       console.log(`Órdenes ya asignados: ${Array.from(ordenesYaAsignados).join(', ')}`);
       
-      // 4. Ordenar solicitudes por número de orden (menor primero = mayor prioridad)
+      // Ordenar solicitudes por número de orden (menor primero = mayor prioridad)
       console.log("Ordenando solicitudes por número de orden (menor primero)...");
       const solicitudesOrdenadas = [...todasLasSolicitudes].sort((a, b) => {
-        return a.orden - b.orden;
+        // Convertir a números para asegurar ordenamiento correcto
+        const ordenA = parseInt(a.orden, 10);
+        const ordenB = parseInt(b.orden, 10);
+        return ordenA - ordenB;
       });
       
       console.log(`Solicitudes ordenadas: ${solicitudesOrdenadas.map(s => s.orden).join(', ')}`);
       
-      // 5. Inicializar mapa de centros con plazas disponibles
+      // Inicializar mapa de centros con plazas disponibles
       const centrosMap = {};
       centros.forEach(centro => {
         // Convertir plazas a número para evitar problemas
@@ -616,12 +339,12 @@ function App() {
       const centrosDisponibles = Object.values(centrosMap).filter(c => c.disponibles > 0);
       console.log(`Centros con plazas disponibles: ${centrosDisponibles.length}`);
       
-      // 6. Procesar cada solicitud en orden de prioridad
+      // Procesar cada solicitud en orden de prioridad
       console.log("Procesando solicitudes por orden de prioridad...");
       const nuevasAsignaciones = [];
       
       for (const solicitud of solicitudesOrdenadas) {
-        const numOrden = solicitud.orden;
+        const numOrden = parseInt(solicitud.orden, 10);
         
         // Verificar si este orden ya tiene asignación existente
         if (ordenesYaAsignados.has(numOrden)) {
@@ -676,41 +399,83 @@ function App() {
         }
       }
       
-      // 7. Guardar asignaciones en Firebase
+      // Guardar asignaciones en Firebase usando batch (reduce operaciones)
       console.log(`Guardando ${nuevasAsignaciones.length} nuevas asignaciones en Firebase...`);
       
       if (nuevasAsignaciones.length > 0) {
-        // Usar batch para reducir número de operaciones y evitar exceder cuota
-        for (const asignacion of nuevasAsignaciones) {
-          // 1. Guardar la asignación
-          await addDoc(collection(db, "asignaciones"), asignacion.datos);
-          console.log(`Guardada asignación para orden ${asignacion.datos.order}`);
+        try {
+          // Usar batch para reducir operaciones (máximo 500 por batch)
+          const MAX_BATCH_SIZE = 450; // Límite seguro para evitar errores
           
-          // 2. Actualizar el centro correspondiente
-          if (asignacion.centroRef) {
-            const centroRef = doc(db, "centros", asignacion.centroRef);
-            const centroId = asignacion.datos.id;
-            await updateDoc(centroRef, {
-              asignadas: centrosMap[centroId].asignadas
-            });
-            console.log(`Actualizado centro ${centroId}: ${centrosMap[centroId].asignadas} plazas asignadas`);
+          // Dividir operaciones en lotes si hay muchas
+          for (let i = 0; i < nuevasAsignaciones.length; i += MAX_BATCH_SIZE) {
+            const loteActual = nuevasAsignaciones.slice(i, i + MAX_BATCH_SIZE);
+            const batch = writeBatch(db);
+            
+            // Procesar cada asignación en el lote
+            for (const asignacion of loteActual) {
+              // 1. Crear referencia para la nueva asignación
+              const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
+              batch.set(nuevaAsignacionRef, asignacion.datos);
+              
+              // 2. Actualizar el centro correspondiente
+              if (asignacion.centroRef) {
+                const centroRef = doc(db, "centros", asignacion.centroRef);
+                const centroId = asignacion.datos.id;
+                batch.update(centroRef, {
+                  asignadas: centrosMap[centroId].asignadas
+                });
+              }
+            }
+            
+            // Ejecutar el batch
+            await batch.commit();
+            console.log(`Procesado lote ${i/MAX_BATCH_SIZE + 1} de ${Math.ceil(nuevasAsignaciones.length/MAX_BATCH_SIZE)}`);
           }
+          
+          alert(`Procesamiento completado. Se han asignado ${nuevasAsignaciones.length} plazas según prioridad por orden.`);
+          
+          // Actualizar datos locales para reflejar cambios sin recargar
+          setAssignments(prev => [...prev, ...nuevasAsignaciones.map(a => a.datos)]);
+          setAvailablePlazas(Object.values(centrosMap));
+          
+          // Registrar última actualización
+          const ahora = new Date();
+          setUltimaActualizacion(ahora.toLocaleString());
+          
+          // Sugerir recargar para ver todos los cambios
+          if (confirm("Procesamiento completado. ¿Desea recargar la página para ver todos los cambios?")) {
+            window.location.reload();
+          } else {
+            setIsProcessing(false);
+          }
+        } catch (error) {
+          console.error("Error al guardar asignaciones:", error);
+          
+          if (error.code === 'resource-exhausted') {
+            alert("Se ha excedido la cuota de Firebase. Intente más tarde cuando se restablezca el límite diario.");
+          } else {
+            alert(`Error al guardar asignaciones: ${error.message}`);
+          }
+          
+          setIsProcessing(false);
         }
-        
-        alert(`Procesamiento completado. Se han asignado ${nuevasAsignaciones.length} plazas según prioridad por orden.`);
-        
-        // Refrescar la página para mostrar los cambios
-        window.location.reload();
       } else {
         alert("No se han podido realizar nuevas asignaciones. No hay solicitudes pendientes sin asignar o todos los centros solicitados están llenos.");
         setIsProcessing(false);
       }
     } catch (error) {
       console.error("Error en procesamiento:", error);
-      alert(`Error al procesar solicitudes: ${error.message}. Posiblemente has excedido la cuota de Firebase.`);
+      
+      if (error.code === 'resource-exhausted') {
+        alert("Se ha excedido la cuota de Firebase. Intente más tarde cuando se restablezca el límite diario.");
+      } else {
+        alert(`Error al procesar solicitudes: ${error.message}`);
+      }
+      
       setIsProcessing(false);
     }
-  }, [db]);
+  }, [solicitudes, availablePlazas, assignments]);
 
   const handleOrderSubmit = async (e) => {
     e.preventDefault();
@@ -809,27 +574,6 @@ function App() {
     }
   };
 
-  // Función para procesar todas las solicitudes al enviar una nueva
-  const procesarAutomaticamente = async () => {
-    // Mostrar mensaje de procesamiento
-    setIsProcessing(true);
-    
-    try {
-      await procesarSolicitudes();
-      // Esperar un momento para mostrar el éxito
-      setTimeout(() => {
-        // Ocultar el indicador de carga
-        setIsProcessing(false);
-        // Recargar para asegurar que los datos estén actualizados
-        window.location.reload();
-      }, 2000);
-    } catch (error) {
-      console.error("Error al procesar automáticamente:", error);
-      setIsProcessing(false);
-      alert("Error al actualizar asignaciones: " + error.message);
-    }
-  };
-
   return (
     <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '20px', fontFamily: 'Arial, sans-serif' }}>
       {/* Añadir estilo para la animación de carga */}
@@ -840,6 +584,38 @@ function App() {
           <div style={headerDecorationStyle}></div>
         </h1>
         {nursingDecoration}
+        
+        {/* Indicador de última actualización y modo ahorro */}
+        {ultimaActualizacion && (
+          <div style={{ 
+            backgroundColor: ahorroActivo ? '#fff3cd' : '#e3f2fd', 
+            padding: '8px', 
+            borderRadius: '4px',
+            marginTop: '10px',
+            fontSize: '14px',
+            border: ahorroActivo ? '1px solid #ffeeba' : '1px solid #b3e5fc'
+          }}>
+            <span style={{ fontWeight: 'bold', marginRight: '5px' }}>
+              {ahorroActivo ? '⚠️' : 'ℹ️'}
+            </span>
+            {ahorroActivo ? 'Modo ahorro activado para evitar exceder cuota.' : 'Datos actualizados:'} {ultimaActualizacion}
+            <button 
+              onClick={() => cargarDatosOptimizados()} 
+              style={{
+                marginLeft: '10px',
+                backgroundColor: ahorroActivo ? '#ffc107' : '#2196f3',
+                color: ahorroActivo ? 'black' : 'white',
+                border: 'none',
+                padding: '5px 10px',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '12px'
+              }}
+            >
+              Actualizar Ahora
+            </button>
+          </div>
+        )}
       </div>
       
       {isLoading ? (
