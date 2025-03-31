@@ -4,6 +4,14 @@ import Papa from 'papaparse';
 import { db } from './firebase';
 import { collection, addDoc, getDocs, doc, updateDoc, onSnapshot, query, orderBy, deleteDoc } from 'firebase/firestore';
 
+// Definir el estilo para la animación del spinner
+const spinnerAnimation = `
+  @keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+`;
+
 function App() {
   const [excelData, setExcelData] = useState([]);
   const [orderNumber, setOrderNumber] = useState('');
@@ -14,9 +22,12 @@ function App() {
   const [totalPlazas, setTotalPlazas] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [availablePlazas, setAvailablePlazas] = useState([]);
+  const [isProcessing, setIsProcessing] = useState(false);
 
   // Cargar datos del CSV al iniciar y configurar la escucha de Firebase
   useEffect(() => {
+    setIsLoading(true);
+    
     // Función para usar datos simulados (solo como respaldo)
     const usarDatosSimulados = () => {
       // Datos simulados de centros de trabajo (como respaldo)
@@ -76,67 +87,89 @@ function App() {
     // Función para cargar datos de Firebase
     const cargarDatosFirebase = async () => {
       try {
-        // Configurar escuchas en tiempo real para ambas colecciones
-        // 1. Escuchar cambios en los centros
-        const q1 = query(collection(db, "centros"), orderBy("id"));
-        const unsubscribeCentros = onSnapshot(q1, (snapshot) => {
-          const centrosData = snapshot.docs.map(doc => ({
-            id: doc.data().id,
-            docId: doc.id, // Guardamos la referencia al documento
-            localidad: doc.data().localidad,
-            departamento: doc.data().departamento,
-            centro: doc.data().centro,
-            municipio: doc.data().municipio,
-            plazas: doc.data().plazas,
-            asignadas: doc.data().asignadas || 0
-          }));
-          
-          setAvailablePlazas(centrosData);
-          setExcelData(centrosData);
-          
-          // Calcular el total de plazas
-          const total = centrosData.reduce((sum, item) => sum + item.plazas, 0);
-          setTotalPlazas(total);
-        });
+        console.log("Intentando cargar datos desde Firebase...");
         
-        // 2. Escuchar cambios en las asignaciones
-        const q2 = query(collection(db, "asignaciones"), orderBy("order"));
-        const unsubscribeAsignaciones = onSnapshot(q2, (snapshot) => {
-          const asignacionesData = snapshot.docs.map(doc => ({
-            docId: doc.id,
-            order: doc.data().order,
-            id: doc.data().id,
-            localidad: doc.data().localidad,
-            centro: doc.data().centro,
-            municipio: doc.data().municipio,
-            timestamp: doc.data().timestamp
-          }));
-          
-          setAssignments(asignacionesData);
-        });
+        // Verificar si hay datos en Firebase
+        const centrosSnapshot = await getDocs(collection(db, "centros"));
+        const tieneDataEnFirebase = !centrosSnapshot.empty;
         
-        // 3. Escuchar cambios en las solicitudes pendientes
-        const q3 = query(collection(db, "solicitudesPendientes"), orderBy("orden"));
-        const unsubscribeSolicitudes = onSnapshot(q3, (snapshot) => {
-          const solicitudesData = snapshot.docs.map(doc => ({
-            docId: doc.id,
-            orden: doc.data().orden,
-            centrosIds: doc.data().centrosIds || [],
-            timestamp: doc.data().timestamp
-          }));
+        if (tieneDataEnFirebase) {
+          console.log("Se encontraron datos en Firebase, usando estos datos...");
           
-          setSolicitudes(solicitudesData);
-        });
-        
-        // Devolver funciones para cancelar las escuchas cuando se desmonte el componente
-        return () => {
-          unsubscribeCentros();
-          unsubscribeAsignaciones();
-          unsubscribeSolicitudes();
-        };
+          // Configurar escuchas en tiempo real para las colecciones
+          const q1 = query(collection(db, "centros"), orderBy("id"));
+          const unsubscribeCentros = onSnapshot(q1, (snapshot) => {
+            const centrosData = snapshot.docs.map(doc => ({
+              id: doc.data().id,
+              docId: doc.id, // Guardamos la referencia al documento
+              localidad: doc.data().localidad,
+              departamento: doc.data().departamento,
+              centro: doc.data().centro,
+              municipio: doc.data().municipio,
+              plazas: doc.data().plazas,
+              asignadas: doc.data().asignadas || 0
+            }));
+            
+            setAvailablePlazas(centrosData);
+            setExcelData(centrosData);
+            
+            // Calcular el total de plazas
+            const total = centrosData.reduce((sum, item) => sum + item.plazas, 0);
+            setTotalPlazas(total);
+            setIsLoading(false); // Ya no estamos cargando
+          });
+          
+          // 2. Escuchar cambios en las asignaciones
+          const q2 = query(collection(db, "asignaciones"), orderBy("order"));
+          const unsubscribeAsignaciones = onSnapshot(q2, (snapshot) => {
+            const asignacionesData = snapshot.docs.map(doc => ({
+              docId: doc.id,
+              order: doc.data().order,
+              id: doc.data().id,
+              localidad: doc.data().localidad,
+              centro: doc.data().centro,
+              municipio: doc.data().municipio,
+              timestamp: doc.data().timestamp
+            }));
+            
+            setAssignments(asignacionesData);
+          });
+          
+          // 3. Escuchar cambios en las solicitudes pendientes
+          const q3 = query(collection(db, "solicitudesPendientes"), orderBy("orden"));
+          const unsubscribeSolicitudes = onSnapshot(q3, (snapshot) => {
+            const solicitudesData = snapshot.docs.map(doc => ({
+              docId: doc.id,
+              orden: doc.data().orden,
+              centrosIds: doc.data().centrosIds || [],
+              timestamp: doc.data().timestamp
+            }));
+            
+            setSolicitudes(solicitudesData);
+          });
+          
+          // Devolver funciones para cancelar las escuchas cuando se desmonte el componente
+          return { 
+            unsubscribe: () => {
+              unsubscribeCentros();
+              unsubscribeAsignaciones();
+              unsubscribeSolicitudes();
+            },
+            datosEncontrados: true 
+          };
+        } else {
+          console.log("No se encontraron datos en Firebase, se cargarán desde CSV...");
+          return { 
+            unsubscribe: () => {}, 
+            datosEncontrados: false 
+          };
+        }
       } catch (error) {
         console.error("Error al cargar datos de Firebase:", error);
-        return null;
+        return { 
+          unsubscribe: () => {}, 
+          datosEncontrados: false 
+        };
       }
     };
 
@@ -264,104 +297,128 @@ function App() {
       }
     };
     
-    // Cargamos primero el CSV para obtener los datos iniciales
-    cargarCSV().then(() => {
-      // Después configuramos Firebase para escuchar actualizaciones en tiempo real
-      const unsubscribe = cargarDatosFirebase();
+    // Intentaremos primero cargar de Firebase
+    const cargarDatos = async () => {
+      // Primero intentamos cargar desde Firebase
+      const { unsubscribe, datosEncontrados } = await cargarDatosFirebase();
       
-      // Limpieza al desmontar
-      return () => {
-        if (unsubscribe) unsubscribe();
-      };
+      // Si no hay datos en Firebase, intentamos cargar desde CSV
+      if (!datosEncontrados) {
+        console.log("No se encontraron datos en Firebase, cargando desde CSV...");
+        await cargarCSV();
+      }
+      
+      // Devolver función para limpiar
+      return unsubscribe;
+    };
+    
+    // Comenzar la carga de datos
+    let unsubscribeFunc = () => {};
+    cargarDatos().then(unsubscribe => {
+      unsubscribeFunc = unsubscribe;
     });
+    
+    // Limpieza al desmontar el componente
+    return () => {
+      unsubscribeFunc();
+    };
   }, []);
 
   // Función para procesar todas las solicitudes pendientes
   const procesarSolicitudes = async () => {
-    // Ordenar solicitudes por número de orden (prioridad)
-    const solicitudesOrdenadas = [...solicitudes].sort((a, b) => a.orden - b.orden);
+    setIsProcessing(true);
     
-    // Lista de nuevas asignaciones realizadas
-    const nuevasAsignaciones = [];
-    const plazasActualizadas = [...availablePlazas];
-    
-    // Conjunto para almacenar los IDs de orden ya asignados
-    const ordenesAsignados = new Set();
-    
-    // Procesar cada solicitud en orden de prioridad
-    for (const solicitud of solicitudesOrdenadas) {
-      // Verificar si este número de orden ya tiene asignación
-      const asignacionExistente = assignments.find(a => a.order === solicitud.orden);
-      if (asignacionExistente || ordenesAsignados.has(solicitud.orden)) continue;
+    try {
+      // Ordenar solicitudes por número de orden (prioridad)
+      const solicitudesOrdenadas = [...solicitudes].sort((a, b) => a.orden - b.orden);
       
-      // Verificar cada centro solicitado en orden de preferencia
-      for (const centroId of solicitud.centrosIds) {
-        // Buscar el centro solicitado
-        const centroBuscado = plazasActualizadas.find(p => p.id === centroId);
+      // Lista de nuevas asignaciones realizadas
+      const nuevasAsignaciones = [];
+      const plazasActualizadas = [...availablePlazas];
+      
+      // Conjunto para almacenar los IDs de orden ya asignados
+      const ordenesAsignados = new Set();
+      
+      // Procesar cada solicitud en orden de prioridad
+      for (const solicitud of solicitudesOrdenadas) {
+        // Verificar si este número de orden ya tiene asignación
+        const asignacionExistente = assignments.find(a => a.order === solicitud.orden);
+        if (asignacionExistente || ordenesAsignados.has(solicitud.orden)) continue;
         
-        if (centroBuscado && centroBuscado.asignadas < centroBuscado.plazas) {
-          // Hay plaza disponible en el centro solicitado
-          // Actualizar plazas
-          const idx = plazasActualizadas.findIndex(p => p.id === centroId);
-          plazasActualizadas[idx] = {
-            ...plazasActualizadas[idx],
-            asignadas: plazasActualizadas[idx].asignadas + 1
-          };
+        // Verificar cada centro solicitado en orden de preferencia
+        for (const centroId of solicitud.centrosIds) {
+          // Buscar el centro solicitado
+          const centroBuscado = plazasActualizadas.find(p => p.id === centroId);
           
-          // Crear nueva asignación
-          const nuevaAsignacion = {
-            order: solicitud.orden,
-            id: centroBuscado.id,
-            localidad: centroBuscado.localidad,
-            centro: centroBuscado.centro,
-            municipio: centroBuscado.municipio,
-            timestamp: new Date().getTime()
-          };
-          
-          nuevasAsignaciones.push(nuevaAsignacion);
-          ordenesAsignados.add(solicitud.orden);
-          
-          // Una vez asignado, pasamos al siguiente número de orden
-          break;
+          if (centroBuscado && centroBuscado.asignadas < centroBuscado.plazas) {
+            // Hay plaza disponible en el centro solicitado
+            // Actualizar plazas
+            const idx = plazasActualizadas.findIndex(p => p.id === centroId);
+            plazasActualizadas[idx] = {
+              ...plazasActualizadas[idx],
+              asignadas: plazasActualizadas[idx].asignadas + 1
+            };
+            
+            // Crear nueva asignación
+            const nuevaAsignacion = {
+              order: solicitud.orden,
+              id: centroBuscado.id,
+              localidad: centroBuscado.localidad,
+              centro: centroBuscado.centro,
+              municipio: centroBuscado.municipio,
+              timestamp: new Date().getTime()
+            };
+            
+            nuevasAsignaciones.push(nuevaAsignacion);
+            ordenesAsignados.add(solicitud.orden);
+            
+            // Una vez asignado, pasamos al siguiente número de orden
+            break;
+          }
         }
       }
-    }
-    
-    // Actualizar Firebase con las nuevas asignaciones
-    if (nuevasAsignaciones.length > 0) {
-      try {
-        // 1. Guardar las nuevas asignaciones
-        for (const asignacion of nuevasAsignaciones) {
-          await addDoc(collection(db, "asignaciones"), asignacion);
-        }
-        
-        // 2. Actualizar las plazas disponibles
-        for (const plaza of plazasActualizadas) {
-          if (plaza.docId) { // Solo si tiene ID de documento
-            const centroRef = doc(db, "centros", plaza.docId);
-            await updateDoc(centroRef, { asignadas: plaza.asignadas });
+      
+      // Actualizar Firebase con las nuevas asignaciones
+      if (nuevasAsignaciones.length > 0) {
+        try {
+          // 1. Guardar las nuevas asignaciones
+          for (const asignacion of nuevasAsignaciones) {
+            await addDoc(collection(db, "asignaciones"), asignacion);
           }
-        }
-        
-        // 3. Eliminar las solicitudes procesadas
-        for (const solicitud of solicitudesOrdenadas) {
-          if (ordenesAsignados.has(solicitud.orden) && solicitud.docId) {
-            const solicitudRef = doc(db, "solicitudesPendientes", solicitud.docId);
-            await deleteDoc(solicitudRef);
+          
+          // 2. Actualizar las plazas disponibles
+          for (const plaza of plazasActualizadas) {
+            if (plaza.docId) { // Solo si tiene ID de documento
+              const centroRef = doc(db, "centros", plaza.docId);
+              await updateDoc(centroRef, { asignadas: plaza.asignadas });
+            }
           }
-        }
-        
-        // Encontrar y establecer la asignación para el número de orden actual si existe
-        if (orderNumber) {
-          const miAsignacion = nuevasAsignaciones.find(a => a.order === parseInt(orderNumber, 10));
-          if (miAsignacion) {
-            setAssignment(miAsignacion);
+          
+          // 3. Eliminar las solicitudes procesadas
+          for (const solicitud of solicitudesOrdenadas) {
+            if (ordenesAsignados.has(solicitud.orden) && solicitud.docId) {
+              const solicitudRef = doc(db, "solicitudesPendientes", solicitud.docId);
+              await deleteDoc(solicitudRef);
+            }
           }
+          
+          // Encontrar y establecer la asignación para el número de orden actual si existe
+          if (orderNumber) {
+            const miAsignacion = nuevasAsignaciones.find(a => a.order === parseInt(orderNumber, 10));
+            if (miAsignacion) {
+              setAssignment(miAsignacion);
+            }
+          }
+        } catch (error) {
+          console.error("Error al actualizar Firebase:", error);
+          alert("Error al procesar solicitudes. Inténtelo de nuevo.");
         }
-      } catch (error) {
-        console.error("Error al actualizar Firebase:", error);
-        alert("Error al procesar solicitudes. Inténtelo de nuevo.");
       }
+    } finally {
+      // Asegurarse de ocultar el loader incluso si hay error
+      setTimeout(() => {
+        setIsProcessing(false);
+      }, 1000);
     }
   };
 
@@ -385,6 +442,8 @@ function App() {
       return;
     }
     
+    setIsProcessing(true);
+    
     try {
       // Verificar si ya existe una solicitud para este número de orden
       const solicitudExistente = solicitudes.find(s => s.orden === numOrden);
@@ -393,14 +452,14 @@ function App() {
         // Actualizar la solicitud existente con los nuevos centros seleccionados
         const solicitudRef = doc(db, "solicitudesPendientes", solicitudExistente.docId);
         await updateDoc(solicitudRef, { 
-          centrosIds: centrosSeleccionados.map(id => parseInt(id, 10)),
+          centrosIds: centrosSeleccionados,
           timestamp: new Date().getTime()
         });
       } else {
         // Crear nueva solicitud en Firebase
         await addDoc(collection(db, "solicitudesPendientes"), {
           orden: numOrden,
-          centrosIds: centrosSeleccionados.map(id => parseInt(id, 10)),
+          centrosIds: centrosSeleccionados,
           timestamp: new Date().getTime()
         });
       }
@@ -408,17 +467,18 @@ function App() {
       // Limpiar formulario
       setCentrosSeleccionados([]);
       
-      // Procesar solicitudes
+      // Procesar solicitudes después de un breve retraso
       setTimeout(procesarSolicitudes, 500);
     } catch (error) {
       console.error("Error al guardar solicitud:", error);
       alert("Error al guardar la solicitud. Inténtelo de nuevo.");
+      setIsProcessing(false);
     }
   };
 
   // Función para manejar la selección de múltiples centros con checkboxes
   const handleCentroChange = (e) => {
-    const centroId = e.target.value;
+    const centroId = parseInt(e.target.value, 10); // Convertir a número para evitar problemas de comparación
     const isChecked = e.target.checked;
     
     if (isChecked) {
@@ -432,6 +492,8 @@ function App() {
 
   return (
     <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '20px', fontFamily: 'Arial, sans-serif' }}>
+      {/* Añadir estilo para la animación de carga */}
+      <style>{spinnerAnimation}</style>
       <h1 style={{ textAlign: 'center', marginBottom: '30px', color: '#333' }}>Asignación de Plazas</h1>
       {isLoading ? (
         <div style={{ textAlign: 'center', padding: '50px' }}>
@@ -523,7 +585,7 @@ function App() {
                             type="checkbox"
                             id={`centro-${plaza.id}`}
                             value={plaza.id}
-                            checked={centrosSeleccionados.includes(plaza.id.toString())}
+                            checked={centrosSeleccionados.includes(plaza.id)}
                             onChange={handleCentroChange}
                             disabled={estaLleno}
                             style={{ marginRight: '10px' }}
@@ -552,18 +614,35 @@ function App() {
               
               <button 
                 type="submit" 
+                disabled={isProcessing}
                 style={{ 
                   padding: '10px 16px', 
-                  backgroundColor: '#4CAF50', 
+                  backgroundColor: isProcessing ? '#cccccc' : '#4CAF50', 
                   color: 'white', 
                   border: 'none', 
                   borderRadius: '4px', 
-                  cursor: 'pointer',
+                  cursor: isProcessing ? 'not-allowed' : 'pointer',
                   marginTop: '10px',
-                  alignSelf: 'flex-start'
+                  alignSelf: 'flex-start',
+                  display: 'flex',
+                  alignItems: 'center'
                 }}
               >
-                Solicitar Plaza
+                {isProcessing && (
+                  <span 
+                    style={{ 
+                      display: 'inline-block', 
+                      width: '20px', 
+                      height: '20px', 
+                      border: '3px solid rgba(255,255,255,0.3)', 
+                      borderRadius: '50%', 
+                      borderTopColor: 'white', 
+                      animation: 'spin 1s ease-in-out infinite',
+                      marginRight: '10px'
+                    }} 
+                  />
+                )}
+                {isProcessing ? 'Procesando...' : 'Solicitar Plaza'}
               </button>
             </form>
             
@@ -597,6 +676,14 @@ function App() {
 }
 
 function SolicitudesPendientes({ solicitudes, centros, procesarSolicitudes }) {
+  const [isProcessing, setIsProcessing] = useState(false);
+  
+  const handleProcesar = async () => {
+    setIsProcessing(true);
+    await procesarSolicitudes();
+    setTimeout(() => setIsProcessing(false), 1000);
+  };
+  
   if (!solicitudes.length) return null;
   
   // Ordenar solicitudes por número de orden
@@ -607,17 +694,34 @@ function SolicitudesPendientes({ solicitudes, centros, procesarSolicitudes }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
         <h2>Solicitudes Pendientes</h2>
         <button 
-          onClick={procesarSolicitudes} 
+          onClick={handleProcesar}
+          disabled={isProcessing} 
           style={{ 
             padding: '8px 16px', 
-            backgroundColor: '#FF9800', 
+            backgroundColor: isProcessing ? '#FFB74D' : '#FF9800', 
             color: 'white', 
             border: 'none', 
             borderRadius: '4px', 
-            cursor: 'pointer' 
+            cursor: isProcessing ? 'not-allowed' : 'pointer',
+            display: 'flex',
+            alignItems: 'center'
           }}
         >
-          Procesar Solicitudes
+          {isProcessing && (
+            <span 
+              style={{ 
+                display: 'inline-block', 
+                width: '16px', 
+                height: '16px', 
+                border: '2px solid rgba(255,255,255,0.3)', 
+                borderRadius: '50%', 
+                borderTopColor: 'white', 
+                animation: 'spin 1s ease-in-out infinite',
+                marginRight: '8px'
+              }} 
+            />
+          )}
+          {isProcessing ? 'Procesando...' : 'Procesar Solicitudes'}
         </button>
       </div>
       
@@ -632,7 +736,7 @@ function SolicitudesPendientes({ solicitudes, centros, procesarSolicitudes }) {
           <tbody>
             {solicitudesOrdenadas.map((solicitud, index) => {
               // Mapear cada ID de centro a su objeto completo
-              const centrosSolicitados = solicitud.centrosIds
+              const centrosSolicitados = (solicitud.centrosIds || [])
                 .map(id => centros.find(c => c.id === id))
                 .filter(c => c); // Filtrar indefinidos
               
