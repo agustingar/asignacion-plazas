@@ -744,11 +744,74 @@ function App() {
         console.log("Nueva solicitud creada con ID:", docRef.id);
       }
       
-      // Esperar un momento para que se completen las actualizaciones
-      setTimeout(() => {
-        // Reiniciar la página para refrescar todos los datos
-        window.location.reload();
-      }, 1500);
+      // Procesar asignación inmediatamente
+      let asignacionExitosa = false;
+      // Copia de las plazas disponibles
+      const plazasActualizadas = [...availablePlazas];
+      let centroAsignado = null;
+      
+      // Intentar asignar según los centros seleccionados en orden de preferencia
+      for (const centroId of centrosIdsNumericos) {
+        // Buscar el centro
+        const idx = plazasActualizadas.findIndex(p => p.id === centroId);
+        if (idx >= 0 && plazasActualizadas[idx].asignadas < plazasActualizadas[idx].plazas) {
+          // Hay plaza disponible en este centro
+          const centro = plazasActualizadas[idx];
+          centroAsignado = {
+            order: numOrden,
+            id: centro.id,
+            localidad: centro.localidad,
+            centro: centro.centro,
+            municipio: centro.municipio,
+            timestamp: new Date().getTime()
+          };
+          
+          // Actualizar plazas asignadas
+          plazasActualizadas[idx] = {
+            ...plazasActualizadas[idx],
+            asignadas: plazasActualizadas[idx].asignadas + 1
+          };
+          
+          asignacionExitosa = true;
+          break;
+        }
+      }
+      
+      if (asignacionExitosa && centroAsignado) {
+        // Guardar la asignación en Firebase
+        const asignacionRef = await addDoc(collection(db, "asignaciones"), centroAsignado);
+        console.log("Asignación creada con ID:", asignacionRef.id);
+        
+        // Actualizar el centro en Firebase
+        if (centroAsignado.id) {
+          const centroRef = plazasActualizadas.find(p => p.id === centroAsignado.id);
+          if (centroRef && centroRef.docId) {
+            await updateDoc(doc(db, "centros", centroRef.docId), { 
+              asignadas: centroRef.asignadas + 1 
+            });
+          }
+        }
+        
+        // Eliminar la solicitud pendiente ya que ha sido procesada
+        if (solicitudExistente && solicitudExistente.docId) {
+          await deleteDoc(doc(db, "solicitudesPendientes", solicitudExistente.docId));
+        }
+        
+        // Actualizar la asignación en la vista
+        setAssignment(centroAsignado);
+        
+        // Esperar un momento para que se completen las actualizaciones
+        setTimeout(() => {
+          // Mostrar mensaje de éxito
+          alert(`Plaza asignada correctamente en: ${centroAsignado.centro}`);
+          // Reiniciar la página para refrescar todos los datos
+          window.location.reload();
+        }, 1500);
+      } else {
+        // No se pudo asignar
+        alert("No se ha podido realizar la asignación. Todos los centros seleccionados están completos.");
+        setIsProcessing(false);
+      }
     } catch (error) {
       console.error("Error al guardar solicitud:", error);
       // Mostrar error pero mantener el formulario para permitir intentar de nuevo
@@ -756,7 +819,6 @@ function App() {
       // Ocultar indicador de carga
       setIsProcessing(false);
     }
-    // No ocultamos el indicador de carga porque vamos a recargar la página
   };
 
   // Función para manejar la selección de múltiples centros con checkboxes
@@ -813,16 +875,6 @@ function App() {
               <div style={{ padding: '10px', backgroundColor: '#f3e5f5', borderRadius: '5px' }}>
                 <h3 style={{ margin: '0 0 10px 0', fontSize: '16px' }}>Plazas Disponibles</h3>
                 <p style={{ margin: '0', fontSize: '24px', fontWeight: 'bold' }}>{totalPlazas - assignments.length}</p>
-              </div>
-               
-              <div style={{ padding: '10px', backgroundColor: '#e0f7fa', borderRadius: '5px' }}>
-                <h3 style={{ margin: '0 0 10px 0', fontSize: '16px' }}>Solicitudes Pendientes</h3>
-                <p style={{ margin: '0', fontSize: '24px', fontWeight: 'bold' }}>{solicitudes.length}</p>
-                {solicitudes.length > 0 && isProcessing && (
-                  <p style={{ margin: '5px 0 0 0', fontSize: '12px', color: '#666' }}>
-                    Procesando automáticamente...
-                  </p>
-                )}
               </div>
             </div>
           </div>
@@ -910,6 +962,19 @@ function App() {
                 <label htmlFor="centrosGroup" style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
                   Centros de Trabajo (selecciona múltiples en orden de preferencia):
                 </label>
+                <div className="mobile-scroll-hint" style={{
+                  display: 'none',
+                  marginBottom: '5px',
+                  background: 'rgba(24, 83, 158, 0.1)',
+                  padding: '6px 10px',
+                  borderRadius: '4px',
+                  fontSize: '13px',
+                  color: '#18539E',
+                  fontWeight: 'bold',
+                  textAlign: 'center'
+                }}>
+                  ↓ Desliza para ver más centros ↓
+                </div>
                 <div 
                   id="centrosGroup"
                   style={{
@@ -922,19 +987,6 @@ function App() {
                     position: 'relative'
                   }}
                 >
-                  <div className="mobile-scroll-hint" style={{
-                    position: 'absolute',
-                    right: '5px',
-                    top: '5px',
-                    background: 'rgba(24, 83, 158, 0.1)',
-                    padding: '3px 6px',
-                    borderRadius: '4px',
-                    fontSize: '12px',
-                    color: '#18539E',
-                    display: 'none'
-                  }}>
-                    Desliza para ver más
-                  </div>
                   <style>
                     {`
                       @media (max-width: 768px) {
@@ -1232,8 +1284,8 @@ function PlazasDisponibles({ availablePlazas }) {
     <div style={{ marginTop: '30px' }}>
       <h2 style={{ color: '#18539E' }}>Estado de las Plazas</h2>
       
-      <div style={{ marginBottom: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div>
+      <div style={{ marginBottom: '15px' }}>
+        <div style={{ marginBottom: '10px' }}>
           <input
             type="text"
             placeholder="Buscar por centro, localidad o municipio..."
@@ -1246,49 +1298,71 @@ function PlazasDisponibles({ availablePlazas }) {
               padding: '8px',
               border: '1px solid #ddd',
               borderRadius: '4px',
-              width: '300px'
+              width: '100%'
             }}
           />
         </div>
         
-        <div>
-          <select 
-            value={itemsPerPage} 
-            onChange={(e) => {
-              setItemsPerPage(Number(e.target.value));
-              setCurrentPage(1); // Resetear a página 1 al cambiar items por página
-            }}
-            style={{
-              padding: '8px',
-              border: '1px solid #ddd',
-              borderRadius: '4px',
-              marginLeft: '10px'
-            }}
-          >
-            <option value={25}>25 por página</option>
-            <option value={50}>50 por página</option>
-            <option value={100}>100 por página</option>
-            <option value={filteredPlazas.length}>Ver todos</option>
-          </select>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ marginBottom: '10px', fontSize: '14px' }}>
+            Mostrando {indexOfFirstItem + 1}-{Math.min(indexOfLastItem, filteredPlazas.length)} de {filteredPlazas.length} centros
+            {searchTerm && ` (filtrados de ${plazasOrdenadas.length})`}
+          </div>
+          
+          <div>
+            <select 
+              value={itemsPerPage} 
+              onChange={(e) => {
+                setItemsPerPage(Number(e.target.value));
+                setCurrentPage(1); // Resetear a página 1 al cambiar items por página
+              }}
+              style={{
+                padding: '8px',
+                border: '1px solid #ddd',
+                borderRadius: '4px'
+              }}
+            >
+              <option value={25}>25 por página</option>
+              <option value={50}>50 por página</option>
+              <option value={100}>100 por página</option>
+              <option value={filteredPlazas.length}>Ver todos</option>
+            </select>
+          </div>
         </div>
       </div>
       
-      <div style={{ marginBottom: '10px', fontSize: '14px' }}>
-        Mostrando {indexOfFirstItem + 1}-{Math.min(indexOfLastItem, filteredPlazas.length)} de {filteredPlazas.length} centros
-        {searchTerm && ` (filtrados de ${plazasOrdenadas.length})`}
-      </div>
-      
       <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <style>
+          {`
+            @media (max-width: 768px) {
+              .responsive-table {
+                font-size: 12px;
+              }
+              .responsive-table th, .responsive-table td {
+                padding: 6px 4px !important;
+              }
+              .responsive-table .mobile-priority-low {
+                display: none;
+              }
+              .responsive-table .mobile-truncate {
+                max-width: 120px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+              }
+            }
+          `}
+        </style>
+        <table className="responsive-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ backgroundColor: '#EBF4FF' }}>
               <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#18539E' }}>ID</th>
               <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#18539E' }}>Centro de Trabajo</th>
               <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#18539E' }}>Localidad</th>
-              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#18539E' }}>Municipio</th>
-              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', color: '#18539E' }}>Plazas Totales</th>
-              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', color: '#18539E' }}>Asignadas</th>
-              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', color: '#18539E' }}>Disponibles</th>
+              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#18539E' }} className="mobile-priority-low">Municipio</th>
+              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', color: '#18539E' }} className="mobile-priority-low">Total</th>
+              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', color: '#18539E' }} className="mobile-priority-low">Asig.</th>
+              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', color: '#18539E' }}>Disp.</th>
               <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', color: '#18539E' }}>Estado</th>
             </tr>
           </thead>
@@ -1307,19 +1381,19 @@ function PlazasDisponibles({ availablePlazas }) {
                   }}
                 >
                   <td style={{ border: '1px solid #ddd', padding: '10px' }}>{plaza.id}</td>
-                  <td style={{ border: '1px solid #ddd', padding: '10px', fontWeight: 'bold' }}>{plaza.centro || '-'}</td>
-                  <td style={{ border: '1px solid #ddd', padding: '10px' }}>{plaza.localidad || '-'}</td>
-                  <td style={{ border: '1px solid #ddd', padding: '10px' }}>{plaza.municipio || '-'}</td>
-                  <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }}>{plaza.plazas}</td>
-                  <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }}>{plaza.asignadas}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '10px', fontWeight: 'bold' }} className="mobile-truncate">{plaza.centro || '-'}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '10px' }} className="mobile-truncate">{plaza.localidad || '-'}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '10px' }} className="mobile-priority-low">{plaza.municipio || '-'}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }} className="mobile-priority-low">{plaza.plazas}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }} className="mobile-priority-low">{plaza.asignadas}</td>
                   <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', fontWeight: 'bold', color: estaLleno ? 'red' : 'green' }}>
                     {disponibles}
                   </td>
                   <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }}>
                     {estaLleno ? (
-                      <span style={{ color: 'red', fontWeight: 'bold' }}>COMPLETO</span>
+                      <span style={{ color: 'red', fontWeight: 'bold' }}>LLENO</span>
                     ) : (
-                      <span style={{ color: 'green' }}>Disponible</span>
+                      <span style={{ color: 'green' }}>OK</span>
                     )}
                   </td>
                 </tr>
@@ -1327,8 +1401,8 @@ function PlazasDisponibles({ availablePlazas }) {
             })}
             <tr style={{ backgroundColor: '#f5f5f5', fontWeight: 'bold' }}>
               <td colSpan="4" style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'right' }}>TOTAL:</td>
-              <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }}>{filteredPlazas.reduce((sum, p) => sum + p.plazas, 0)}</td>
-              <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }}>{filteredPlazas.reduce((sum, p) => sum + p.asignadas, 0)}</td>
+              <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }} className="mobile-priority-low">{filteredPlazas.reduce((sum, p) => sum + p.plazas, 0)}</td>
+              <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }} className="mobile-priority-low">{filteredPlazas.reduce((sum, p) => sum + p.asignadas, 0)}</td>
               <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }}>{filteredPlazas.reduce((sum, p) => sum + (p.plazas - p.asignadas), 0)}</td>
               <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }}></td>
             </tr>
