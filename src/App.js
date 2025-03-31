@@ -66,6 +66,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [availablePlazas, setAvailablePlazas] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [busquedaCentros, setBusquedaCentros] = useState('');
 
   // Cargar datos del CSV al iniciar y configurar la escucha de Firebase
   useEffect(() => {
@@ -962,6 +963,24 @@ function App() {
                 <label htmlFor="centrosGroup" style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
                   Centros de Trabajo (selecciona múltiples en orden de preferencia):
                 </label>
+                
+                <div style={{ marginBottom: '10px' }}>
+                  <input
+                    type="text"
+                    placeholder="Buscar centro por nombre, localidad o municipio..."
+                    value={busquedaCentros}
+                    onChange={(e) => setBusquedaCentros(e.target.value)}
+                    style={{
+                      padding: '8px',
+                      border: '1px solid #ddd',
+                      borderRadius: '4px',
+                      width: '100%',
+                      marginBottom: '8px'
+                    }}
+                    disabled={isProcessing}
+                  />
+                </div>
+                
                 <div className="mobile-scroll-hint" style={{
                   display: 'none',
                   marginBottom: '5px',
@@ -1045,6 +1064,13 @@ function App() {
                   </div>
                   {availablePlazas
                     .filter(plaza => (plaza.plazas - plaza.asignadas) > 0)
+                    .filter(plaza => 
+                      busquedaCentros === '' || 
+                      plaza.centro.toLowerCase().includes(busquedaCentros.toLowerCase()) ||
+                      plaza.localidad.toLowerCase().includes(busquedaCentros.toLowerCase()) ||
+                      plaza.municipio.toLowerCase().includes(busquedaCentros.toLowerCase()) ||
+                      String(plaza.id).includes(busquedaCentros)
+                    )
                     .sort((a, b) => a.id - b.id)
                     .map((plaza, index) => (
                       <div key={index} style={{ marginBottom: '8px', display: 'flex', alignItems: 'center' }}>
@@ -1063,6 +1089,21 @@ function App() {
                         </label>
                       </div>
                     ))}
+                    
+                  {availablePlazas
+                    .filter(plaza => (plaza.plazas - plaza.asignadas) > 0)
+                    .filter(plaza => 
+                      busquedaCentros !== '' && (
+                        plaza.centro.toLowerCase().includes(busquedaCentros.toLowerCase()) ||
+                        plaza.localidad.toLowerCase().includes(busquedaCentros.toLowerCase()) ||
+                        plaza.municipio.toLowerCase().includes(busquedaCentros.toLowerCase()) ||
+                        String(plaza.id).includes(busquedaCentros)
+                      )
+                    ).length === 0 && busquedaCentros !== '' && (
+                      <div style={{ padding: '10px', textAlign: 'center', color: '#666' }}>
+                        No se encontraron centros que coincidan con "{busquedaCentros}"
+                      </div>
+                    )}
                 </div>
               </div>
               
