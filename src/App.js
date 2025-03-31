@@ -542,47 +542,42 @@ function App() {
 
   // Procesar solicitudes
   const procesarSolicitudes = useCallback(async () => {
-    setLoadingProcess(true);
-    setProcessingMessage('Procesando solicitudes...');
+    setIsProcessing(true);
+    console.log("Iniciando procesamiento de solicitudes...");
     
     try {
-      // 1. Obtener todas las solicitudes
-      const solicitudesSnapshot = await getDocs(collection(db, 'solicitudes'));
+      // 1. Obtener todas las solicitudes directamente de Firebase para tener datos frescos
+      console.log("Obteniendo solicitudes desde Firebase...");
+      const solicitudesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
       const todasLasSolicitudes = solicitudesSnapshot.docs.map(doc => ({
-        id: doc.id,
+        docId: doc.id,
         ...doc.data()
       }));
       
       console.log(`Total de solicitudes encontradas: ${todasLasSolicitudes.length}`);
       
       if (todasLasSolicitudes.length === 0) {
-        setProcessingMessage('No hay solicitudes pendientes');
-        setLoadingProcess(false);
+        console.log("No hay solicitudes para procesar");
+        setIsProcessing(false);
+        alert("No hay solicitudes pendientes para procesar");
         return;
       }
       
-      // 2. Obtener las plazas disponibles actualizadas
-      const plazasSnapshot = await getDocs(collection(db, 'plazas'));
-      const plazasDisponibles = plazasSnapshot.docs.map(doc => ({
-        id: doc.id,
+      // 2. Obtener las plazas actualizadas directamente de Firebase
+      console.log("Obteniendo centros desde Firebase...");
+      const centrosSnapshot = await getDocs(collection(db, "centros"));
+      const centros = centrosSnapshot.docs.map(doc => ({
+        docId: doc.id,
         ...doc.data()
       }));
       
-      console.log(`Total de centros encontrados: ${plazasDisponibles.length}`);
+      console.log(`Total de centros encontrados: ${centros.length}`);
       
-      // 3. Crear mapa de centros y plazas disponibles
-      const centrosMap = {};
-      plazasDisponibles.forEach(plaza => {
-        centrosMap[plaza.id] = {
-          ...plaza,
-          plazasDisponibles: plaza.plazas - plaza.asignadas
-        };
-      });
-      
-      // 4. Obtener asignaciones existentes
-      const asignacionesSnapshot = await getDocs(collection(db, 'asignaciones'));
+      // 3. Obtener todas las asignaciones existentes
+      console.log("Obteniendo asignaciones existentes...");
+      const asignacionesSnapshot = await getDocs(collection(db, "asignaciones"));
       const asignacionesExistentes = asignacionesSnapshot.docs.map(doc => ({
-        id: doc.id,
+        docId: doc.id,
         ...doc.data()
       }));
       
@@ -592,70 +587,128 @@ function App() {
         ordenesYaAsignados.add(asignacion.order);
       });
       
-      console.log(`Total de órdenes ya asignados: ${ordenesYaAsignados.size}`);
+      console.log(`Órdenes ya asignados: ${Array.from(ordenesYaAsignados).join(', ')}`);
       
-      // 5. Filtrar solicitudes que no tienen asignación aún
-      const solicitudesPendientes = todasLasSolicitudes.filter(sol => !ordenesYaAsignados.has(sol.orden));
+      // 4. Ordenar solicitudes por número de orden (menor primero = mayor prioridad)
+      console.log("Ordenando solicitudes por número de orden (menor primero)...");
+      const solicitudesOrdenadas = [...todasLasSolicitudes].sort((a, b) => {
+        return a.orden - b.orden;
+      });
       
-      // 6. Ordenar solicitudes pendientes por número de orden (prioridad a números más bajos)
-      const solicitudesOrdenadas = [...solicitudesPendientes].sort((a, b) => a.orden - b.orden);
+      console.log(`Solicitudes ordenadas: ${solicitudesOrdenadas.map(s => s.orden).join(', ')}`);
       
-      console.log(`Solicitudes pendientes ordenadas: ${solicitudesOrdenadas.length}`);
+      // 5. Inicializar mapa de centros con plazas disponibles
+      const centrosMap = {};
+      centros.forEach(centro => {
+        // Convertir plazas a número para evitar problemas
+        const plazas = Number(centro.plazas) || 0;
+        const asignadas = Number(centro.asignadas) || 0;
+        
+        centrosMap[centro.id] = {
+          ...centro,
+          plazas: plazas,
+          asignadas: asignadas,
+          disponibles: Math.max(0, plazas - asignadas) // Asegurar que nunca sea negativo
+        };
+      });
       
-      // 7. Procesar cada solicitud en orden
+      // Verificar centros con plazas disponibles
+      const centrosDisponibles = Object.values(centrosMap).filter(c => c.disponibles > 0);
+      console.log(`Centros con plazas disponibles: ${centrosDisponibles.length}`);
+      
+      // 6. Procesar cada solicitud en orden de prioridad
+      console.log("Procesando solicitudes por orden de prioridad...");
       const nuevasAsignaciones = [];
       
       for (const solicitud of solicitudesOrdenadas) {
-        // Verificar preferencias de centros en orden
+        const numOrden = solicitud.orden;
+        
+        // Verificar si este orden ya tiene asignación existente
+        if (ordenesYaAsignados.has(numOrden)) {
+          console.log(`El orden ${numOrden} ya tiene una asignación existente. Se omite.`);
+          continue;
+        }
+        
+        console.log(`Procesando solicitud para orden ${numOrden}`);
+        
+        // Verificar si hay centros seleccionados válidos
+        if (!solicitud.centrosIds || solicitud.centrosIds.length === 0) {
+          console.log(`La solicitud ${numOrden} no tiene centros seleccionados válidos`);
+          continue;
+        }
+        
+        // Procesar cada centro en orden de preferencia
         for (const centroId of solicitud.centrosIds) {
+          const centro = centrosMap[centroId];
+          
           // Verificar si el centro existe y tiene plazas disponibles
-          if (centrosMap[centroId] && centrosMap[centroId].plazasDisponibles > 0) {
-            // Asignar plaza
-            centrosMap[centroId].plazasDisponibles--;
-            centrosMap[centroId].asignadas++;
+          if (centro && centro.disponibles > 0) {
+            console.log(`Asignando orden ${numOrden} a centro ${centroId} (${centro.centro}). Plazas disponibles: ${centro.disponibles}`);
             
+            // Actualizar plaza disponible
+            centro.disponibles--;
+            centro.asignadas++;
+            
+            // Crear nueva asignación
             const nuevaAsignacion = {
+              order: numOrden,
               id: centroId,
-              order: solicitud.orden,
-              centro: centrosMap[centroId].centro,
-              localidad: centrosMap[centroId].localidad,
-              municipio: centrosMap[centroId].municipio,
-              timestamp: new Date().getTime()
+              centro: centro.centro,
+              localidad: centro.localidad,
+              municipio: centro.municipio,
+              timestamp: Date.now()
             };
             
-            nuevasAsignaciones.push(nuevaAsignacion);
-            console.log(`Asignada plaza en ${centrosMap[centroId].centro} a orden ${solicitud.orden}`);
-            
-            // Actualizar en Firebase
-            const plazaRef = doc(db, 'plazas', centroId);
-            await updateDoc(plazaRef, {
-              asignadas: centrosMap[centroId].asignadas
+            // Añadir a la lista de nuevas asignaciones
+            nuevasAsignaciones.push({
+              datos: nuevaAsignacion,
+              centroRef: centro.docId
             });
             
-            // Guardar asignación
-            await setDoc(doc(db, 'asignaciones', `${solicitud.orden}-${centroId}`), nuevaAsignacion);
+            // Marcar este orden como asignado para futuras iteraciones
+            ordenesYaAsignados.add(numOrden);
             
-            // Salir del bucle de centros ya que se asignó una plaza
+            // Terminar el bucle para este orden (ya está asignado)
             break;
+          } else {
+            console.log(`El centro ${centroId} no existe o no tiene plazas disponibles`);
           }
         }
       }
       
-      console.log(`Proceso completado. Nuevas asignaciones: ${nuevasAsignaciones.length}`);
+      // 7. Guardar asignaciones en Firebase
+      console.log(`Guardando ${nuevasAsignaciones.length} nuevas asignaciones en Firebase...`);
       
-      // 8. Notificar finalización
       if (nuevasAsignaciones.length > 0) {
-        setProcessingMessage(`Se han asignado ${nuevasAsignaciones.length} plazas según prioridad por orden.`);
-        // Actualizar lista local de asignaciones
-        setAssignments(prev => [...prev, ...nuevasAsignaciones]);
+        // Usar batch para reducir número de operaciones y evitar exceder cuota
+        for (const asignacion of nuevasAsignaciones) {
+          // 1. Guardar la asignación
+          await addDoc(collection(db, "asignaciones"), asignacion.datos);
+          console.log(`Guardada asignación para orden ${asignacion.datos.order}`);
+          
+          // 2. Actualizar el centro correspondiente
+          if (asignacion.centroRef) {
+            const centroRef = doc(db, "centros", asignacion.centroRef);
+            const centroId = asignacion.datos.id;
+            await updateDoc(centroRef, {
+              asignadas: centrosMap[centroId].asignadas
+            });
+            console.log(`Actualizado centro ${centroId}: ${centrosMap[centroId].asignadas} plazas asignadas`);
+          }
+        }
+        
+        alert(`Procesamiento completado. Se han asignado ${nuevasAsignaciones.length} plazas según prioridad por orden.`);
+        
+        // Refrescar la página para mostrar los cambios
+        window.location.reload();
       } else {
-        setProcessingMessage('No se han podido realizar nuevas asignaciones. Todas las plazas están ocupadas o no hay solicitudes con centros disponibles.');
+        alert("No se han podido realizar nuevas asignaciones. No hay solicitudes pendientes sin asignar o todos los centros solicitados están llenos.");
+        setIsProcessing(false);
       }
     } catch (error) {
-      console.error('Error al procesar solicitudes:', error);
-      setProcessingMessage(`Error al procesar solicitudes: ${error.message}`);
-    } finally {
-      setLoadingProcess(false);
+      console.error("Error en procesamiento:", error);
+      alert(`Error al procesar solicitudes: ${error.message}. Posiblemente has excedido la cuota de Firebase.`);
+      setIsProcessing(false);
     }
   }, [db]);
 
@@ -699,47 +752,44 @@ function App() {
         timestamp: Date.now() // Usar Date.now() es más simple y funciona igual
       };
       
+      // Guardar la solicitud en un solo paso, sin múltiples operaciones
       if (solicitudExistente) {
         // Actualizar la solicitud existente con los nuevos centros seleccionados
         console.log("Actualizando solicitud existente:", solicitudExistente.docId);
-        const solicitudRef = doc(db, "solicitudesPendientes", solicitudExistente.docId);
-        await updateDoc(solicitudRef, datosParaGuardar);
-        console.log("Solicitud actualizada correctamente");
+        try {
+          const solicitudRef = doc(db, "solicitudesPendientes", solicitudExistente.docId);
+          await updateDoc(solicitudRef, datosParaGuardar);
+          console.log("Solicitud actualizada correctamente");
+        } catch (error) {
+          console.error("Error al actualizar solicitud:", error);
+          setIsProcessing(false);
+          alert(`Error al actualizar solicitud: ${error.message}. Posiblemente has excedido la cuota de Firebase.`);
+          return;
+        }
       } else {
         // Crear nueva solicitud en Firebase
         console.log("Creando nueva solicitud");
-        const docRef = await addDoc(collection(db, "solicitudesPendientes"), datosParaGuardar);
-        console.log("Nueva solicitud creada con ID:", docRef.id);
+        try {
+          const docRef = await addDoc(collection(db, "solicitudesPendientes"), datosParaGuardar);
+          console.log("Nueva solicitud creada con ID:", docRef.id);
+        } catch (error) {
+          console.error("Error al crear solicitud:", error);
+          setIsProcessing(false);
+          alert(`Error al crear solicitud: ${error.message}. Posiblemente has excedido la cuota de Firebase.`);
+          return;
+        }
       }
       
-      // Procesar automáticamente todas las solicitudes después de guardar
-      try {
-        // Esperar un momento para asegurar que la nueva solicitud se haya guardado completamente
-        setTimeout(async () => {
-          console.log("Procesando todas las solicitudes automáticamente...");
-          await procesarSolicitudes();
-          
-          // Esperar un momento para que se completen las actualizaciones
-          setTimeout(() => {
-            // Mostrar mensaje de éxito y ocultar el loader
-            setIsProcessing(false);
-            
-            // Mostrar mensaje de éxito
-            alert(`Tu solicitud ha sido registrada y procesada correctamente. Las plazas se han asignado según prioridad por número de orden.`);
-            
-            // Recargar la página para mostrar los cambios actualizados
-            window.location.reload();
-          }, 1500);
-        }, 1000); // Esperar 1 segundo antes de procesar
-      } catch (error) {
-        console.error("Error al procesar solicitudes automáticamente:", error);
+      // Añadir un tiempo de espera para asegurar que la solicitud se ha guardado
+      setTimeout(() => {
+        alert(`Tu solicitud ha sido registrada correctamente. Ahora tienes que hacer clic en "Actualizar Asignaciones por Número de Orden" para procesar todas las solicitudes pendientes.`);
         setIsProcessing(false);
-        alert("Se ha guardado tu solicitud, pero ha ocurrido un error al procesar las asignaciones: " + error.message);
-      }
+        window.location.reload();
+      }, 1500);
     } catch (error) {
       console.error("Error al guardar solicitud:", error);
       // Mostrar error pero mantener el formulario para permitir intentar de nuevo
-      alert("Error al guardar la solicitud: " + error.message);
+      alert(`Error al guardar la solicitud: ${error.message}. Posiblemente has excedido la cuota de Firebase.`);
       // Ocultar indicador de carga
       setIsProcessing(false);
     }
