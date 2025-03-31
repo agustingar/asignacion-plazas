@@ -416,18 +416,18 @@ function App() {
     }
   };
 
-  // Función para manejar la selección de múltiples centros
+  // Función para manejar la selección de múltiples centros con checkboxes
   const handleCentroChange = (e) => {
-    const options = e.target.options;
-    const selectedValues = [];
+    const centroId = e.target.value;
+    const isChecked = e.target.checked;
     
-    for (let i = 0; i < options.length; i++) {
-      if (options[i].selected) {
-        selectedValues.push(options[i].value);
-      }
+    if (isChecked) {
+      // Añadir a la selección
+      setCentrosSeleccionados(prev => [...prev, centroId]);
+    } else {
+      // Quitar de la selección
+      setCentrosSeleccionados(prev => prev.filter(id => id !== centroId));
     }
-    
-    setCentrosSeleccionados(selectedValues);
   };
 
   return (
@@ -470,93 +470,111 @@ function App() {
             </div>
           </div>
           
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(350px, 1fr))', gap: '20px' }}>
-            <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ddd', borderRadius: '5px' }}>
-              <h2>Solicitar Plaza</h2>
-              <form onSubmit={handleOrderSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-                <div>
-                  <label htmlFor="orderInput" style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Número de Orden:</label>
-                  <input
-                    id="orderInput"
-                    type="number"
-                    value={orderNumber}
-                    onChange={e => setOrderNumber(e.target.value)} 
-                    placeholder="Introduce tu número de orden" 
-                    style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
-                    required
-                    min="1"
-                  />
-                </div>
-                
-                <div>
-                  <label htmlFor="centrosSelect" style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
-                    Centros de Trabajo (selecciona múltiples en orden de preferencia):
-                  </label>
-                  <select
-                    id="centrosSelect"
-                    multiple
-                    value={centrosSeleccionados}
-                    onChange={handleCentroChange}
-                    style={{ 
-                      width: '100%', 
-                      padding: '8px', 
-                      borderRadius: '4px', 
-                      border: '1px solid #ddd',
-                      height: '150px'
-                    }}
-                    required
-                  >
-                    {availablePlazas
-                      .filter(plaza => (plaza.plazas - plaza.asignadas) > 0)
-                      .sort((a, b) => a.id - b.id)
-                      .map((plaza) => {
-                        const disponibles = plaza.plazas - plaza.asignadas;
-                        const estaLleno = disponibles === 0;
-                        return (
-                          <option 
-                            key={plaza.id} 
-                            value={plaza.id}
-                            disabled={estaLleno}
-                            style={{ padding: '4px 0' }}
-                          >
-                            {plaza.centro} - {plaza.localidad} ({disponibles} de {plaza.plazas} plazas disponibles)
-                          </option>
-                        );
-                      })}
-                  </select>
-                  <p style={{ margin: '5px 0 0 0', fontSize: '14px', color: '#666' }}>
-                    Mantén presionada la tecla Ctrl (o Cmd en Mac) para seleccionar múltiples centros.
-                    El orden de selección determina la prioridad.
-                  </p>
-                </div>
-                
-                <button 
-                  type="submit" 
-                  style={{ 
-                    padding: '10px 16px', 
-                    backgroundColor: '#4CAF50', 
-                    color: 'white', 
-                    border: 'none', 
-                    borderRadius: '4px', 
-                    cursor: 'pointer',
-                    marginTop: '10px'
+          <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ddd', borderRadius: '5px' }}>
+            <h2>Solicitar Plaza</h2>
+            <form onSubmit={handleOrderSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+              <div>
+                <label htmlFor="orderInput" style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Número de Orden:</label>
+                <input
+                  id="orderInput"
+                  type="number"
+                  value={orderNumber}
+                  onChange={e => setOrderNumber(e.target.value)} 
+                  placeholder="Introduce tu número de orden" 
+                  style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
+                  required
+                  min="1"
+                />
+              </div>
+              
+              <div>
+                <label htmlFor="centrosGroup" style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
+                  Centros de Trabajo (selecciona múltiples en orden de preferencia):
+                </label>
+                <div 
+                  id="centrosGroup"
+                  style={{
+                    maxHeight: '250px',
+                    overflowY: 'auto',
+                    border: '1px solid #ddd',
+                    borderRadius: '4px',
+                    padding: '10px',
+                    backgroundColor: '#fff'
                   }}
                 >
-                  Solicitar Plaza
-                </button>
-              </form>
+                  {availablePlazas
+                    .filter(plaza => (plaza.plazas - plaza.asignadas) > 0)
+                    .sort((a, b) => a.id - b.id)
+                    .map((plaza) => {
+                      const disponibles = plaza.plazas - plaza.asignadas;
+                      const estaLleno = disponibles === 0;
+                      return (
+                        <div 
+                          key={plaza.id}
+                          style={{
+                            padding: '8px',
+                            borderBottom: '1px solid #eee',
+                            display: 'flex',
+                            alignItems: 'center',
+                            opacity: estaLleno ? 0.5 : 1
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            id={`centro-${plaza.id}`}
+                            value={plaza.id}
+                            checked={centrosSeleccionados.includes(plaza.id.toString())}
+                            onChange={handleCentroChange}
+                            disabled={estaLleno}
+                            style={{ marginRight: '10px' }}
+                          />
+                          <label 
+                            htmlFor={`centro-${plaza.id}`}
+                            style={{ 
+                              cursor: estaLleno ? 'not-allowed' : 'pointer',
+                              display: 'flex',
+                              flexDirection: 'column'
+                            }}
+                          >
+                            <span style={{ fontWeight: 'bold' }}>{plaza.centro} - {plaza.localidad}</span>
+                            <span style={{ fontSize: '0.9em', color: '#666' }}>
+                              {plaza.municipio} ({disponibles} de {plaza.plazas} plazas disponibles)
+                            </span>
+                          </label>
+                        </div>
+                      );
+                    })}
+                </div>
+                <p style={{ margin: '5px 0 0 0', fontSize: '14px', color: '#666' }}>
+                  Marca las casillas de los centros que te interesan. El orden de selección determina la prioridad.
+                </p>
+              </div>
               
-              <SolicitudesPendientes 
-                solicitudes={solicitudes} 
-                centros={availablePlazas} 
-                procesarSolicitudes={procesarSolicitudes} 
-              />
-            </div>
+              <button 
+                type="submit" 
+                style={{ 
+                  padding: '10px 16px', 
+                  backgroundColor: '#4CAF50', 
+                  color: 'white', 
+                  border: 'none', 
+                  borderRadius: '4px', 
+                  cursor: 'pointer',
+                  marginTop: '10px',
+                  alignSelf: 'flex-start'
+                }}
+              >
+                Solicitar Plaza
+              </button>
+            </form>
             
-            <div>
-              <PlazasDisponibles availablePlazas={availablePlazas} />
-            </div>
+            <SolicitudesPendientes 
+              solicitudes={solicitudes} 
+              centros={availablePlazas} 
+              procesarSolicitudes={procesarSolicitudes} 
+            />
           </div>
+          
+          <PlazasDisponibles availablePlazas={availablePlazas} />
           
           {assignment && (
             <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#f9f9f9', border: '1px solid #ddd', borderRadius: '5px' }}>
@@ -825,7 +843,7 @@ function Footer() {
           </a>
         </p>
         <img 
-          src="/AG_LOGO.png" 
+          src={`${process.env.PUBLIC_URL}/AG_LOGO.png`}
           alt="AG Marketing Logo" 
           style={{ height: '30px', width: 'auto' }} 
         />
