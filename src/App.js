@@ -2,7 +2,19 @@ import React, { useState, useEffect, useCallback } from 'react';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
 import { db } from './firebase';
-import { collection, addDoc, getDocs, doc, updateDoc, onSnapshot, query, orderBy, deleteDoc, setDoc } from 'firebase/firestore';
+import { 
+  collection, 
+  addDoc, 
+  getDocs, 
+  doc, 
+  updateDoc, 
+  onSnapshot, 
+  setDoc, 
+  increment, 
+  deleteDoc 
+} from 'firebase/firestore';
+import { toast, ToastContainer } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
 
 // Definir el estilo para la animación del spinner
 const spinnerAnimation = `
@@ -73,652 +85,132 @@ function App() {
   const [solicitudesPage, setSolicitudesPage] = useState(1);
   const [solicitudesPerPage, setSolicitudesPerPage] = useState(10);
   const [solicitudesSearch, setSolicitudesSearch] = useState('');
-
-  // Cargar datos del CSV al iniciar y configurar la escucha de Firebase
-  useEffect(() => {
-    setIsLoading(true);
-    
-    // Función para usar datos simulados (solo como respaldo)
-    const usarDatosSimulados = () => {
-      // Datos simulados de centros de trabajo (como respaldo)
-      const datosSimulados = [
-        { id: 1, localidad: "Valencia", centro: "Hospital La Fe", municipio: "Valencia", plazas: 5 },
-        { id: 2, localidad: "Alicante", centro: "Hospital General", municipio: "Alicante", plazas: 3 },
-        { id: 3, localidad: "Castellón", centro: "Hospital Provincial", municipio: "Castellón", plazas: 4 },
-        { id: 4, localidad: "Elche", centro: "Hospital del Vinalopó", municipio: "Elche", plazas: 2 },
-        { id: 5, localidad: "Torrevieja", centro: "Hospital de Torrevieja", municipio: "Torrevieja", plazas: 3 },
-        { id: 6, localidad: "Gandía", centro: "Hospital Francesc de Borja", municipio: "Gandía", plazas: 2 },
-        { id: 7, localidad: "Alcoy", centro: "Hospital Virgen de los Lirios", municipio: "Alcoy", plazas: 3 },
-        { id: 8, localidad: "Dénia", centro: "Hospital Marina Salud", municipio: "Dénia", plazas: 2 },
-        { id: 9, localidad: "Valencia", centro: "Hospital Clínico", municipio: "Valencia", plazas: 4 },
-        { id: 10, localidad: "Valencia", centro: "Hospital Dr. Peset", municipio: "Valencia", plazas: 3 },
-        { id: 11, localidad: "Alicante", centro: "Hospital San Juan", municipio: "San Juan", plazas: 2 },
-        { id: 12, localidad: "Sagunto", centro: "Hospital de Sagunto", municipio: "Sagunto", plazas: 1 },
-        { id: 13, localidad: "Requena", centro: "Hospital de Requena", municipio: "Requena", plazas: 2 },
-        { id: 14, localidad: "Alcira", centro: "Hospital La Ribera", municipio: "Alcira", plazas: 3 },
-        { id: 15, localidad: "Játiva", centro: "Hospital Lluís Alcanyís", municipio: "Játiva", plazas: 2 }
-      ];
-      
-      setExcelData(datosSimulados);
-      setAvailablePlazas(datosSimulados.map(plaza => ({...plaza, asignadas: 0})));
-      
-      // Calcular total de plazas
-      const total = datosSimulados.reduce((sum, item) => sum + item.plazas, 0);
-      setTotalPlazas(total);
-      setIsLoading(false);
-      console.log("Usando datos simulados con éxito. Total centros: " + datosSimulados.length);
-      
-      // Inicializar colección en Firebase si no existe
-      initializeFirebaseCollections(datosSimulados);
-    };
-
-    // Inicializar colecciones de Firebase
-    const initializeFirebaseCollections = async (centros) => {
-      try {
-        // Verificar si ya existen datos en Firebase
-        const centrosSnapshot = await getDocs(collection(db, "centros"));
-        
-        if (centrosSnapshot.empty) {
-          console.log("Inicializando colección de centros en Firebase...");
-          // Guardar los centros en Firebase
-          for (const centro of centros) {
-            await addDoc(collection(db, "centros"), {
-              ...centro,
-              asignadas: 0,
-              timestamp: new Date().getTime()
-            });
-          }
-        }
-      } catch (error) {
-        console.error("Error al inicializar colecciones Firebase:", error);
-      }
-    };
-
-    // Función para cargar datos de Firebase y procesar solicitudes automáticamente
-    const cargarTodosLosDatos = async () => {
-      setIsLoading(true);
-      
-      try {
-        // Cargar datos de Firebase
-        const unsubscribeCentros = onSnapshot(collection(db, "centros"), (snapshot) => {
-          const centrosData = snapshot.docs.map(doc => {
-            return {
-              ...doc.data(),
-              docId: doc.id
-            };
-          });
-          
-          if (centrosData.length > 0) {
-            console.log(`Cargados ${centrosData.length} centros de Firebase`);
-            
-            // Calcular plazas totales
-            const totalPlazas = centrosData.reduce((suma, centro) => suma + centro.plazas, 0);
-            
-            setAvailablePlazas(centrosData);
-            setTotalPlazas(totalPlazas);
-          } else {
-            console.warn("No hay centros en Firebase, intentando cargar desde CSV");
-            cargarCSV();
-          }
-          
-          setIsLoading(false);
-        });
-        
-        // Cargar asignaciones
-        const unsubscribeAsignaciones = onSnapshot(collection(db, "asignaciones"), (snapshot) => {
-          const asignacionesData = snapshot.docs.map(doc => ({
-            ...doc.data(),
-            docId: doc.id
-          }));
-          
-          console.log(`Cargadas ${asignacionesData.length} asignaciones`);
-          setAssignments(asignacionesData);
-        });
-        
-        // Cargar solicitudes y procesar automáticamente
-        const unsubscribeSolicitudes = onSnapshot(collection(db, "solicitudesPendientes"), (snapshot) => {
-          const solicitudesData = snapshot.docs.map(doc => ({
-            ...doc.data(),
-            docId: doc.id
-          }));
-          
-          console.log(`Cargadas ${solicitudesData.length} solicitudes pendientes`);
-          setSolicitudes(solicitudesData);
-          
-          // Si hay solicitudes pendientes, procesarlas automáticamente
-          // Pero esperar a que la carga inicial esté completa
-          if (solicitudesData.length > 0 && !isLoading) {
-            console.log("Procesando solicitudes automáticamente...");
-            setTimeout(() => {
-              procesarSolicitudes();
-            }, 2000); // Esperar 2 segundos para asegurar que todos los datos estén cargados
-          }
-        });
-        
-        // Devolver función de limpieza
-        return () => {
-          unsubscribeCentros();
-          unsubscribeAsignaciones();
-          unsubscribeSolicitudes();
-        };
-      } catch (error) {
-        console.error("Error al cargar datos:", error);
-        setIsLoading(false);
-      }
-    };
-
-    // Intentaremos primero cargar el CSV
-    const cargarCSV = async () => {
-      try {
-        setIsLoading(true);
-        
-        // Rutas posibles para el archivo CSV (intentar varias opciones)
-        const posiblesRutas = [
-          '/plazas.csv',            // Carpeta public
-          './plazas.csv',           // Relativa a public
-          '/src/plazas.csv',        // Src en public
-          './src/plazas.csv',       // Relativa a src
-          `${process.env.PUBLIC_URL}/plazas.csv` // Con PUBLIC_URL
-        ];
-        
-        let texto = null;
-        let rutaCargada = '';
-        
-        // Intentar cargar el archivo de cada ruta posible
-        for (const ruta of posiblesRutas) {
-          try {
-            console.log(`Intentando cargar desde: ${ruta}`);
-            const respuesta = await fetch(ruta);
-            if (respuesta.ok) {
-              texto = await respuesta.text();
-              rutaCargada = ruta;
-              console.log(`Archivo CSV cargado correctamente desde: ${ruta}`);
-              console.log(`Tamaño del archivo: ${texto.length} caracteres`);
-              console.log(`Primeras 100 caracteres: ${texto.substring(0, 100)}`);
-              break;
-            }
-          } catch (e) {
-            console.warn(`No se pudo cargar desde ${ruta}: ${e.message}`);
-          }
-        }
-        
-        if (!texto) {
-          console.error('No se pudo cargar el archivo CSV desde ninguna ruta');
-          usarDatosSimulados();
-          return;
-        }
-        
-        // Detectar el delimitador automáticamente examinando las primeras líneas
-        let delimitador = ';'; // Por defecto usamos punto y coma
-        
-        // Verificar si hay más comas que punto y coma en las primeras líneas
-        const primerasLineas = texto.split('\n').slice(0, 10).join('\n');
-        const numComas = (primerasLineas.match(/,/g) || []).length;
-        const numPuntoComa = (primerasLineas.match(/;/g) || []).length;
-        
-        if (numComas > numPuntoComa) {
-          delimitador = ',';
-          console.log('Delimitador detectado automáticamente: COMA');
-        } else {
-          console.log('Delimitador detectado automáticamente: PUNTO Y COMA');
-        }
-        
-        // Parsear el CSV con PapaParse usando el delimitador detectado
-        Papa.parse(texto, {
-          delimiter: delimitador,
-          skipEmptyLines: true,
-          complete: (resultado) => {
-            console.log('CSV cargado. Total de filas:', resultado.data.length);
-            console.log('Primeras 3 filas para análisis:', resultado.data.slice(0, 3));
-            
-            // Determinar automáticamente dónde empiezan los datos
-            let inicioFilas = 0;
-            // Buscar la primera fila que tenga datos que parezcan encabezados o valores significativos
-            for (let i = 0; i < Math.min(10, resultado.data.length); i++) {
-              const fila = resultado.data[i];
-              
-              // Si la fila tiene al menos 5 columnas no vacías, podría ser una fila de datos o encabezados
-              const columnasSinVacios = fila.filter(celda => celda && celda.trim().length > 0);
-              if (columnasSinVacios.length >= 5) {
-                console.log(`Posible fila de encabezados o datos encontrada en línea ${i+1}:`, fila);
-                inicioFilas = i;
-                break;
-              }
-            }
-            
-            console.log(`Usando fila ${inicioFilas+1} como referencia para encabezados/datos`);
-            
-            // Intentar determinar qué filas son encabezados y cuáles datos
-            // Típicamente, los encabezados tienen textos cortos y los datos tienen valores más diversos
-            let filaEncabezados = inicioFilas;
-            
-            // Ver si hay una fila que parezca contener encabezados (textos cortos descriptivos)
-            for (let i = inicioFilas; i < Math.min(inicioFilas + 5, resultado.data.length); i++) {
-              const fila = resultado.data[i];
-              const pareceEncabezado = fila.every(celda => 
-                typeof celda === 'string' && 
-                celda.trim().length > 0 && 
-                celda.trim().length < 30 &&
-                !celda.match(/^\d+$/) // No son solo números
-              );
-              
-              if (pareceEncabezado) {
-                filaEncabezados = i;
-                console.log(`Fila ${i+1} parece contener encabezados:`, fila);
-                break;
-              }
-            }
-            
-            // Los datos deberían comenzar en la siguiente fila después de los encabezados
-            const inicioDatos = filaEncabezados + 1;
-            console.log(`Usando fila ${inicioDatos+1} como inicio de datos`);
-            
-            // Extraer encabezados
-            const nombresColumnas = resultado.data[filaEncabezados].map(col => col.trim());
-            console.log('Nombres de columnas detectados:', nombresColumnas);
-            
-            // Procesar datos a partir de la fila identificada
-            const datosCentros = resultado.data.slice(inicioDatos);
-            console.log('Total de centros en CSV (sin procesar):', datosCentros.length);
-            
-            // Identificar índices de columnas importantes basados en nombres o contenido
-            let idxLocalidad = nombresColumnas.findIndex(col => 
-              col.toLowerCase().includes('localidad') || col.toLowerCase().includes('a.s.i') || col.toLowerCase().includes('asi')
-            );
-            let idxDepartamento = nombresColumnas.findIndex(col => 
-              col.toLowerCase().includes('departamento') || col.toLowerCase().includes('depart') || col.toLowerCase().includes('dep.')
-            );
-            let idxCodigo = nombresColumnas.findIndex(col => 
-              col.toLowerCase().includes('código') || col.toLowerCase().includes('codigo') || col.toLowerCase().includes('code')
-            );
-            let idxCentro = nombresColumnas.findIndex(col => 
-              col.toLowerCase().includes('centro') || col.toLowerCase().includes('work') || col.toLowerCase().includes('trabajo')
-            );
-            let idxMunicipio = nombresColumnas.findIndex(col => 
-              col.toLowerCase().includes('municipio') || col.toLowerCase().includes('munic') || col.toLowerCase().includes('city')
-            );
-            let idxPlazas = nombresColumnas.findIndex(col => 
-              col.toLowerCase().includes('plazas') || col.toLowerCase().includes('plaza') || col.toLowerCase().includes('spots') || 
-              col.toLowerCase().includes('vacantes') || col.toLowerCase().includes('número') || col.toLowerCase().includes('numero')
-            );
-            
-            // Si no se encontraron automáticamente, usar índices predeterminados (basados en estructura típica)
-            if (idxLocalidad === -1) idxLocalidad = 0;
-            if (idxDepartamento === -1) idxDepartamento = 1;
-            if (idxCodigo === -1) idxCodigo = 2;
-            if (idxCentro === -1) idxCentro = 3;
-            if (idxMunicipio === -1) idxMunicipio = 4;
-            if (idxPlazas === -1) idxPlazas = 5;
-            
-            console.log(`Índices de columnas identificados:
-              Localidad: ${idxLocalidad}
-              Departamento: ${idxDepartamento}
-              Código: ${idxCodigo}
-              Centro: ${idxCentro}
-              Municipio: ${idxMunicipio}
-              Plazas: ${idxPlazas}
-            `);
-            
-            // Función para diagnosticar los datos
-            const diagnosticarDatos = (filas) => {
-              // Conteo de filas con diferentes longitudes
-              const conteoLongitud = {};
-              filas.forEach((fila, idx) => {
-                const longitud = fila.length;
-                if (!conteoLongitud[longitud]) {
-                  conteoLongitud[longitud] = [];
-                }
-                // Guardar solo las primeras 5 filas de cada longitud para no sobrecargar el log
-                if (conteoLongitud[longitud].length < 5) {
-                  conteoLongitud[longitud].push({
-                    indice: idx + inicioDatos, // Ajustar el índice al archivo original
-                    contenido: fila
-                  });
-                }
-              });
-              
-              console.log('Distribución de longitudes de filas:', Object.keys(conteoLongitud).map(k => 
-                `${k} columnas: ${filas.filter(f => f.length == k).length} filas`
-              ).join(', '));
-              
-              // Examinar algunas filas de cada longitud
-              Object.keys(conteoLongitud).forEach(longitud => {
-                if (longitud < 6 || parseInt(longitud, 10) !== nombresColumnas.length) { 
-                  // Mostrar filas potencialmente problemáticas
-                  console.log(`Ejemplos de filas con ${longitud} columnas:`, conteoLongitud[longitud]);
-                }
-              });
-              
-              // Verificar valores de plazas
-              const valoresPlazas = filas
-                .filter(fila => fila.length > idxPlazas && fila[idxPlazas] !== undefined)
-                .map(fila => {
-                  // Guardar el valor original para diagnóstico
-                  const valorOriginal = fila[idxPlazas].toString().trim();
-                  
-                  // Intentar varias formas de parseo
-                  const valorLimpio = valorOriginal.replace(/[^\d.,]/g, '').replace(/\./g, '').replace(',', '.');
-                  const valorInt = parseInt(valorLimpio, 10);
-                  const valorFloat = parseFloat(valorLimpio);
-                  
-                  return {
-                    original: valorOriginal,
-                    limpio: valorLimpio,
-                    comoEntero: valorInt,
-                    comoDecimal: valorFloat,
-                    esNaN: isNaN(valorInt),
-                    fila: fila.slice(0, 6) // Solo las primeras 6 columnas para diagnóstico
-                  };
-                });
-              
-              console.log(`Análisis de valores de plazas: ${valoresPlazas.length} valores encontrados`);
-              console.log('Primeros 10 ejemplos de valores de plazas:', valoresPlazas.slice(0, 10));
-              
-              // Filtrar por valores problemáticos
-              const valoresProblematicos = valoresPlazas.filter(v => 
-                isNaN(v.comoEntero) || v.comoEntero === 0 || v.comoEntero !== v.comoDecimal
-              );
-              
-              if (valoresProblematicos.length > 0) {
-                console.log(`Encontrados ${valoresProblematicos.length} valores de plazas problemáticos.`);
-                console.log('Primeros 10 ejemplos:', valoresProblematicos.slice(0, 10));
-              }
-            };
-            
-            // Ejecutar diagnóstico sobre los datos
-            diagnosticarDatos(datosCentros);
-            
-            // Procesar cada fila para extraer los centros
-            const centrosProcesados = datosCentros
-              .map((fila, index) => {
-                // Verificar si la fila tiene suficientes columnas
-                if (fila.length <= Math.max(idxLocalidad, idxDepartamento, idxCodigo, idxCentro, idxMunicipio, idxPlazas)) {
-                  console.warn(`Fila ${index + inicioDatos + 1} tiene menos columnas de las requeridas:`, fila);
-                  return null;
-                }
-                
-                // Procesar el número de plazas correctamente
-                let plazas = 0;
-                if (fila[idxPlazas] !== undefined) {
-                  // Limpiar el valor y asegurar que sea un número
-                  let plazasStr = fila[idxPlazas].toString().trim();
-                  
-                  // Formatos especiales conocidos - ajustar manualmente casos problemáticos
-                  if (plazasStr === "1 - (0'5 JS)") plazasStr = "1";
-                  if (plazasStr === "4 - (3 JS)") plazasStr = "4";
-                  
-                  // Quitar cualquier texto adicional y quedarse solo con los números
-                  plazasStr = plazasStr.replace(/[^\d.,]/g, '').replace(/\./g, '').replace(',', '.');
-                  
-                  // Intentar convertir a entero primero
-                  plazas = parseInt(plazasStr, 10);
-                  // Si no es un entero válido, probar como float y redondear
-                  if (isNaN(plazas)) {
-                    const plazasFloat = parseFloat(plazasStr);
-                    if (!isNaN(plazasFloat)) {
-                      plazas = Math.round(plazasFloat);
-                    }
-                  }
-                  
-                  // Si plazas sigue siendo NaN o menor a 1, intentar extraer números mediante regex
-                  if (isNaN(plazas) || plazas < 1) {
-                    const numerosEncontrados = plazasStr.match(/\d+/);
-                    if (numerosEncontrados && numerosEncontrados.length > 0) {
-                      plazas = parseInt(numerosEncontrados[0], 10);
-                    }
-                  }
-                  
-                  // Asegurar que sea al menos 1 si hay algún texto que indique plazas
-                  if ((isNaN(plazas) || plazas < 1) && plazasStr.length > 0) {
-                    plazas = 1; // Asumimos al menos 1 plaza si hay algún valor pero no pudimos parsearlo
-                    console.warn(`Valor no numérico para plazas: "${plazasStr}" en fila ${index + inicioDatos + 1}. Asumiendo 1 plaza.`);
-                  }
-                  
-                  // Asegurar que sea al menos 0
-                  plazas = isNaN(plazas) ? 0 : Math.max(0, plazas);
-                }
-                
-                // Crear objeto con los datos del centro
-                return {
-                  id: index + 1,
-                  codigo: fila[idxCodigo] ? fila[idxCodigo].toString().trim() : '',
-                  localidad: fila[idxLocalidad] ? fila[idxLocalidad].toString().trim() : '',
-                  departamento: fila[idxDepartamento] ? fila[idxDepartamento].toString().trim() : '',
-                  centro: fila[idxCentro] ? fila[idxCentro].toString().trim() : '',
-                  municipio: fila[idxMunicipio] ? fila[idxMunicipio].toString().trim() : '',
-                  plazas: plazas
-                };
-              })
-              .filter(centro => {
-                // Filtrar nulos (filas inválidas)
-                if (centro === null) return false;
-                
-                // Filtrar solo los que tienen datos válidos
-                const tieneNombre = centro.centro && centro.centro.trim().length > 0;
-                const tienePlazas = centro.plazas > 0;
-                
-                // Registrar centros descartados para diagnóstico
-                if (!tieneNombre || !tienePlazas) {
-                  console.warn(`Centro descartado:`, centro);
-                }
-                
-                return tieneNombre && tienePlazas;
-              });
-            
-            console.log('Centros procesados del CSV:', centrosProcesados.length);
-            console.log('Primeros 5 centros procesados:', centrosProcesados.slice(0, 5));
-            console.log('Últimos 5 centros procesados:', centrosProcesados.slice(-5));
-            
-            // Verificar si el total de plazas parece razonable
-            const totalPlazas = centrosProcesados.reduce((suma, centro) => suma + centro.plazas, 0);
-            console.log(`Total de plazas calculado: ${totalPlazas}`);
-            
-            // Si no hay centros procesados, usar datos simulados
-            if (centrosProcesados.length === 0) {
-              console.error('No se pudieron extraer centros con plazas > 0');
-              usarDatosSimulados();
-              return;
-            }
-            
-            // Inicializar el estado de plazas disponibles
-            const plazasIniciales = centrosProcesados.map(centro => ({
-              ...centro,
-              asignadas: 0
-            }));
-            
-            console.log(`CSV procesado con éxito. Total de centros: ${centrosProcesados.length}, Total plazas: ${totalPlazas}`);
-            
-            // Actualizar el estado de la aplicación
-            setExcelData(centrosProcesados);
-            setAvailablePlazas(plazasIniciales);
-            setTotalPlazas(totalPlazas);
-            setIsLoading(false);
-            
-            // Inicializar datos en Firebase
-            limpiarYActualizarFirebase(plazasIniciales);
-          },
-          error: (error) => {
-            console.error('Error al parsear el CSV:', error);
-            usarDatosSimulados();
-          }
-        });
-      } catch (error) {
-        console.error('Error al cargar el CSV:', error);
-        usarDatosSimulados();
-      }
-    };
-    
-    // Función para limpiar colecciones previas y actualizar con nuevos datos
-    const limpiarYActualizarFirebase = async (centros) => {
-      try {
-        console.log("Limpiando y actualizando datos en Firebase...");
-        
-        // 1. Limpiar las colecciones existentes
-        const centrosSnapshot = await getDocs(collection(db, "centros"));
-        const borradosCentros = [];
-        
-        // Borrar documentos existentes en la colección de centros
-        for (const docSnap of centrosSnapshot.docs) {
-          borradosCentros.push(deleteDoc(doc(db, "centros", docSnap.id)));
-        }
-        
-        // Esperar a que se completen todas las operaciones de borrado
-        await Promise.all(borradosCentros);
-        console.log(`Borrados ${borradosCentros.length} centros antiguos de Firebase`);
-        
-        // 2. Crear nuevos documentos con los centros procesados
-        console.log(`Iniciando carga de ${centros.length} centros en Firebase...`);
-        const lotes = [];
-        const tamanoLote = 100; // Procesar en lotes para evitar sobrecargar Firestore
-        
-        for (let i = 0; i < centros.length; i += tamanoLote) {
-          const lote = centros.slice(i, i + tamanoLote);
-          const promesasLote = lote.map(centro => 
-            addDoc(collection(db, "centros"), {
-              ...centro,
-              timestamp: Date.now()
-            })
-          );
-          
-          // Ejecutar el lote y esperar a que termine
-          await Promise.all(promesasLote);
-          console.log(`Procesado lote ${i/tamanoLote + 1} de ${Math.ceil(centros.length/tamanoLote)}`);
-        }
-        
-        console.log("Firebase actualizado correctamente con todos los centros");
-      } catch (error) {
-        console.error("Error al limpiar y actualizar Firebase:", error);
-      }
-    };
-
-    // Comenzar la carga de datos
-    let unsubscribeFunc = () => {};
-    cargarTodosLosDatos().then(unsubscribe => {
-      unsubscribeFunc = unsubscribe;
-    });
-    
-    // Limpieza al desmontar el componente
-    return () => {
-      unsubscribeFunc();
-    };
-  }, []);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [unsubscribes, setUnsubscribes] = useState([]);
+  const [plazas, setPlazas] = useState([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [procesarAutomaticamente, setProcesarAutomaticamente] = useState(true);
 
   // Procesar solicitudes
-  const procesarSolicitudes = useCallback(async () => {
-    setLoadingProcess(true);
-    setProcessingMessage('Procesando solicitudes...');
+  const procesarSolicitudes = async () => {
+    if (isProcessing) return;
+    setIsProcessing(true);
     
     try {
-      // 1. Obtener todas las solicitudes - limitar el uso con una sola consulta
+      console.log('Iniciando procesamiento de solicitudes...');
+      
+      // 1. Obtener todas las solicitudes pendientes de Firestore
       const solicitudesSnapshot = await getDocs(collection(db, 'solicitudes'));
       const todasLasSolicitudes = solicitudesSnapshot.docs.map(doc => ({
         id: doc.id,
-        ...doc.data()
+        ...doc.data(),
+        orden: parseInt(doc.data().orden || 0, 10)
       }));
       
       console.log(`Total de solicitudes encontradas: ${todasLasSolicitudes.length}`);
       
       if (todasLasSolicitudes.length === 0) {
-        setProcessingMessage('No hay solicitudes pendientes');
-        setLoadingProcess(false);
+        toast.info('No hay solicitudes pendientes para procesar');
+        setIsProcessing(false);
         return;
       }
       
-      // 2. Obtener las plazas disponibles actualizadas - limitar el uso con una sola consulta
-      const plazasSnapshot = await getDocs(collection(db, 'plazas'));
-      const plazasDisponibles = plazasSnapshot.docs.map(doc => ({
+      // 2. Obtener todos los centros con sus plazas disponibles
+      const centrosSnapshot = await getDocs(collection(db, 'centros'));
+      const centrosDisponibles = centrosSnapshot.docs.map(doc => ({
         id: doc.id,
-        ...doc.data()
-      }));
+        ...doc.data(),
+        plazas: parseInt(doc.data().plazas || 0, 10),
+        asignadas: parseInt(doc.data().asignadas || 0, 10)
+      })).filter(c => c.plazas > 0);
       
-      console.log(`Total de centros encontrados: ${plazasDisponibles.length}`);
+      console.log(`Total de centros disponibles: ${centrosDisponibles.length}`);
       
-      // 3. Crear mapa de centros y plazas disponibles
-      const centrosMap = {};
-      plazasDisponibles.forEach(plaza => {
-        centrosMap[plaza.id] = {
-          ...plaza,
-          plazasDisponibles: plaza.plazas - plaza.asignadas
-        };
-      });
-      
-      // 4. Obtener asignaciones existentes - limitar el uso con una sola consulta
+      // 3. Obtener asignaciones existentes
       const asignacionesSnapshot = await getDocs(collection(db, 'asignaciones'));
       const asignacionesExistentes = asignacionesSnapshot.docs.map(doc => ({
         id: doc.id,
-        ...doc.data()
+        ...doc.data(),
+        order: parseInt(doc.data().order || 0, 10)
       }));
       
-      // Crear conjunto de órdenes ya asignados
-      const ordenesYaAsignados = new Set();
-      asignacionesExistentes.forEach(asignacion => {
-        ordenesYaAsignados.add(asignacion.order);
+      console.log(`Total de asignaciones existentes: ${asignacionesExistentes.length}`);
+      
+      // 4. Crear mapa de centros con plazas disponibles
+      const mapaCentros = {};
+      centrosDisponibles.forEach(centro => {
+        mapaCentros[centro.id] = {
+          ...centro,
+          disponibles: centro.plazas - centro.asignadas
+        };
       });
       
-      console.log(`Total de órdenes ya asignados: ${ordenesYaAsignados.size}`);
+      // 5. Ordenar solicitudes por número de orden (menor primero)
+      const solicitudesOrdenadas = [...todasLasSolicitudes].sort((a, b) => 
+        parseInt(a.orden, 10) - parseInt(b.orden, 10)
+      );
       
-      // 5. Filtrar y ordenar todas las solicitudes por número de orden (prioridad a números más bajos)
-      // Importante: primero ordenar TODAS las solicitudes por número de orden
-      const todasSolicitudesOrdenadas = [...todasLasSolicitudes].sort((a, b) => {
-        return parseInt(a.orden, 10) - parseInt(b.orden, 10);
-      });
+      console.log('Solicitudes ordenadas por número de orden:', 
+        solicitudesOrdenadas.map(s => s.orden).join(", "));
       
-      console.log("Solicitudes ordenadas por número de orden:", 
-        todasSolicitudesOrdenadas.map(s => s.orden).join(", "));
-      
-      // 7. Procesar cada solicitud en orden - usar lotes para reducir escrituras en Firebase
+      // 6. Procesar cada solicitud en orden
       const nuevasAsignaciones = [];
+      const ordenesAsignadas = new Set(asignacionesExistentes.map(a => a.order));
       const actualizacionesCentros = {};
-      const loteAsignaciones = [];
       
-      // Recorremos todas las solicitudes ordenadas (menor a mayor)
-      for (const solicitud of todasSolicitudesOrdenadas) {
+      for (const solicitud of solicitudesOrdenadas) {
         const numOrden = parseInt(solicitud.orden, 10);
         console.log(`Procesando solicitud orden ${numOrden}`);
         
-        // Si ya tiene asignación previa, saltamos
-        if (ordenesYaAsignados.has(numOrden)) {
+        // Verificar si ya tiene asignación
+        if (ordenesAsignadas.has(numOrden)) {
           console.log(`Orden ${numOrden} ya tiene asignación. Se omite.`);
           continue;
         }
         
-        // Verificar preferencias de centros en orden
-        let asignado = false;
-        
-        // Asegurarnos que centrosIds existe y es un array
+        // Verificar si centrosIds existe y es válido
         if (!solicitud.centrosIds || !Array.isArray(solicitud.centrosIds) || solicitud.centrosIds.length === 0) {
-          console.log(`Orden ${numOrden} no tiene centros seleccionados válidos.`);
+          console.log(`La solicitud con orden ${numOrden} no tiene centros seleccionados válidos.`);
           continue;
         }
         
+        // Intentar asignar a uno de los centros preferidos
+        let asignado = false;
+        
         for (const centroId of solicitud.centrosIds) {
-          // Verificar si el centro existe y tiene plazas disponibles
-          if (centrosMap[centroId] && centrosMap[centroId].plazasDisponibles > 0) {
+          // Convertir a string si es necesario (para asegurar que la comparación funcione)
+          const centroIdStr = String(centroId);
+          const centro = mapaCentros[centroIdStr];
+          
+          if (!centro) {
+            console.log(`Centro ${centroIdStr} no encontrado en el mapa.`);
+            continue;
+          }
+          
+          if (centro.disponibles > 0) {
             // Asignar plaza
-            centrosMap[centroId].plazasDisponibles--;
-            centrosMap[centroId].asignadas++;
-            ordenesYaAsignados.add(numOrden);
+            centro.disponibles--;
+            centro.asignadas++;
+            ordenesAsignadas.add(numOrden);
             asignado = true;
             
+            // Crear la nueva asignación
             const nuevaAsignacion = {
-              id: centroId,
+              id: centroIdStr,
               order: numOrden,
-              centro: centrosMap[centroId].centro,
-              localidad: centrosMap[centroId].localidad,
-              municipio: centrosMap[centroId].municipio,
-              timestamp: new Date().getTime()
+              centro: centro.centro,
+              localidad: centro.localidad,
+              municipio: centro.municipio,
+              timestamp: new Date().toISOString()
             };
             
             nuevasAsignaciones.push(nuevaAsignacion);
-            loteAsignaciones.push(nuevaAsignacion);
             
-            // Registrar la actualización del centro para hacerla en lote después
-            if (!actualizacionesCentros[centroId]) {
-              actualizacionesCentros[centroId] = centrosMap[centroId];
-            }
+            // Registrar centro para actualización
+            actualizacionesCentros[centroIdStr] = centro;
             
-            console.log(`Asignada plaza en ${centrosMap[centroId].centro} a orden ${numOrden}`);
-            break;  // Salir del bucle de centros ya que hemos asignado uno
+            console.log(`Asignada plaza en ${centro.centro} a orden ${numOrden}`);
+            break;
           }
         }
         
@@ -727,79 +219,210 @@ function App() {
         }
       }
       
-      console.log(`Proceso completado. Nuevas asignaciones: ${nuevasAsignaciones.length}`);
-      
-      // 8. Actualizar Firebase en lotes para reducir el número de operaciones
+      // 7. Guardar los cambios en Firebase
       if (nuevasAsignaciones.length > 0) {
-        try {
-          console.log(`Guardando ${nuevasAsignaciones.length} nuevas asignaciones en lote`);
-          
-          // Guardar asignaciones en lote
-          for (const asignacion of nuevasAsignaciones) {
-            const asignacionId = `${asignacion.order}-${asignacion.id}`;
-            await setDoc(doc(db, 'asignaciones', asignacionId), asignacion);
-          }
-          
-          // Actualizar centros en lote
-          for (const centroId in actualizacionesCentros) {
-            const centro = actualizacionesCentros[centroId];
-            if (centro.docId) {
-              console.log(`Actualizando centro ${centroId} a ${centro.asignadas} plazas asignadas`);
-              await updateDoc(doc(db, 'plazas', centro.docId), {
-                asignadas: centro.asignadas
-              });
-            }
-          }
-          
-          // Notificar éxito
-          setProcessingMessage(`Se han asignado ${nuevasAsignaciones.length} plazas según prioridad por orden.`);
-          
-          // Actualizar lista local de asignaciones
-          setAssignments(prev => [...prev, ...nuevasAsignaciones]);
-          
-          // Recargar la página para mostrar los cambios
-          window.location.reload();
-        } catch (error) {
-          console.error('Error al actualizar Firebase:', error);
-          setProcessingMessage(`Error al guardar asignaciones: ${error.message}`);
-          alert(`Firebase Quota Exceeded: Se ha superado el límite de operaciones gratuitas. Intente más tarde o contacte al administrador para actualizar el plan de Firebase.`);
+        console.log(`Guardando ${nuevasAsignaciones.length} nuevas asignaciones`);
+        
+        // Usamos promesas por separado para manejar mejor los errores
+        const operaciones = [];
+        
+        // Guardar nuevas asignaciones
+        for (const asignacion of nuevasAsignaciones) {
+          const asignacionId = `${asignacion.order}-${asignacion.id}`;
+          operaciones.push(
+            setDoc(doc(db, 'asignaciones', asignacionId), asignacion)
+              .catch(err => {
+                console.error(`Error al guardar asignación ${asignacionId}:`, err);
+                throw err;
+              })
+          );
         }
+        
+        // Actualizar centros
+        for (const centroId in actualizacionesCentros) {
+          const centro = actualizacionesCentros[centroId];
+          operaciones.push(
+            updateDoc(doc(db, 'centros', centroId), { asignadas: centro.asignadas })
+              .catch(err => {
+                console.error(`Error al actualizar centro ${centroId}:`, err);
+                throw err;
+              })
+          );
+        }
+        
+        // Esperar a que todas las operaciones terminen
+        await Promise.all(operaciones);
+        
+        // Actualizar el estado local
+        setAssignments(prev => {
+          // Filtrar las asignaciones existentes y añadir las nuevas
+          const asignacionesExistentesIds = asignacionesExistentes.map(a => a.id);
+          const asignacionesFiltradas = prev.filter(a => asignacionesExistentesIds.includes(a.id));
+          
+          return [...asignacionesFiltradas, ...nuevasAsignaciones];
+        });
+        
+        // Actualizar plazas disponibles
+        setAvailablePlazas(prevPlazas => {
+          return prevPlazas.map(plaza => {
+            if (actualizacionesCentros[plaza.id]) {
+              return {
+                ...plaza,
+                asignadas: actualizacionesCentros[plaza.id].asignadas
+              };
+            }
+            return plaza;
+          });
+        });
+        
+        toast.success(`Se han asignado ${nuevasAsignaciones.length} plazas según prioridad por orden.`);
       } else {
-        setProcessingMessage('No se han podido realizar nuevas asignaciones. Todas las plazas están ocupadas o no hay solicitudes con centros disponibles.');
+        toast.info('No se han podido realizar nuevas asignaciones. Todas las plazas solicitadas están ocupadas.');
       }
     } catch (error) {
-      console.error('Error al procesar solicitudes:', error);
-      
-      // Verificar si es un error de cuota excedida
-      if (error.message && error.message.includes('quota')) {
-        setProcessingMessage(`Error de cuota excedida en Firebase. Por favor, intente más tarde.`);
-        alert(`Firebase Quota Exceeded: Se ha superado el límite de operaciones gratuitas. Intente más tarde o contacte al administrador para actualizar el plan de Firebase.`);
-      } else {
-        setProcessingMessage(`Error al procesar solicitudes: ${error.message}`);
-      }
+      console.error('Error al procesar las solicitudes:', error);
+      toast.error('Error al procesar las solicitudes. Por favor, inténtelo de nuevo.');
     } finally {
-      setLoadingProcess(false);
+      setIsProcessing(false);
     }
-  }, [db]);
-  
+  };
+
+  // Función para cargar datos desde Firebase
+  const cargarTodosLosDatos = () => {
+    setIsLoading(true);
+    try {
+      console.log('Cargando datos desde Firebase...');
+      
+      // Usar onSnapshot para escuchar cambios en tiempo real
+      const unsubscribeCentros = onSnapshot(
+        collection(db, 'centros'),
+        (snapshot) => {
+          const centrosData = snapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data(),
+            plazas: parseInt(doc.data().plazas || '0', 10),
+            asignadas: parseInt(doc.data().asignadas || '0', 10)
+          }));
+          
+          console.log(`Centros cargados: ${centrosData.length}`);
+          setPlazas(centrosData);
+          setAvailablePlazas(centrosData);
+          
+          // Calcular total de plazas
+          const total = centrosData.reduce((sum, centro) => sum + centro.plazas, 0);
+          setTotalPlazas(total);
+          
+          setIsLoading(false);
+        },
+        (error) => {
+          console.error('Error al cargar centros:', error);
+          toast.error('Error al cargar los centros');
+          setIsLoading(false);
+        }
+      );
+      
+      const unsubscribeAsignaciones = onSnapshot(
+        collection(db, 'asignaciones'),
+        (snapshot) => {
+          const asignacionesData = snapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data(),
+            order: parseInt(doc.data().order || '0', 10)
+          })).sort((a, b) => a.order - b.order); // Ordenar por número de orden
+          
+          console.log(`Asignaciones cargadas: ${asignacionesData.length}`);
+          setAssignments(asignacionesData);
+        },
+        (error) => {
+          console.error('Error al cargar asignaciones:', error);
+          toast.error('Error al cargar las asignaciones');
+        }
+      );
+      
+      const unsubscribeSolicitudes = onSnapshot(
+        collection(db, 'solicitudes'),
+        (snapshot) => {
+          const solicitudesData = snapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data(),
+            orden: parseInt(doc.data().orden || '0', 10)
+          })).sort((a, b) => a.orden - b.orden); // Ordenar por número de orden
+          
+          console.log(`Solicitudes pendientes cargadas: ${solicitudesData.length}`);
+          setSolicitudes(solicitudesData);
+          
+          // Procesar automáticamente si hay solicitudes y está habilitado
+          if (solicitudesData.length > 0 && procesarAutomaticamente) {
+            console.log('Procesamiento automático activado, procesando solicitudes...');
+            setTimeout(() => {
+              procesarSolicitudes();
+            }, 2000); // Esperar 2 segundos para dar tiempo a cargar todos los datos
+          }
+        },
+        (error) => {
+          console.error('Error al cargar solicitudes pendientes:', error);
+          toast.error('Error al cargar las solicitudes pendientes');
+        }
+      );
+      
+      // Retornar función de limpieza para desuscribirse cuando el componente se desmonte
+      return () => {
+        console.log('Desuscribiendo listeners de Firebase...');
+        unsubscribeCentros();
+        unsubscribeAsignaciones();
+        unsubscribeSolicitudes();
+      };
+    } catch (e) {
+      console.error('Error al inicializar la carga de datos:', e);
+      toast.error('Error al cargar los datos');
+      setIsLoading(false);
+      // Importante: devolver una función de limpieza también en caso de error
+      return () => {};
+    }
+  };
+
+  // Cargar datos al inicio
+  useEffect(() => {
+    let unsubscribeFunc = null;
+    
+    try {
+      console.log('Inicializando carga de datos...');
+      unsubscribeFunc = cargarTodosLosDatos();
+      console.log('Listeners de Firebase inicializados correctamente');
+    } catch (error) {
+      console.error('Error al inicializar listeners de Firebase:', error);
+      toast.error('Error al cargar los datos. Por favor, recargue la página.');
+    }
+    
+    // Función de limpieza
+    return () => {
+      console.log('Desmontando componente, limpiando listeners...');
+      if (typeof unsubscribeFunc === 'function') {
+        unsubscribeFunc();
+      }
+    };
+  }, []); // Sin dependencias para ejecutar solo una vez
+
   // Función para procesar todas las solicitudes al enviar una nueva
-  const procesarAutomaticamente = async () => {
+  const procesarTodasLasSolicitudes = async () => {
     // Mostrar mensaje de procesamiento
     setIsProcessing(true);
     
     try {
       await procesarSolicitudes();
-      // El procesamiento ya maneja la notificación y recarga
+      // El procesamiento ya maneja la notificación de éxito
     } catch (error) {
       console.error("Error al procesar automáticamente:", error);
       setIsProcessing(false);
       
       // Verificar si es un error de cuota excedida
       if (error.message && error.message.includes('quota')) {
-        alert(`Firebase Quota Exceeded: Se ha superado el límite de operaciones gratuitas. Intente más tarde o contacte al administrador para actualizar el plan de Firebase.`);
+        toast.error('Firebase Quota Exceeded: Se ha superado el límite de operaciones gratuitas. Intente más tarde o contacte al administrador para actualizar el plan de Firebase.');
       } else {
-        alert("Error al actualizar asignaciones: " + error.message);
+        toast.error("Error al actualizar asignaciones: " + error.message);
       }
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -807,12 +430,12 @@ function App() {
     e.preventDefault();
     const numOrden = parseInt(orderNumber, 10);
     if (isNaN(numOrden) || numOrden <= 0) {
-      alert('Por favor, introduce un número de orden válido');
+      toast.error('Por favor, introduce un número de orden válido');
       return;
     }
     
     if (centrosSeleccionados.length === 0) {
-      alert('Por favor, selecciona al menos un centro de trabajo');
+      toast.error('Por favor, selecciona al menos un centro de trabajo');
       return;
     }
 
@@ -820,12 +443,12 @@ function App() {
     const existingAssignment = assignments.find(a => a.order === numOrden);
     if (existingAssignment) {
       setAssignment(existingAssignment);
-      alert(`Ya tienes una plaza asignada en: ${existingAssignment.centro}. Puedes seguir enviando solicitudes para otras plazas que te interesen aunque ya tengas una asignada.`);
+      toast.info(`Ya tienes una plaza asignada en: ${existingAssignment.centro}. Puedes seguir enviando solicitudes para otras plazas que te interesen aunque ya tengas una asignada.`);
       // Permitimos continuar para que el usuario pueda añadir más solicitudes si lo desea
     }
     
     // Mostrar el indicador de carga
-    setIsProcessing(true);
+    setIsSubmitting(true);
     
     try {
       // Convertir todos los IDs a números para asegurar compatibilidad
@@ -857,8 +480,8 @@ function App() {
         } catch (error) {
           console.error("Error al actualizar solicitud:", error);
           if (error.message && (error.message.includes('quota') || error.message.includes('permission'))) {
-            setIsProcessing(false);
-            alert('Error de permisos en Firebase: No se pudo actualizar la solicitud. Contacte al administrador.');
+            setIsSubmitting(false);
+            toast.error('Error de permisos en Firebase: No se pudo actualizar la solicitud. Contacte al administrador.');
             return;
           }
           throw error;
@@ -873,8 +496,8 @@ function App() {
         } catch (error) {
           console.error("Error al crear solicitud:", error);
           if (error.message && (error.message.includes('quota') || error.message.includes('permission'))) {
-            setIsProcessing(false);
-            alert('Error de permisos en Firebase: No se pudo crear la solicitud. Contacte al administrador.');
+            setIsSubmitting(false);
+            toast.error('Error de permisos en Firebase: No se pudo crear la solicitud. Contacte al administrador.');
             return;
           }
           throw error;
@@ -904,7 +527,7 @@ function App() {
         }
         
         // Informar al usuario
-        alert(`Tu solicitud ha sido ${solicitudExistenteLocal ? 'actualizada' : 'registrada'} correctamente. Se procesará según prioridad por número de orden.`);
+        toast.success(`Tu solicitud ha sido ${solicitudExistenteLocal ? 'actualizada' : 'registrada'} correctamente. Se procesará según prioridad por número de orden.`);
         
         // Limpiar el formulario
         setOrderNumber('');
@@ -913,1490 +536,32 @@ function App() {
         // Intentar procesar automáticamente las solicitudes
         try {
           console.log("Procesando todas las solicitudes automáticamente...");
-          await procesarSolicitudes();
-          
-          // El procesamiento puede tardar, así que esperamos un poco antes de recargar
-          setTimeout(() => {
-            setIsProcessing(false);
-            // Recargar la página para actualizar toda la información
-            window.location.reload();
-          }, 1500);
+          await procesarTodasLasSolicitudes();
         } catch (error) {
           console.error("Error al procesar solicitudes automáticamente:", error);
           
           // Si es un error de permisos, informar al usuario pero la solicitud ya está guardada
           if (error.message && (error.message.includes('quota') || error.message.includes('permission'))) {
-            setTimeout(() => {
-              setIsProcessing(false);
-              alert('Tu solicitud ha sido guardada, pero no se pudieron procesar las asignaciones debido a restricciones de Firebase. Las asignaciones se procesarán más tarde.');
-              window.location.reload(); // Recargar igualmente para actualizar la interfaz
-            }, 1000);
+            toast.error('Tu solicitud ha sido guardada, pero no se pudieron procesar las asignaciones debido a restricciones de Firebase. Las asignaciones se procesarán más tarde.');
             return;
           }
           
-          // Para otros errores, informar y recargar
-          setTimeout(() => {
-            setIsProcessing(false);
-            alert("Se ha guardado tu solicitud, pero ha ocurrido un error al procesar las asignaciones. Por favor, intenta más tarde.");
-            window.location.reload(); // Recargar igualmente para actualizar la interfaz
-          }, 1000);
+          // Para otros errores, informar
+          toast.error("Se ha guardado tu solicitud, pero ha ocurrido un error al procesar las asignaciones. Por favor, intenta más tarde.");
         }
       } else {
         // Si no se pudo guardar, informar al usuario
-        setIsProcessing(false);
-        alert("No se pudo procesar tu solicitud. Por favor, intenta más tarde.");
+        toast.error("No se pudo procesar tu solicitud. Por favor, intenta más tarde.");
       }
     } catch (error) {
       console.error("Error al guardar solicitud:", error);
       // Mostrar error pero mantener el formulario para permitir intentar de nuevo
-      alert("Error al guardar la solicitud: " + error.message);
+      toast.error("Error al guardar la solicitud: " + error.message);
     } finally {
-      // Ocultar indicador de carga si no se ha hecho ya
-      setTimeout(() => {
-        setIsProcessing(false);
-      }, 500);
+      // Ocultar indicador de carga
+      setIsSubmitting(false);
     }
   };
-
-  // Función para manejar la selección de múltiples centros con checkboxes
-  const handleCentroChange = (e) => {
-    const centroId = parseInt(e.target.value, 10); // Convertir a número para evitar problemas de comparación
-    const isChecked = e.target.checked;
-    
-    if (isChecked) {
-      // Añadir a la selección
-      setCentrosSeleccionados(prev => [...prev, centroId]);
-    } else {
-      // Quitar de la selección
-      setCentrosSeleccionados(prev => prev.filter(id => id !== centroId));
-    }
-  };
-
-  return (
-    <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '20px', fontFamily: 'Arial, sans-serif' }}>
-      {/* Añadir estilo para la animación de carga */}
-      <style>{spinnerAnimation}</style>
-      <div style={{ textAlign: 'center', marginBottom: '30px' }}>
-        <h1 style={headerStyle}>
-          Asignación de Plazas de Enfermería
-          <div style={headerDecorationStyle}></div>
-        </h1>
-        {nursingDecoration}
-      </div>
-      
-      {isLoading ? (
-        <div style={{ textAlign: 'center', padding: '50px' }}>
-          <h2>Cargando datos...</h2>
-          <p>Por favor espere mientras se cargan los centros de trabajo.</p>
-        </div>
-      ) : (
-        <>
-          <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ddd', borderRadius: '5px' }}>
-            <h2 style={{ color: '#18539E' }}>Información General</h2>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
-              <div style={{ padding: '10px', backgroundColor: '#e3f2fd', borderRadius: '5px' }}>
-                <h3 style={{ margin: '0 0 10px 0', fontSize: '16px' }}>Centros</h3>
-                <p style={{ margin: '0', fontSize: '24px', fontWeight: 'bold' }}>{availablePlazas.length}</p>
-              </div>
-               
-              <div style={{ padding: '10px', backgroundColor: '#e8f5e9', borderRadius: '5px' }}>
-                <h3 style={{ margin: '0 0 10px 0', fontSize: '16px' }}>Plazas Totales</h3>
-                <p style={{ margin: '0', fontSize: '24px', fontWeight: 'bold' }}>{totalPlazas}</p>
-              </div>
-               
-              <div style={{ padding: '10px', backgroundColor: '#fff3e0', borderRadius: '5px' }}>
-                <h3 style={{ margin: '0 0 10px 0', fontSize: '16px' }}>Plazas Asignadas</h3>
-                <p style={{ margin: '0', fontSize: '24px', fontWeight: 'bold' }}>{assignments.length}</p>
-              </div>
-               
-              <div style={{ padding: '10px', backgroundColor: '#f3e5f5', borderRadius: '5px' }}>
-                <h3 style={{ margin: '0 0 10px 0', fontSize: '16px' }}>Plazas Disponibles</h3>
-                <p style={{ margin: '0', fontSize: '24px', fontWeight: 'bold' }}>{totalPlazas - assignments.length}</p>
-              </div>
-            </div>
-          </div>
-          
-          {/* Mover el Dashboard (historial de asignaciones) al principio */}
-          <div style={{ 
-            marginBottom: '20px', 
-            padding: '15px', 
-            border: '1px solid #ddd', 
-            borderRadius: '5px',
-            maxHeight: '400px',
-            overflowY: 'auto',
-            position: 'relative'
-          }}>
-            <div className="scroll-indicator" style={{
-              position: 'absolute',
-              right: '10px',
-              top: '50%',
-              transform: 'translateY(-50%)',
-              width: '8px',
-              height: '100px',
-              backgroundColor: 'rgba(24, 83, 158, 0.2)',
-              borderRadius: '4px',
-              zIndex: 1,
-              display: assignments.length > 10 ? 'block' : 'none'
-            }}>
-              <div style={{
-                width: '100%',
-                height: '30px',
-                backgroundColor: 'rgba(24, 83, 158, 0.6)',
-                borderRadius: '4px',
-                position: 'absolute',
-                top: '0',
-                animation: 'moveDown 2s ease-in-out infinite',
-              }}></div>
-            </div>
-            <style>
-              {`
-                @keyframes moveDown {
-                  0% { top: 0; }
-                  50% { top: calc(100% - 30px); }
-                  100% { top: 0; }
-                }
-                @media (max-width: 768px) {
-                  .scroll-indicator {
-                    display: block !important;
-                  }
-                }
-              `}
-            </style>
-            <Dashboard assignments={assignments} />
-            
-            {/* Botón para actualizar asignaciones */}
-            <div style={{ 
-              marginTop: '20px', 
-              textAlign: 'center',
-              display: solicitudes.length > 0 ? 'block' : 'none'
-            }}>
-              <button 
-                onClick={procesarAutomaticamente} 
-                disabled={isProcessing || solicitudes.length === 0}
-                style={{ 
-                  padding: '10px 20px', 
-                  backgroundColor: isProcessing ? '#cccccc' : '#18539E', 
-                  color: 'white', 
-                  border: 'none', 
-                  borderRadius: '4px', 
-                  cursor: isProcessing || solicitudes.length === 0 ? 'not-allowed' : 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  margin: '0 auto'
-                }}
-              >
-                {isProcessing && (
-                  <span 
-                    style={{ 
-                      display: 'inline-block', 
-                      width: '20px', 
-                      height: '20px', 
-                      border: '3px solid rgba(255,255,255,0.3)', 
-                      borderRadius: '50%', 
-                      borderTopColor: 'white', 
-                      animation: 'spin 1s ease-in-out infinite',
-                      marginRight: '10px'
-                    }} 
-                  />
-                )}
-                {isProcessing ? 'Actualizando asignaciones...' : 'Actualizar Asignaciones por Número de Orden'}
-              </button>
-              <p style={{ fontSize: '12px', color: '#666', marginTop: '5px' }}>
-                Este botón procesa todas las solicitudes pendientes y asigna plazas según prioridad por número de orden
-              </p>
-            </div>
-          </div>
-          
-          {/* Solicitudes pendientes justo después de las asignaciones */}
-          {solicitudes.length > 0 && (
-            <div style={{ marginTop: '30px', marginBottom: '30px' }}>
-              <h2 style={{ color: '#18539E' }}>Solicitudes Pendientes</h2>
-              <div style={{ marginBottom: '15px', fontSize: '14px' }}>
-                A continuación se muestran todas las solicitudes pendientes con sus preferencias de centros en orden.
-                <p style={{ color: '#d35400', fontWeight: 'bold', marginTop: '5px' }}>
-                  Las solicitudes se procesan por orden de prioridad (número de orden menor = mayor prioridad)
-                </p>
-              </div>
-              
-              {/* Buscador para solicitudes */}
-              <div style={{ marginBottom: '15px' }}>
-                <div style={{ marginBottom: '10px' }}>
-        <input 
-                    type="text"
-                    placeholder="Buscar por número de orden..."
-                    value={solicitudesSearch}
-                    onChange={(e) => {
-                      setSolicitudesSearch(e.target.value);
-                      setSolicitudesPage(1); // Resetear a página 1 al buscar
-                    }}
-                    style={{
-                      padding: '8px',
-                      border: '1px solid #ddd',
-                      borderRadius: '4px',
-                      width: '100%'
-                    }}
-                  />
-                </div>
-                
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ fontSize: '14px' }}>
-                    {(() => {
-                      // Filtrar solicitudes según la búsqueda
-                      const filteredSolicitudes = solicitudes.filter(sol => 
-                        solicitudesSearch === '' || 
-                        String(sol.orden).includes(solicitudesSearch)
-                      ).sort((a, b) => a.orden - b.orden);
-                      
-                      // Calcular índices para paginación
-                      const indexOfLastItem = solicitudesPage * solicitudesPerPage;
-                      const indexOfFirstItem = indexOfLastItem - solicitudesPerPage;
-                      const currentSolicitudes = filteredSolicitudes.slice(indexOfFirstItem, indexOfLastItem);
-                      
-                      return `Mostrando ${filteredSolicitudes.length > 0 ? indexOfFirstItem + 1 : 0}-${Math.min(indexOfLastItem, filteredSolicitudes.length)} de ${filteredSolicitudes.length} solicitudes`;
-                    })()}
-                  </div>
-                  
-        <div>
-                    <select 
-                      value={solicitudesPerPage} 
-                      onChange={(e) => {
-                        setSolicitudesPerPage(Number(e.target.value));
-                        setSolicitudesPage(1); // Resetear a página 1 al cambiar items por página
-                      }}
-                      style={{
-                        padding: '8px',
-                        border: '1px solid #ddd',
-                        borderRadius: '4px'
-                      }}
-                    >
-                      <option value={10}>10 por página</option>
-                      <option value={25}>25 por página</option>
-                      <option value={50}>50 por página</option>
-                      <option value={100}>100 por página</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-              
-              <div style={{ overflowX: 'auto' }}>
-                <table className="responsive-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
-                  <thead>
-                    <tr style={{ backgroundColor: '#fdf2e9' }}>
-                      <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#d35400' }}>Nº Orden</th>
-                      <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#d35400' }}>Fecha/Hora</th>
-                      <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#d35400' }}>Centros Seleccionados (en orden de preferencia)</th>
-                      <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', color: '#d35400' }}>Estado</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(() => {
-                      // Filtrar solicitudes según la búsqueda
-                      const filteredSolicitudes = solicitudes.filter(sol => 
-                        solicitudesSearch === '' || 
-                        String(sol.orden).includes(solicitudesSearch)
-                      ).sort((a, b) => a.orden - b.orden);
-                      
-                      // Aplicar paginación
-                      const indexOfLastItem = solicitudesPage * solicitudesPerPage;
-                      const indexOfFirstItem = indexOfLastItem - solicitudesPerPage;
-                      const currentSolicitudes = filteredSolicitudes.slice(indexOfFirstItem, indexOfLastItem);
-                      
-                      // Renderizar las solicitudes filtradas y paginadas
-                      return currentSolicitudes.map((solicitud, index) => {
-                        // Convertir timestamp a fecha legible
-                        const fecha = new Date(solicitud.timestamp);
-                        const fechaFormateada = `${fecha.toLocaleDateString()} ${fecha.toLocaleTimeString()}`;
-                        
-                        // Verificar si tiene asignación
-                        const tieneAsignacion = assignments.some(a => a.order === solicitud.orden);
-                        
-                        return (
-                          <tr key={index} style={{ 
-                            backgroundColor: tieneAsignacion ? '#e8f5e9' : (index % 2 === 0 ? 'white' : '#fdf2e9'),
-                            opacity: tieneAsignacion ? 0.8 : 1
-                          }}>
-                            <td style={{ 
-                              border: '1px solid #ddd', 
-                              padding: '10px', 
-                              fontWeight: 'bold',
-                              backgroundColor: solicitud.orden <= 50 ? '#fff3cd' : 'inherit' // Destacar órdenes bajos
-                            }}>
-                              {solicitud.orden}
-                              {solicitud.orden <= 50 && (
-                                <span style={{ 
-                                  display: 'inline-block', 
-                                  marginLeft: '5px', 
-                                  fontSize: '12px', 
-                                  color: '#856404',
-                                  backgroundColor: '#fff3cd',
-                                  padding: '2px 5px',
-                                  borderRadius: '3px'
-                                }}>
-                                  Alta prioridad
-                                </span>
-                              )}
-                            </td>
-                            <td style={{ border: '1px solid #ddd', padding: '10px' }}>{fechaFormateada}</td>
-                            <td style={{ border: '1px solid #ddd', padding: '10px' }}>
-                              <ol style={{ margin: '0', paddingLeft: '20px' }}>
-                                {solicitud.centrosIds.map((centroId, idx) => {
-                                  // Buscar detalles del centro
-                                  const centro = availablePlazas.find(p => p.id === centroId);
-                                  
-                                  // Buscar si este centro concreto tiene asignación para este orden
-                                  const asignadoAEsteCentro = assignments.some(a => 
-                                    a.order === solicitud.orden && a.id === centroId);
-                                    
-                                  return (
-                                    <li key={idx} style={{ 
-                                      marginBottom: '5px',
-                                      backgroundColor: asignadoAEsteCentro ? '#e8f5e9' : 'inherit',
-                                      padding: asignadoAEsteCentro ? '3px 5px' : '0',
-                                      borderRadius: asignadoAEsteCentro ? '3px' : '0'
-                                    }}>
-                                      {centro ? (
-                                        <>
-                                          <strong>{centro.centro}</strong> - {centro.localidad} ({centro.municipio})
-                                          {(centro.plazas - centro.asignadas) <= 0 && !asignadoAEsteCentro && (
-                                            <span style={{ 
-                                              color: 'red', 
-                                              marginLeft: '10px', 
-                                              fontSize: '12px', 
-                                              fontWeight: 'bold' 
-                                            }}>
-                                              COMPLETO
-                                            </span>
-                                          )}
-                                          {asignadoAEsteCentro && (
-                                            <span style={{ 
-                                              color: 'green', 
-                                              marginLeft: '10px', 
-                                              fontSize: '12px', 
-                                              fontWeight: 'bold',
-                                              border: '1px solid green',
-                                              padding: '1px 4px',
-                                              borderRadius: '3px'
-                                            }}>
-                                              ✓ ASIGNADO
-                                            </span>
-                                          )}
-                                        </>
-                                      ) : (
-                                        `Centro ID: ${centroId} (no encontrado)`
-                                      )}
-                                    </li>
-                                  );
-                                })}
-                              </ol>
-                            </td>
-                            <td style={{ 
-                              border: '1px solid #ddd', 
-                              padding: '10px', 
-                              textAlign: 'center',
-                              fontWeight: 'bold'
-                            }}>
-                              {tieneAsignacion ? (
-                                <span style={{ color: 'green' }}>
-                                  ASIGNADO
-                                </span>
-                              ) : (
-                                <span style={{ color: '#d35400' }}>
-                                  EN ESPERA
-                                </span>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      });
-                    })()}
-                  </tbody>
-                </table>
-              </div>
-              
-              {/* Paginación para solicitudes */}
-              {(() => {
-                // Filtrar solicitudes según la búsqueda
-                const filteredSolicitudes = solicitudes.filter(sol => 
-                  solicitudesSearch === '' || 
-                  String(sol.orden).includes(solicitudesSearch)
-                );
-                
-                // Calcular total de páginas
-                const totalPages = Math.ceil(filteredSolicitudes.length / solicitudesPerPage);
-                
-                if (totalPages <= 1) return null;
-                
-                // Funciones para navegar entre páginas
-                const paginate = (pageNumber) => setSolicitudesPage(pageNumber);
-                const prevPage = () => solicitudesPage > 1 && setSolicitudesPage(solicitudesPage - 1);
-                const nextPage = () => solicitudesPage < totalPages && setSolicitudesPage(solicitudesPage + 1);
-                
-                return (
-                  <div style={{ 
-                    marginTop: '20px', 
-                    display: 'flex', 
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    gap: '10px'
-                  }}>
-                    <button 
-                      onClick={prevPage} 
-                      disabled={solicitudesPage === 1}
-                      style={{
-                        padding: '5px 10px',
-                        border: '1px solid #ddd',
-                        borderRadius: '4px',
-                        backgroundColor: solicitudesPage === 1 ? '#f2f2f2' : 'white',
-                        cursor: solicitudesPage === 1 ? 'not-allowed' : 'pointer'
-                      }}
-                    >
-                      &laquo; Anterior
-                    </button>
-                    
-                    <div style={{ display: 'flex', gap: '5px' }}>
-                      {/* Primera página */}
-                      {solicitudesPage > 3 && (
-                        <button 
-                          onClick={() => paginate(1)}
-                          style={{
-                            padding: '5px 10px',
-                            border: '1px solid #ddd',
-                            borderRadius: '4px',
-                            backgroundColor: 'white'
-                          }}
-                        >
-                          1
-                        </button>
-                      )}
-                      
-                      {/* Elipsis izquierdo */}
-                      {solicitudesPage > 4 && <span style={{ padding: '5px' }}>...</span>}
-                      
-                      {/* Páginas cercanas a la actual */}
-                      {[...Array(totalPages).keys()].map(number => {
-                        const pageNumber = number + 1;
-                        if (
-                          pageNumber === 1 ||
-                          pageNumber === totalPages ||
-                          (pageNumber >= solicitudesPage - 1 && pageNumber <= solicitudesPage + 1)
-                        ) {
-                          return (
-                            <button
-                              key={number}
-                              onClick={() => paginate(pageNumber)}
-                              style={{
-                                padding: '5px 10px',
-                                border: '1px solid #ddd',
-                                borderRadius: '4px',
-                                backgroundColor: solicitudesPage === pageNumber ? '#d35400' : 'white',
-                                color: solicitudesPage === pageNumber ? 'white' : 'black'
-                              }}
-                            >
-                              {pageNumber}
-                            </button>
-                          );
-                        }
-                        return null;
-                      })}
-                      
-                      {/* Elipsis derecho */}
-                      {solicitudesPage < totalPages - 3 && <span style={{ padding: '5px' }}>...</span>}
-                      
-                      {/* Última página */}
-                      {solicitudesPage < totalPages - 2 && (
-                        <button 
-                          onClick={() => paginate(totalPages)}
-                          style={{
-                            padding: '5px 10px',
-                            border: '1px solid #ddd',
-                            borderRadius: '4px',
-                            backgroundColor: 'white'
-                          }}
-                        >
-                          {totalPages}
-                        </button>
-                      )}
-                    </div>
-                    
-                    <button 
-                      onClick={nextPage} 
-                      disabled={solicitudesPage === totalPages}
-                      style={{
-                        padding: '5px 10px',
-                        border: '1px solid #ddd',
-                        borderRadius: '4px',
-                        backgroundColor: solicitudesPage === totalPages ? '#f2f2f2' : 'white',
-                        cursor: solicitudesPage === totalPages ? 'not-allowed' : 'pointer'
-                      }}
-                    >
-                      Siguiente &raquo;
-                    </button>
-                  </div>
-                );
-              })()}
-            </div>
-          )}
-          
-          {assignment && (
-            <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#e8f5e9', border: '1px solid #4CAF50', borderRadius: '5px' }}>
-              <h2 style={{ color: '#18539E' }}>Tu Asignación</h2>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-          <p><strong>Número de Orden:</strong> {assignment.order}</p>
-          <p><strong>Localidad:</strong> {assignment.localidad}</p>
-          <p><strong>Centro de Trabajo:</strong> {assignment.centro}</p>
-          <p><strong>Municipio:</strong> {assignment.municipio}</p>
-              </div>
-        </div>
-      )}
-          
-          <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ddd', borderRadius: '5px' }}>
-            <h2 style={{ color: '#18539E' }}>Solicitar Plaza</h2>
-            <form onSubmit={handleOrderSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-              <div>
-                <label htmlFor="orderInput" style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Número de Orden:</label>
-                <input 
-                  id="orderInput"
-                  type="number" 
-                  value={orderNumber} 
-                  onChange={e => setOrderNumber(e.target.value)} 
-                  placeholder="Introduce tu número de orden" 
-                  style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
-                  required
-                  min="1"
-                  disabled={isProcessing}
-                />
-              </div>
-              
-              <div>
-                <label htmlFor="centrosGroup" style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
-                  Centros de Trabajo (selecciona múltiples en orden de preferencia):
-                </label>
-                
-                <div style={{ marginBottom: '10px' }}>
-                  <input
-                    type="text"
-                    placeholder="Buscar centro por nombre, localidad o municipio..."
-                    value={busquedaCentros}
-                    onChange={(e) => setBusquedaCentros(e.target.value)}
-                    style={{
-                      padding: '8px',
-                      border: '1px solid #ddd',
-                      borderRadius: '4px',
-                      width: '100%',
-                      marginBottom: '8px'
-                    }}
-                    disabled={isProcessing}
-                  />
-                </div>
-                
-                <div className="mobile-scroll-hint" style={{
-                  display: 'none',
-                  marginBottom: '5px',
-                  background: 'rgba(24, 83, 158, 0.1)',
-                  padding: '6px 10px',
-                  borderRadius: '4px',
-                  fontSize: '13px',
-                  color: '#18539E',
-                  fontWeight: 'bold',
-                  textAlign: 'center'
-                }}>
-                  ↓ Desliza para ver más centros ↓
-                </div>
-                <div 
-                  id="centrosGroup"
-                  style={{
-                    maxHeight: '250px',
-                    overflowY: 'auto',
-                    border: '1px solid #ddd',
-                    borderRadius: '4px',
-                    padding: '10px',
-                    backgroundColor: isProcessing ? '#f5f5f5' : '#fff',
-                    position: 'relative'
-                  }}
-                >
-                  <style>
-                    {`
-                      @media (max-width: 768px) {
-                        .mobile-scroll-hint {
-                          display: block !important;
-                        }
-                        #centrosGroup {
-                          position: relative;
-                          overflow-y: auto;
-                          -webkit-overflow-scrolling: touch;
-                          max-height: 300px !important;
-                          padding-bottom: 25px !important;
-                        }
-                        #centrosGroup::after {
-                          content: '';
-                          position: absolute;
-                          bottom: 0;
-                          left: 0;
-                          right: 0;
-                          height: 25px;
-                          background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(24, 83, 158, 0.1));
-                          pointer-events: none;
-                          z-index: 5;
-                          animation: pulse 1.5s infinite alternate;
-                        }
-                        @keyframes pulse {
-                          from { opacity: 0.3; }
-                          to { opacity: 0.8; }
-                        }
-                        .scroll-down-arrow {
-                          position: absolute;
-                          bottom: 5px;
-                          left: 50%;
-                          transform: translateX(-50%);
-                          width: 20px;
-                          height: 20px;
-                          background-color: rgba(24, 83, 158, 0.6);
-                          border-radius: 50%;
-                          display: flex;
-                          align-items: center;
-                          justify-content: center;
-                          color: white;
-                          font-size: 14px;
-                          z-index: 6;
-                          animation: bounce 1s infinite alternate;
-                        }
-                        @keyframes bounce {
-                          from { transform: translateX(-50%) translateY(0); }
-                          to { transform: translateX(-50%) translateY(5px); }
-                        }
-                      }
-                    `}
-                  </style>
-                  <div className="scroll-down-arrow" style={{ display: 'none' }}>
-                    ↓
-                  </div>
-                  {availablePlazas
-                    .filter(plaza => 
-                      busquedaCentros === '' || 
-                      plaza.centro.toLowerCase().includes(busquedaCentros.toLowerCase()) ||
-                      plaza.localidad.toLowerCase().includes(busquedaCentros.toLowerCase()) ||
-                      plaza.municipio.toLowerCase().includes(busquedaCentros.toLowerCase()) ||
-                      String(plaza.id).includes(busquedaCentros)
-                    )
-                    .sort((a, b) => a.id - b.id)
-                    .map((plaza, index) => {
-                      const sinPlazasDisponibles = (plaza.plazas - plaza.asignadas) <= 0;
-                      
-                      return (
-                        <div key={index} style={{ 
-                          marginBottom: '8px', 
-                          display: 'flex', 
-                          alignItems: 'center',
-                          opacity: sinPlazasDisponibles ? 0.85 : 1
-                        }}>
-                          <input
-                            type="checkbox"
-                            id={`centro-${plaza.id}`}
-                            value={plaza.id}
-                            checked={centrosSeleccionados.includes(plaza.id)}
-                            onChange={handleCentroChange}
-                            style={{ marginRight: '8px' }}
-                            disabled={isProcessing}
-                          />
-                          <label 
-                            htmlFor={`centro-${plaza.id}`} 
-                            style={{ 
-                              fontSize: '14px', 
-                              cursor: isProcessing ? 'default' : 'pointer',
-                              textDecoration: sinPlazasDisponibles ? 'none' : 'none'
-                            }}
-                          >
-                            {plaza.id}. <strong className="centro-nombre">{plaza.centro}</strong> - {plaza.localidad} ({plaza.municipio}) 
-                            {plaza.plazas > 1 ? 
-                              ` - ${Math.max(0, plaza.plazas - plaza.asignadas)} plaza${(plaza.plazas - plaza.asignadas) !== 1 ? 's' : ''} disponible${(plaza.plazas - plaza.asignadas) !== 1 ? 's' : ''}` : 
-                              ` - ${sinPlazasDisponibles ? '0 plazas disponibles' : '1 plaza disponible'}`
-                            }
-                            {sinPlazasDisponibles && (
-                              <span style={{ 
-                                backgroundColor: '#f8d7da', 
-                                color: '#721c24', 
-                                padding: '2px 6px', 
-                                borderRadius: '4px', 
-                                fontSize: '12px',
-                                marginLeft: '5px',
-                                fontWeight: 'bold'
-                              }}>
-                                COMPLETO
-                              </span>
-                            )}
-                            {sinPlazasDisponibles && (
-                              <span style={{ 
-                                color: '#666', 
-                                fontSize: '12px',
-                                marginLeft: '5px',
-                                fontStyle: 'italic'
-                              }}>
-                                (puedes seleccionarlo, se asignará por orden prioritario)
-                              </span>
-                            )}
-                          </label>
-                        </div>
-                      );
-                    })}
-                    
-                  {availablePlazas
-                    .filter(plaza => 
-                      busquedaCentros !== '' && (
-                        plaza.centro.toLowerCase().includes(busquedaCentros.toLowerCase()) ||
-                        plaza.localidad.toLowerCase().includes(busquedaCentros.toLowerCase()) ||
-                        plaza.municipio.toLowerCase().includes(busquedaCentros.toLowerCase()) ||
-                        String(plaza.id).includes(busquedaCentros)
-                      )
-                    ).length === 0 && busquedaCentros !== '' && (
-                      <div style={{ padding: '10px', textAlign: 'center', color: '#666' }}>
-                        No se encontraron centros que coincidan con "{busquedaCentros}"
-                      </div>
-                    )}
-                </div>
-              </div>
-              
-              <button 
-                type="submit" 
-                disabled={isProcessing}
-                style={{ 
-                  padding: '10px', 
-                  backgroundColor: isProcessing ? '#cccccc' : '#18539E', 
-                  color: 'white', 
-                  border: 'none', 
-                  borderRadius: '4px', 
-                  cursor: isProcessing ? 'not-allowed' : 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center'
-                }}
-              >
-                {isProcessing && (
-                  <span 
-                    style={{ 
-                      display: 'inline-block', 
-                      width: '20px', 
-                      height: '20px', 
-                      border: '3px solid rgba(255,255,255,0.3)', 
-                      borderRadius: '50%', 
-                      borderTopColor: 'white', 
-                      animation: 'spin 1s ease-in-out infinite',
-                      marginRight: '10px'
-                    }} 
-                  />
-                )}
-                {isProcessing ? 'Guardando solicitud...' : 'Enviar Solicitud'}
-              </button>
-            </form>
-          </div>
-          
-          <PlazasDisponibles availablePlazas={availablePlazas} />
-          
-          {/* Estado de las plazas */ }
-          
-          {/* Componente de Footer */}
-          <div style={{ marginTop: '40px', padding: '20px 0', borderTop: '1px solid #ddd', textAlign: 'center', fontSize: '12px', color: '#888' }}>
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '10px'
-            }}>
-              <p style={{ margin: 0 }}>
-                Hecho por <a 
-                  href="https://ag-marketing.es" 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                  style={{ 
-                    color: '#007BFF', 
-                    textDecoration: 'none', 
-                    fontWeight: 'bold'
-                  }}
-                >
-                  AG Marketing
-                </a>
-              </p>
-              <img 
-                src={`${process.env.PUBLIC_URL}/AG_LOGO.png`}
-                alt="AG Marketing Logo" 
-                style={{ height: '30px', width: 'auto' }} 
-              />
-            </div>
-          </div>
-        </>
-      )}
-    </div>
-  );
 }
-
-function Dashboard({ assignments }) {
-  if (!assignments.length) return null;
-  
-  // Agrupar asignaciones por número de orden
-  const asignacionesPorOrden = assignments.reduce((acc, asignacion) => {
-    if (!acc[asignacion.order]) {
-      acc[asignacion.order] = [];
-    }
-    acc[asignacion.order].push(asignacion);
-    return acc;
-  }, {});
-  
-  // Ordenar los números de orden
-  const ordenesOrdenados = Object.keys(asignacionesPorOrden)
-    .map(Number)
-    .sort((a, b) => a - b);
-  
-  // Función para exportar a Excel
-  const exportToExcel = () => {
-    // Crear un nuevo libro de trabajo
-    const workbook = XLSX.utils.book_new();
-    
-    // Convertir los datos a formato de hoja de cálculo
-    const dataParaExcel = [];
-    
-    // Preparar datos para Excel (formato plano para la tabla)
-    ordenesOrdenados.forEach(orden => {
-      const asignacionesDeEsteOrden = asignacionesPorOrden[orden];
-      asignacionesDeEsteOrden.forEach(asignacion => {
-        dataParaExcel.push({
-          'Número de Orden': asignacion.order,
-          'Localidad': asignacion.localidad,
-          'Centro de Trabajo': asignacion.centro,
-          'Municipio': asignacion.municipio
-        });
-      });
-    });
-    
-    // Crear hoja de cálculo
-    const worksheet = XLSX.utils.json_to_sheet(dataParaExcel);
-    
-    // Añadir la hoja al libro
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Asignaciones');
-    
-    // Generar el archivo y descargarlo
-    XLSX.writeFile(workbook, 'asignaciones_plazas.xlsx');
-  };
-  
-  return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-        <h2 style={{ color: '#18539E' }}>Historial de Asignaciones</h2>
-        <button 
-          onClick={exportToExcel} 
-          style={{ 
-            padding: '8px 16px', 
-            backgroundColor: '#18539E', 
-            color: 'white', 
-            border: 'none', 
-            borderRadius: '4px', 
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center'
-          }}
-        >
-          <span style={{ marginRight: '5px' }}>📊</span>
-          Exportar a Excel
-        </button>
-      </div>
-      
-      <div style={{ marginBottom: '15px', fontSize: '14px' }}>
-        Las plazas se asignan por número de orden (a menor número, mayor prioridad).
-      </div>
-      
-      <div style={{ overflowX: 'auto', paddingBottom: '5px' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead>
-            <tr style={{ backgroundColor: '#EBF4FF' }}>
-              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#18539E' }}>Número de Orden</th>
-              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#18539E' }}>Plazas Asignadas</th>
-          </tr>
-        </thead>
-        <tbody>
-            {ordenesOrdenados.map((orden, index) => {
-              const asignacionesDeEsteOrden = asignacionesPorOrden[orden];
-              
-              return (
-                <tr key={index} style={{ 
-                  backgroundColor: index % 2 === 0 ? 'white' : '#f9f9f9',
-                  border: orden <= 50 ? '2px solid #fff3cd' : '1px solid #ddd' // Destacar órdenes altos
-                }}>
-                  <td style={{ 
-                    border: '1px solid #ddd', 
-                    padding: '10px', 
-                    fontWeight: 'bold',
-                    backgroundColor: orden <= 50 ? '#fff3cd' : 'inherit'
-                  }}>
-                    {orden}
-                    {orden <= 50 && (
-                      <span style={{ 
-                        display: 'inline-block', 
-                        marginLeft: '5px', 
-                        fontSize: '12px', 
-                        color: '#856404',
-                        padding: '2px 5px',
-                        borderRadius: '3px'
-                      }}>
-                        Alta prioridad
-                      </span>
-                    )}
-                  </td>
-                  <td style={{ border: '1px solid #ddd', padding: '10px' }}>
-                    <ol style={{ margin: 0, paddingLeft: '20px' }}>
-                      {asignacionesDeEsteOrden.map((asignacion, idx) => {
-                        // Fecha de asignación
-                        const fecha = new Date(asignacion.timestamp);
-                        const fechaFormateada = fecha.toLocaleDateString();
-                        
-                        return (
-                          <li key={idx} style={{ marginBottom: '5px' }}>
-                            <strong>{asignacion.centro}</strong> - {asignacion.localidad} ({asignacion.municipio})
-                            <span style={{ 
-                              display: 'inline-block', 
-                              marginLeft: '10px', 
-                              fontSize: '12px', 
-                              color: '#666',
-                              fontStyle: 'italic'
-                            }}>
-                              Asignado el {fechaFormateada}
-                            </span>
-                          </li>
-                        );
-                      })}
-                    </ol>
-                  </td>
-            </tr>
-              );
-            })}
-        </tbody>
-      </table>
-      </div>
-    </div>
-  );
-}
-
-function PlazasDisponibles({ availablePlazas }) {
-  const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage, setItemsPerPage] = useState(25);
-  const [searchTerm, setSearchTerm] = useState('');
-  
-  // Verificar si hay datos para mostrar
-  if (!availablePlazas || availablePlazas.length === 0) {
-    return (
-      <div style={{ marginTop: '30px', padding: '15px', border: '1px solid #ddd', borderRadius: '5px', textAlign: 'center' }}>
-        <h2>Estado de las Plazas</h2>
-        <p>No hay datos de plazas disponibles.</p>
-      </div>
-    );
-  }
-  
-  // Ordenar por ID para mantener consistencia
-  const plazasOrdenadas = [...availablePlazas].sort((a, b) => a.id - b.id);
-  
-  // Filtrar las plazas según la búsqueda
-  const filteredPlazas = plazasOrdenadas.filter(plaza => 
-    plaza.centro.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    plaza.localidad.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    plaza.municipio.toLowerCase().includes(searchTerm.toLowerCase())
-  );
-  
-  // Calcular total de páginas
-  const totalPages = Math.ceil(filteredPlazas.length / itemsPerPage);
-  
-  // Obtener plazas para la página actual
-  const indexOfLastItem = currentPage * itemsPerPage;
-  const indexOfFirstItem = indexOfLastItem - itemsPerPage;
-  const currentItems = filteredPlazas.slice(indexOfFirstItem, indexOfLastItem);
-  
-  // Cambiar de página
-  const paginate = (pageNumber) => setCurrentPage(pageNumber);
-  
-  // Ir a la página anterior
-  const prevPage = () => {
-    if (currentPage > 1) {
-      setCurrentPage(currentPage - 1);
-    }
-  };
-  
-  // Ir a la página siguiente
-  const nextPage = () => {
-    if (currentPage < totalPages) {
-      setCurrentPage(currentPage + 1);
-    }
-  };
-  
-  return (
-    <div style={{ marginTop: '30px' }}>
-      <h2 style={{ color: '#18539E' }}>Estado de las Plazas</h2>
-      
-      <div style={{ marginBottom: '15px' }}>
-        <div style={{ marginBottom: '10px' }}>
-          <input
-            type="text"
-            placeholder="Buscar por centro, localidad o municipio..."
-            value={searchTerm}
-            onChange={(e) => {
-              setSearchTerm(e.target.value);
-              setCurrentPage(1); // Resetear a página 1 al buscar
-            }}
-            style={{
-              padding: '8px',
-              border: '1px solid #ddd',
-              borderRadius: '4px',
-              width: '100%'
-            }}
-          />
-        </div>
-        
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ marginBottom: '10px', fontSize: '14px' }}>
-            Mostrando {indexOfFirstItem + 1}-{Math.min(indexOfLastItem, filteredPlazas.length)} de {filteredPlazas.length} centros
-            {searchTerm && ` (filtrados de ${plazasOrdenadas.length})`}
-          </div>
-          
-          <div>
-            <select 
-              value={itemsPerPage} 
-              onChange={(e) => {
-                setItemsPerPage(Number(e.target.value));
-                setCurrentPage(1); // Resetear a página 1 al cambiar items por página
-              }}
-              style={{
-                padding: '8px',
-                border: '1px solid #ddd',
-                borderRadius: '4px'
-              }}
-            >
-              <option value={25}>25 por página</option>
-              <option value={50}>50 por página</option>
-              <option value={100}>100 por página</option>
-              <option value={filteredPlazas.length}>Ver todos</option>
-            </select>
-          </div>
-        </div>
-      </div>
-      
-      <div style={{ overflowX: 'auto' }}>
-        <style>
-          {`
-            @media (max-width: 768px) {
-              .responsive-table {
-                font-size: 12px;
-              }
-              .responsive-table th, .responsive-table td {
-                padding: 6px 4px !important;
-              }
-              .responsive-table .mobile-priority-low {
-                display: none;
-              }
-              .mobile-only-column {
-                display: table-cell !important;
-              }
-              .responsive-table .mobile-truncate {
-                max-width: 120px;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                position: relative;
-              }
-              .info-tooltip {
-                display: none;
-                position: fixed;
-                left: 50%;
-                top: 50%;
-                transform: translate(-50%, -50%);
-                background: rgba(24, 83, 158, 0.95);
-                color: white;
-                padding: 20px;
-                border-radius: 8px;
-                z-index: 1000;
-                max-width: 90vw;
-                width: auto;
-                text-align: center;
-                box-shadow: 0 4px 15px rgba(0,0,0,0.4);
-                font-size: 16px;
-                line-height: 1.4;
-              }
-              .info-icon {
-                display: inline-block;
-                width: 18px;
-                height: 18px;
-                border-radius: 50%;
-                background-color: #18539E;
-                color: white;
-                font-size: 12px;
-                text-align: center;
-                line-height: 18px;
-                margin-left: 5px;
-                cursor: pointer;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-              }
-              .centro-info {
-                display: flex;
-                align-items: center;
-              }
-              .tooltip-backdrop {
-                display: none;
-                position: fixed;
-                top: 0;
-                left: 0;
-                right: 0;
-                bottom: 0;
-                background: rgba(0,0,0,0.5);
-                z-index: 999;
-              }
-              .mas-info-btn {
-                display: inline-block;
-                padding: 3px 6px;
-                background-color: #f0f8ff;
-                border: 1px solid #18539E;
-                border-radius: 4px;
-                color: #18539E;
-                font-size: 11px;
-                cursor: pointer;
-                text-align: center;
-                margin-top: 4px;
-              }
-            }
-            
-            /* Ocultar elementos de información en desktop */
-            @media (min-width: 769px) {
-              .info-icon, 
-              .info-tooltip, 
-              .mas-info-btn, 
-              .mobile-only-column {
-                display: none !important;
-              }
-            }
-          `}
-        </style>
-        <div id="tooltip-backdrop" className="tooltip-backdrop" onClick={() => {
-          document.querySelectorAll('.info-tooltip').forEach(el => el.style.display = 'none');
-          document.getElementById('tooltip-backdrop').style.display = 'none';
-        }}></div>
-        <table className="responsive-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead>
-            <tr style={{ backgroundColor: '#EBF4FF' }}>
-              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#18539E' }}>ID</th>
-              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#18539E' }}>Centro de Trabajo</th>
-              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#18539E' }}>Localidad</th>
-              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#18539E' }} className="mobile-priority-low">Municipio</th>
-              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', color: '#18539E' }} className="mobile-priority-low">Total</th>
-              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', color: '#18539E' }} className="mobile-priority-low">Asig.</th>
-              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', color: '#18539E' }}>Disp.</th>
-              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', color: '#18539E' }}>Estado</th>
-              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', color: '#18539E', display: 'none' }} className="mobile-only-column">Info</th>
-            </tr>
-          </thead>
-          <tbody>
-            {currentItems.map((plaza, index) => {
-              const disponibles = plaza.plazas - plaza.asignadas;
-              const estaLleno = disponibles === 0;
-              
-              return (
-                <tr 
-                  key={index} 
-                  style={{ 
-                    backgroundColor: estaLleno 
-                      ? '#ffebee' // Rojo claro si está lleno
-                      : index % 2 === 0 ? 'white' : '#f9f9f9' 
-                  }}
-                >
-                  <td style={{ border: '1px solid #ddd', padding: '10px' }}>{plaza.id}</td>
-                  <td style={{ border: '1px solid #ddd', padding: '10px', fontWeight: 'bold' }} className="mobile-truncate">
-                    <div className="centro-info">
-                      <span>{plaza.centro || '-'}</span>
-                      <span 
-                        className="info-icon" 
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          const allTooltips = document.querySelectorAll('.info-tooltip');
-                          allTooltips.forEach(t => t.style.display = 'none');
-                          
-                          const tooltip = e.currentTarget.nextElementSibling;
-                          tooltip.style.display = 'block';
-                          document.getElementById('tooltip-backdrop').style.display = 'block';
-                        }}
-                      >i</span>
-                      <div className="info-tooltip">
-                        <div style={{ fontWeight: 'bold', marginBottom: '10px', fontSize: '18px', borderBottom: '1px solid rgba(255,255,255,0.3)', paddingBottom: '8px' }}>
-                          Centro de trabajo
-                        </div>
-                        {plaza.centro || '-'}
-                        <div style={{ marginTop: '15px', fontSize: '14px', color: 'rgba(255,255,255,0.8)' }}>
-                          {plaza.localidad} ({plaza.municipio})
-                        </div>
-                        <div style={{ marginTop: '15px', fontSize: '13px', color: 'rgba(255,255,255,0.7)' }}>
-                          Toca fuera para cerrar
-                        </div>
-                      </div>
-                    </div>
-                    <div className="mas-info-btn" 
-                      style={{ display: 'none' }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const infoIcon = e.currentTarget.previousElementSibling.querySelector('.info-icon');
-                        if (infoIcon) {
-                          infoIcon.click();
-                        }
-                      }}
-                    >
-                      Ver nombre completo
-                    </div>
-                  </td>
-                  <td style={{ border: '1px solid #ddd', padding: '10px' }} className="mobile-truncate">
-                    {plaza.localidad || '-'}
-                  </td>
-                  <td style={{ border: '1px solid #ddd', padding: '10px' }} className="mobile-priority-low">{plaza.municipio || '-'}</td>
-                  <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }} className="mobile-priority-low">{plaza.plazas}</td>
-                  <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }} className="mobile-priority-low">{plaza.asignadas}</td>
-                  <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', fontWeight: 'bold', color: estaLleno ? 'red' : 'green' }}>
-                    {disponibles}
-                  </td>
-                  <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }}>
-                    {estaLleno ? (
-                      <span style={{ color: 'red', fontWeight: 'bold' }}>LLENO</span>
-                    ) : (
-                      <span style={{ color: 'green' }}>OK</span>
-                    )}
-                  </td>
-                  <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', display: 'none' }} className="mobile-only-column">
-                    <button
-                      onClick={() => {
-                        const tooltip = document.createElement('div');
-                        tooltip.className = 'info-tooltip';
-                        tooltip.style.display = 'block';
-                        
-                        tooltip.innerHTML = `
-                          <div style="font-weight: bold; margin-bottom: 10px; font-size: 18px; border-bottom: 1px solid rgba(255,255,255,0.3); padding-bottom: 8px;">
-                            Detalles del centro
-                          </div>
-                          <div style="margin-bottom: 15px;">
-                            <strong>Centro:</strong> ${plaza.centro || '-'}
-                          </div>
-                          <div style="margin-bottom: 10px;">
-                            <strong>Localidad:</strong> ${plaza.localidad || '-'}
-                          </div>
-                          <div style="margin-bottom: 10px;">
-                            <strong>Municipio:</strong> ${plaza.municipio || '-'}
-                          </div>
-                          <div style="margin-bottom: 10px;">
-                            <strong>Plazas totales:</strong> ${plaza.plazas}
-                          </div>
-                          <div style="margin-bottom: 15px;">
-                            <strong>Plazas disponibles:</strong> ${plaza.plazas - plaza.asignadas}
-                          </div>
-                          <div style="margin-top: 15px; font-size: 13px; color: rgba(255,255,255,0.7)">
-                            Toca fuera para cerrar
-                          </div>
-                        `;
-                        
-                        document.body.appendChild(tooltip);
-                        
-                        const backdrop = document.getElementById('tooltip-backdrop');
-                        backdrop.style.display = 'block';
-                        
-                        backdrop.onclick = () => {
-                          tooltip.remove();
-                          backdrop.style.display = 'none';
-                        };
-                      }}
-                      style={{
-                        padding: '2px 6px',
-                        backgroundColor: '#18539E',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '4px',
-                        fontSize: '11px',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      Ver
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-            <tr style={{ backgroundColor: '#f5f5f5', fontWeight: 'bold' }}>
-              <td colSpan="4" style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'right' }}>TOTAL:</td>
-              <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }} className="mobile-priority-low">{filteredPlazas.reduce((sum, p) => sum + p.plazas, 0)}</td>
-              <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }} className="mobile-priority-low">{filteredPlazas.reduce((sum, p) => sum + p.asignadas, 0)}</td>
-              <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }}>{filteredPlazas.reduce((sum, p) => sum + (p.plazas - p.asignadas), 0)}</td>
-              <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }}></td>
-              <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', display: 'none' }} className="mobile-only-column"></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      
-      {/* Controles de paginación */}
-      {totalPages > 1 && (
-        <div style={{ 
-          marginTop: '20px', 
-          display: 'flex', 
-          justifyContent: 'center',
-          alignItems: 'center',
-          gap: '10px'
-        }}>
-          <button 
-            onClick={prevPage} 
-            disabled={currentPage === 1}
-            style={{
-              padding: '5px 10px',
-              border: '1px solid #ddd',
-              borderRadius: '4px',
-              backgroundColor: currentPage === 1 ? '#f2f2f2' : 'white',
-              cursor: currentPage === 1 ? 'not-allowed' : 'pointer'
-            }}
-          >
-            &laquo; Anterior
-          </button>
-          
-          <div style={{ display: 'flex', gap: '5px' }}>
-            {/* Primera página */}
-            {currentPage > 3 && (
-              <button 
-                onClick={() => paginate(1)}
-                style={{
-                  padding: '5px 10px',
-                  border: '1px solid #ddd',
-                  borderRadius: '4px',
-                  backgroundColor: 'white'
-                }}
-              >
-                1
-              </button>
-            )}
-            
-            {/* Elipsis izquierdo */}
-            {currentPage > 4 && <span style={{ padding: '5px' }}>...</span>}
-            
-            {/* Páginas cercanas a la actual */}
-            {[...Array(totalPages).keys()].map(number => {
-              const pageNumber = number + 1;
-              // Mostrar solo la página actual y una página antes y después
-              if (
-                pageNumber === 1 ||
-                pageNumber === totalPages ||
-                (pageNumber >= currentPage - 1 && pageNumber <= currentPage + 1)
-              ) {
-                return (
-                  <button
-                    key={number}
-                    onClick={() => paginate(pageNumber)}
-                    style={{
-                      padding: '5px 10px',
-                      border: '1px solid #ddd',
-                      borderRadius: '4px',
-                      backgroundColor: currentPage === pageNumber ? '#007BFF' : 'white',
-                      color: currentPage === pageNumber ? 'white' : 'black'
-                    }}
-                  >
-                    {pageNumber}
-                  </button>
-                );
-              }
-              return null;
-            })}
-            
-            {/* Elipsis derecho */}
-            {currentPage < totalPages - 3 && <span style={{ padding: '5px' }}>...</span>}
-            
-            {/* Última página */}
-            {currentPage < totalPages - 2 && (
-              <button 
-                onClick={() => paginate(totalPages)}
-                style={{
-                  padding: '5px 10px',
-                  border: '1px solid #ddd',
-                  borderRadius: '4px',
-                  backgroundColor: 'white'
-                }}
-              >
-                {totalPages}
-              </button>
-            )}
-          </div>
-          
-          <button 
-            onClick={nextPage} 
-            disabled={currentPage === totalPages}
-            style={{
-              padding: '5px 10px',
-              border: '1px solid #ddd',
-              borderRadius: '4px',
-              backgroundColor: currentPage === totalPages ? '#f2f2f2' : 'white',
-              cursor: currentPage === totalPages ? 'not-allowed' : 'pointer'
-            }}
-          >
-            Siguiente &raquo;
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Componente Footer
-function Footer() {
-  return (
-    <div style={{ 
-      marginTop: '40px',
-      borderTop: '1px solid #ddd',
-      padding: '15px 0',
-      textAlign: 'center',
-      fontSize: '14px',
-      color: '#666'
-    }}>
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: '10px'
-      }}>
-        <p style={{ margin: 0 }}>
-          Hecho por <a 
-            href="https://ag-marketing.es" 
-            target="_blank" 
-            rel="noopener noreferrer"
-            style={{ 
-              color: '#007BFF', 
-              textDecoration: 'none', 
-              fontWeight: 'bold'
-            }}
-          >
-            AG Marketing
-          </a>
-        </p>
-        <img 
-          src={`${process.env.PUBLIC_URL}/AG_LOGO.png`}
-          alt="AG Marketing Logo" 
-          style={{ height: '30px', width: 'auto' }} 
-        />
-      </div>
-    </div>
-  );
-}
-
-// Añadir estilos para mostrar nombres completos de centros en la sección de selección
-<style>
-  {`
-    @media (max-width: 768px) {
-      .centro-nombre {
-        display: inline;
-        word-break: break-word;
-        white-space: normal;
-      }
-      label {
-        display: block;
-        padding-left: 24px;
-        text-indent: -24px;
-        margin-bottom: 5px;
-      }
-      input[type="checkbox"] {
-        margin-right: 6px !important;
-      }
-    }
-  `}
-</style>
 
 export default App;
