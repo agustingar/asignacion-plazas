@@ -12,6 +12,23 @@ const spinnerAnimation = `
   }
 `;
 
+/*
+ * IMPORTANTE: Reglas de seguridad para Firestore
+ * Para que la aplicación funcione correctamente, configura las siguientes reglas en Firebase Console:
+ * 
+ * rules_version = '2';
+ * service cloud.firestore {
+ *   match /databases/{database}/documents {
+ *     match /{document=**} {
+ *       allow read, write;
+ *     }
+ *   }
+ * }
+ * 
+ * Esto permite lectura y escritura públicas. Para producción, deberías implementar autenticación
+ * y reglas más restrictivas.
+ */
+
 function App() {
   const [excelData, setExcelData] = useState([]);
   const [orderNumber, setOrderNumber] = useState('');
@@ -445,33 +462,44 @@ function App() {
     setIsProcessing(true);
     
     try {
+      // Convertir todos los IDs a números para asegurar compatibilidad
+      const centrosIdsNumericos = centrosSeleccionados.map(id => Number(id));
+      
+      console.log("Intentando guardar solicitud con centros:", centrosIdsNumericos);
+      
       // Verificar si ya existe una solicitud para este número de orden
       const solicitudExistente = solicitudes.find(s => s.orden === numOrden);
       
+      // Datos a guardar
+      const datosParaGuardar = {
+        orden: numOrden,
+        centrosIds: centrosIdsNumericos,
+        timestamp: Date.now() // Usar Date.now() es más simple y funciona igual
+      };
+      
       if (solicitudExistente) {
         // Actualizar la solicitud existente con los nuevos centros seleccionados
+        console.log("Actualizando solicitud existente:", solicitudExistente.docId);
         const solicitudRef = doc(db, "solicitudesPendientes", solicitudExistente.docId);
-        await updateDoc(solicitudRef, { 
-          centrosIds: centrosSeleccionados,
-          timestamp: new Date().getTime()
-        });
+        await updateDoc(solicitudRef, datosParaGuardar);
+        console.log("Solicitud actualizada correctamente");
       } else {
         // Crear nueva solicitud en Firebase
-        await addDoc(collection(db, "solicitudesPendientes"), {
-          orden: numOrden,
-          centrosIds: centrosSeleccionados,
-          timestamp: new Date().getTime()
-        });
+        console.log("Creando nueva solicitud");
+        const docRef = await addDoc(collection(db, "solicitudesPendientes"), datosParaGuardar);
+        console.log("Nueva solicitud creada con ID:", docRef.id);
       }
       
-      // Limpiar formulario
+      // Limpiar formulario y actualizar estado
+      setOrderNumber('');
       setCentrosSeleccionados([]);
       
-      // Procesar solicitudes después de un breve retraso
-      setTimeout(procesarSolicitudes, 500);
+      // Procesamiento exitoso
+      alert("Solicitud guardada correctamente");
+      setIsProcessing(false);
     } catch (error) {
       console.error("Error al guardar solicitud:", error);
-      alert("Error al guardar la solicitud. Inténtelo de nuevo.");
+      alert("Error al guardar la solicitud: " + error.message);
       setIsProcessing(false);
     }
   };
@@ -535,13 +563,13 @@ function App() {
           <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ddd', borderRadius: '5px' }}>
             <h2>Solicitar Plaza</h2>
             <form onSubmit={handleOrderSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-              <div>
+    <div>
                 <label htmlFor="orderInput" style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Número de Orden:</label>
-                <input
+        <input 
                   id="orderInput"
-                  type="number"
-                  value={orderNumber}
-                  onChange={e => setOrderNumber(e.target.value)} 
+          type="number" 
+          value={orderNumber} 
+          onChange={e => setOrderNumber(e.target.value)} 
                   placeholder="Introduce tu número de orden" 
                   style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
                   required
@@ -644,7 +672,7 @@ function App() {
                 )}
                 {isProcessing ? 'Procesando...' : 'Solicitar Plaza'}
               </button>
-            </form>
+      </form>
             
             <SolicitudesPendientes 
               solicitudes={solicitudes} 
@@ -655,15 +683,15 @@ function App() {
           
           <PlazasDisponibles availablePlazas={availablePlazas} />
           
-          {assignment && (
+      {assignment && (
             <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#f9f9f9', border: '1px solid #ddd', borderRadius: '5px' }}>
               <h2>Tu Asignación</h2>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                <p><strong>Número de Orden:</strong> {assignment.order}</p>
-                <p><strong>Localidad:</strong> {assignment.localidad}</p>
-                <p><strong>Centro de Trabajo:</strong> {assignment.centro}</p>
-                <p><strong>Municipio:</strong> {assignment.municipio}</p>
-              </div>
+          <p><strong>Número de Orden:</strong> {assignment.order}</p>
+          <p><strong>Localidad:</strong> {assignment.localidad}</p>
+          <p><strong>Centro de Trabajo:</strong> {assignment.centro}</p>
+          <p><strong>Municipio:</strong> {assignment.municipio}</p>
+        </div>
             </div>
           )}
           
@@ -891,25 +919,25 @@ function Dashboard({ assignments }) {
       
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead>
+        <thead>
             <tr style={{ backgroundColor: '#f2f2f2' }}>
               <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left' }}>Número de Orden</th>
               <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left' }}>Localidad</th>
               <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left' }}>Centro de Trabajo</th>
               <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left' }}>Municipio</th>
-            </tr>
-          </thead>
-          <tbody>
+          </tr>
+        </thead>
+        <tbody>
             {sortedAssignments.map((a, index) => (
               <tr key={index} style={{ backgroundColor: index % 2 === 0 ? 'white' : '#f9f9f9' }}>
                 <td style={{ border: '1px solid #ddd', padding: '10px' }}>{a.order}</td>
                 <td style={{ border: '1px solid #ddd', padding: '10px' }}>{a.localidad}</td>
                 <td style={{ border: '1px solid #ddd', padding: '10px' }}>{a.centro}</td>
                 <td style={{ border: '1px solid #ddd', padding: '10px' }}>{a.municipio}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+            </tr>
+          ))}
+        </tbody>
+      </table>
       </div>
     </div>
   );
