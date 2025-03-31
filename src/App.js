@@ -546,7 +546,7 @@ function App() {
     setProcessingMessage('Procesando solicitudes...');
     
     try {
-      // 1. Obtener todas las solicitudes
+      // 1. Obtener todas las solicitudes - limitar el uso con una sola consulta
       const solicitudesSnapshot = await getDocs(collection(db, 'solicitudes'));
       const todasLasSolicitudes = solicitudesSnapshot.docs.map(doc => ({
         id: doc.id,
@@ -561,7 +561,7 @@ function App() {
         return;
       }
       
-      // 2. Obtener las plazas disponibles actualizadas
+      // 2. Obtener las plazas disponibles actualizadas - limitar el uso con una sola consulta
       const plazasSnapshot = await getDocs(collection(db, 'plazas'));
       const plazasDisponibles = plazasSnapshot.docs.map(doc => ({
         id: doc.id,
@@ -579,7 +579,7 @@ function App() {
         };
       });
       
-      // 4. Obtener asignaciones existentes
+      // 4. Obtener asignaciones existentes - limitar el uso con una sola consulta
       const asignacionesSnapshot = await getDocs(collection(db, 'asignaciones'));
       const asignacionesExistentes = asignacionesSnapshot.docs.map(doc => ({
         id: doc.id,
@@ -594,29 +594,52 @@ function App() {
       
       console.log(`Total de órdenes ya asignados: ${ordenesYaAsignados.size}`);
       
-      // 5. Filtrar solicitudes que no tienen asignación aún
-      const solicitudesPendientes = todasLasSolicitudes.filter(sol => !ordenesYaAsignados.has(sol.orden));
+      // 5. Filtrar y ordenar todas las solicitudes por número de orden (prioridad a números más bajos)
+      // Importante: primero ordenar TODAS las solicitudes por número de orden
+      const todasSolicitudesOrdenadas = [...todasLasSolicitudes].sort((a, b) => {
+        return parseInt(a.orden, 10) - parseInt(b.orden, 10);
+      });
       
-      // 6. Ordenar solicitudes pendientes por número de orden (prioridad a números más bajos)
-      const solicitudesOrdenadas = [...solicitudesPendientes].sort((a, b) => a.orden - b.orden);
+      console.log("Solicitudes ordenadas por número de orden:", 
+        todasSolicitudesOrdenadas.map(s => s.orden).join(", "));
       
-      console.log(`Solicitudes pendientes ordenadas: ${solicitudesOrdenadas.length}`);
-      
-      // 7. Procesar cada solicitud en orden
+      // 7. Procesar cada solicitud en orden - usar lotes para reducir escrituras en Firebase
       const nuevasAsignaciones = [];
+      const actualizacionesCentros = {};
+      const loteAsignaciones = [];
       
-      for (const solicitud of solicitudesOrdenadas) {
+      // Recorremos todas las solicitudes ordenadas (menor a mayor)
+      for (const solicitud of todasSolicitudesOrdenadas) {
+        const numOrden = parseInt(solicitud.orden, 10);
+        console.log(`Procesando solicitud orden ${numOrden}`);
+        
+        // Si ya tiene asignación previa, saltamos
+        if (ordenesYaAsignados.has(numOrden)) {
+          console.log(`Orden ${numOrden} ya tiene asignación. Se omite.`);
+          continue;
+        }
+        
         // Verificar preferencias de centros en orden
+        let asignado = false;
+        
+        // Asegurarnos que centrosIds existe y es un array
+        if (!solicitud.centrosIds || !Array.isArray(solicitud.centrosIds) || solicitud.centrosIds.length === 0) {
+          console.log(`Orden ${numOrden} no tiene centros seleccionados válidos.`);
+          continue;
+        }
+        
         for (const centroId of solicitud.centrosIds) {
           // Verificar si el centro existe y tiene plazas disponibles
           if (centrosMap[centroId] && centrosMap[centroId].plazasDisponibles > 0) {
             // Asignar plaza
             centrosMap[centroId].plazasDisponibles--;
             centrosMap[centroId].asignadas++;
+            ordenesYaAsignados.add(numOrden);
+            asignado = true;
             
             const nuevaAsignacion = {
               id: centroId,
-              order: solicitud.orden,
+              order: numOrden,
               centro: centrosMap[centroId].centro,
               localidad: centrosMap[centroId].localidad,
               municipio: centrosMap[centroId].municipio,
@@ -624,40 +647,98 @@ function App() {
             };
             
             nuevasAsignaciones.push(nuevaAsignacion);
-            console.log(`Asignada plaza en ${centrosMap[centroId].centro} a orden ${solicitud.orden}`);
+            loteAsignaciones.push(nuevaAsignacion);
             
-            // Actualizar en Firebase
-            const plazaRef = doc(db, 'plazas', centroId);
-            await updateDoc(plazaRef, {
-              asignadas: centrosMap[centroId].asignadas
-            });
+            // Registrar la actualización del centro para hacerla en lote después
+            if (!actualizacionesCentros[centroId]) {
+              actualizacionesCentros[centroId] = centrosMap[centroId];
+            }
             
-            // Guardar asignación
-            await setDoc(doc(db, 'asignaciones', `${solicitud.orden}-${centroId}`), nuevaAsignacion);
-            
-            // Salir del bucle de centros ya que se asignó una plaza
-            break;
+            console.log(`Asignada plaza en ${centrosMap[centroId].centro} a orden ${numOrden}`);
+            break;  // Salir del bucle de centros ya que hemos asignado uno
           }
+        }
+        
+        if (!asignado) {
+          console.log(`No se pudo asignar plaza para orden ${numOrden}. Todos los centros solicitados están llenos.`);
         }
       }
       
       console.log(`Proceso completado. Nuevas asignaciones: ${nuevasAsignaciones.length}`);
       
-      // 8. Notificar finalización
+      // 8. Actualizar Firebase en lotes para reducir el número de operaciones
       if (nuevasAsignaciones.length > 0) {
-        setProcessingMessage(`Se han asignado ${nuevasAsignaciones.length} plazas según prioridad por orden.`);
-        // Actualizar lista local de asignaciones
-        setAssignments(prev => [...prev, ...nuevasAsignaciones]);
+        try {
+          console.log(`Guardando ${nuevasAsignaciones.length} nuevas asignaciones en lote`);
+          
+          // Guardar asignaciones en lote
+          for (const asignacion of nuevasAsignaciones) {
+            const asignacionId = `${asignacion.order}-${asignacion.id}`;
+            await setDoc(doc(db, 'asignaciones', asignacionId), asignacion);
+          }
+          
+          // Actualizar centros en lote
+          for (const centroId in actualizacionesCentros) {
+            const centro = actualizacionesCentros[centroId];
+            if (centro.docId) {
+              console.log(`Actualizando centro ${centroId} a ${centro.asignadas} plazas asignadas`);
+              await updateDoc(doc(db, 'plazas', centro.docId), {
+                asignadas: centro.asignadas
+              });
+            }
+          }
+          
+          // Notificar éxito
+          setProcessingMessage(`Se han asignado ${nuevasAsignaciones.length} plazas según prioridad por orden.`);
+          
+          // Actualizar lista local de asignaciones
+          setAssignments(prev => [...prev, ...nuevasAsignaciones]);
+          
+          // Recargar la página para mostrar los cambios
+          window.location.reload();
+        } catch (error) {
+          console.error('Error al actualizar Firebase:', error);
+          setProcessingMessage(`Error al guardar asignaciones: ${error.message}`);
+          alert(`Firebase Quota Exceeded: Se ha superado el límite de operaciones gratuitas. Intente más tarde o contacte al administrador para actualizar el plan de Firebase.`);
+        }
       } else {
         setProcessingMessage('No se han podido realizar nuevas asignaciones. Todas las plazas están ocupadas o no hay solicitudes con centros disponibles.');
       }
     } catch (error) {
       console.error('Error al procesar solicitudes:', error);
-      setProcessingMessage(`Error al procesar solicitudes: ${error.message}`);
+      
+      // Verificar si es un error de cuota excedida
+      if (error.message && error.message.includes('quota')) {
+        setProcessingMessage(`Error de cuota excedida en Firebase. Por favor, intente más tarde.`);
+        alert(`Firebase Quota Exceeded: Se ha superado el límite de operaciones gratuitas. Intente más tarde o contacte al administrador para actualizar el plan de Firebase.`);
+      } else {
+        setProcessingMessage(`Error al procesar solicitudes: ${error.message}`);
+      }
     } finally {
       setLoadingProcess(false);
     }
   }, [db]);
+  
+  // Función para procesar todas las solicitudes al enviar una nueva
+  const procesarAutomaticamente = async () => {
+    // Mostrar mensaje de procesamiento
+    setIsProcessing(true);
+    
+    try {
+      await procesarSolicitudes();
+      // El procesamiento ya maneja la notificación y recarga
+    } catch (error) {
+      console.error("Error al procesar automáticamente:", error);
+      setIsProcessing(false);
+      
+      // Verificar si es un error de cuota excedida
+      if (error.message && error.message.includes('quota')) {
+        alert(`Firebase Quota Exceeded: Se ha superado el límite de operaciones gratuitas. Intente más tarde o contacte al administrador para actualizar el plan de Firebase.`);
+      } else {
+        alert("Error al actualizar asignaciones: " + error.message);
+      }
+    }
+  };
 
   const handleOrderSubmit = async (e) => {
     e.preventDefault();
@@ -689,50 +770,84 @@ function App() {
       
       console.log("Intentando guardar solicitud con centros:", centrosIdsNumericos);
       
-      // Verificar si ya existe una solicitud para este número de orden
-      const solicitudExistente = solicitudes.find(s => s.orden === numOrden);
-      
       // Datos a guardar
       const datosParaGuardar = {
         orden: numOrden,
         centrosIds: centrosIdsNumericos,
-        timestamp: Date.now() // Usar Date.now() es más simple y funciona igual
+        timestamp: Date.now()
       };
       
-      if (solicitudExistente) {
+      // Verificar si ya existe una solicitud para este número de orden
+      // Hacerlo con datos locales primero para reducir consultas Firebase
+      const solicitudExistenteLocal = solicitudes.find(s => s.orden === numOrden);
+      
+      if (solicitudExistenteLocal) {
         // Actualizar la solicitud existente con los nuevos centros seleccionados
-        console.log("Actualizando solicitud existente:", solicitudExistente.docId);
-        const solicitudRef = doc(db, "solicitudesPendientes", solicitudExistente.docId);
-        await updateDoc(solicitudRef, datosParaGuardar);
-        console.log("Solicitud actualizada correctamente");
+        console.log("Actualizando solicitud existente:", solicitudExistenteLocal.id);
+        try {
+          const solicitudRef = doc(db, "solicitudes", solicitudExistenteLocal.id);
+          await updateDoc(solicitudRef, datosParaGuardar);
+          console.log("Solicitud actualizada correctamente");
+        } catch (error) {
+          console.error("Error al actualizar solicitud:", error);
+          if (error.message && error.message.includes('quota')) {
+            setIsProcessing(false);
+            alert('Firebase Quota Exceeded: Se ha superado el límite de operaciones gratuitas. Intente más tarde o contacte al administrador para actualizar el plan de Firebase.');
+            return;
+          }
+          throw error;
+        }
       } else {
         // Crear nueva solicitud en Firebase
         console.log("Creando nueva solicitud");
-        const docRef = await addDoc(collection(db, "solicitudesPendientes"), datosParaGuardar);
-        console.log("Nueva solicitud creada con ID:", docRef.id);
+        try {
+          const docRef = await addDoc(collection(db, "solicitudes"), datosParaGuardar);
+          console.log("Nueva solicitud creada con ID:", docRef.id);
+        } catch (error) {
+          console.error("Error al crear solicitud:", error);
+          if (error.message && error.message.includes('quota')) {
+            setIsProcessing(false);
+            alert('Firebase Quota Exceeded: Se ha superado el límite de operaciones gratuitas. Intente más tarde o contacte al administrador para actualizar el plan de Firebase.');
+            return;
+          }
+          throw error;
+        }
+      }
+      
+      // Actualizar localmente las solicitudes
+      if (solicitudExistenteLocal) {
+        // Actualizar la solicitud existente
+        setSolicitudes(prevSolicitudes => 
+          prevSolicitudes.map(sol => 
+            sol.orden === numOrden ? {...sol, centrosIds: centrosIdsNumericos, timestamp: Date.now()} : sol
+          )
+        );
+      } else {
+        // Añadir la nueva solicitud
+        setSolicitudes(prevSolicitudes => [
+          ...prevSolicitudes, 
+          {
+            orden: numOrden,
+            centrosIds: centrosIdsNumericos,
+            timestamp: Date.now(),
+            id: `temp-${Date.now()}` // ID temporal hasta que se recargue
+          }
+        ]);
       }
       
       // Procesar automáticamente todas las solicitudes después de guardar
       try {
-        // Esperar un momento para asegurar que la nueva solicitud se haya guardado completamente
-        setTimeout(async () => {
-          console.log("Procesando todas las solicitudes automáticamente...");
-          await procesarSolicitudes();
-          
-          // Esperar un momento para que se completen las actualizaciones
-          setTimeout(() => {
-            // Mostrar mensaje de éxito y ocultar el loader
-            setIsProcessing(false);
-            
-            // Mostrar mensaje de éxito
-            alert(`Tu solicitud ha sido registrada y procesada correctamente. Las plazas se han asignado según prioridad por número de orden.`);
-            
-            // Recargar la página para mostrar los cambios actualizados
-            window.location.reload();
-          }, 1500);
-        }, 1000); // Esperar 1 segundo antes de procesar
+        console.log("Procesando todas las solicitudes automáticamente...");
+        await procesarSolicitudes();
       } catch (error) {
         console.error("Error al procesar solicitudes automáticamente:", error);
+        
+        if (error.message && error.message.includes('quota')) {
+          setIsProcessing(false);
+          alert('Firebase Quota Exceeded: Se ha superado el límite de operaciones gratuitas. Tu solicitud se ha guardado, pero no se han podido procesar las asignaciones. Intente más tarde o contacte al administrador.');
+          return;
+        }
+        
         setIsProcessing(false);
         alert("Se ha guardado tu solicitud, pero ha ocurrido un error al procesar las asignaciones: " + error.message);
       }
@@ -740,7 +855,8 @@ function App() {
       console.error("Error al guardar solicitud:", error);
       // Mostrar error pero mantener el formulario para permitir intentar de nuevo
       alert("Error al guardar la solicitud: " + error.message);
-      // Ocultar indicador de carga
+    } finally {
+      // Ocultar indicador de carga si no se ha hecho ya
       setIsProcessing(false);
     }
   };
@@ -756,27 +872,6 @@ function App() {
     } else {
       // Quitar de la selección
       setCentrosSeleccionados(prev => prev.filter(id => id !== centroId));
-    }
-  };
-
-  // Función para procesar todas las solicitudes al enviar una nueva
-  const procesarAutomaticamente = async () => {
-    // Mostrar mensaje de procesamiento
-    setIsProcessing(true);
-    
-    try {
-      await procesarSolicitudes();
-      // Esperar un momento para mostrar el éxito
-      setTimeout(() => {
-        // Ocultar el indicador de carga
-        setIsProcessing(false);
-        // Recargar para asegurar que los datos estén actualizados
-        window.location.reload();
-      }, 2000);
-    } catch (error) {
-      console.error("Error al procesar automáticamente:", error);
-      setIsProcessing(false);
-      alert("Error al actualizar asignaciones: " + error.message);
     }
   };
 
