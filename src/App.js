@@ -265,7 +265,7 @@ function App() {
       let asignacionesExistentes = [...assignments];
       
       // Si los datos son antiguos o el usuario fuerza la recarga, obtener datos frescos
-      const solicitarDatosFrescos = confirm("¿Desea obtener los datos más recientes de Firebase para asegurar que las asignaciones sean precisas? (Recomendado)");
+      const solicitarDatosFrescos = window.confirm("¿Desea obtener los datos más recientes de Firebase para asegurar que las asignaciones sean precisas? (Recomendado)");
       
       if (solicitarDatosFrescos) {
         console.log("Obteniendo datos frescos para el procesamiento...");
@@ -444,7 +444,7 @@ function App() {
           setUltimaActualizacion(ahora.toLocaleString());
           
           // Sugerir recargar para ver todos los cambios
-          if (confirm("Procesamiento completado. ¿Desea recargar la página para ver todos los cambios?")) {
+          if (window.confirm("Procesamiento completado. ¿Desea recargar la página para ver todos los cambios?")) {
             window.location.reload();
           } else {
             setIsProcessing(false);
