@@ -234,6 +234,79 @@ function App() {
             const datosCentros = resultado.data.slice(4);
             console.log('Total de centros en CSV (sin procesar):', datosCentros.length);
             
+            // Función para examinar las filas con problemas
+            const diagnosticarDatos = (filas) => {
+              // Conteo de filas con diferentes longitudes
+              const conteoLongitud = {};
+              filas.forEach((fila, idx) => {
+                const longitud = fila.length;
+                if (!conteoLongitud[longitud]) {
+                  conteoLongitud[longitud] = [];
+                }
+                // Guardar solo las primeras 5 filas de cada longitud para no sobrecargar el log
+                if (conteoLongitud[longitud].length < 5) {
+                  conteoLongitud[longitud].push({
+                    indice: idx + 4, // Ajustar el índice al archivo original
+                    contenido: fila
+                  });
+                }
+              });
+              
+              console.log('Distribución de longitudes de filas:', Object.keys(conteoLongitud).map(k => 
+                `${k} columnas: ${filas.filter(f => f.length == k).length} filas`
+              ).join(', '));
+              
+              // Examinar algunas filas de cada longitud
+              Object.keys(conteoLongitud).forEach(longitud => {
+                if (longitud < 6) { // Solo mostrar filas potencialmente problemáticas
+                  console.log(`Ejemplos de filas con ${longitud} columnas:`, conteoLongitud[longitud]);
+                }
+              });
+              
+              // Verificar valores de plazas
+              const valoresPlazas = filas
+                .filter(fila => fila.length >= 6 && fila[5])
+                .map(fila => {
+                  // Guardar el valor original para diagnóstico
+                  const valorOriginal = fila[5].toString().trim();
+                  
+                  // Intentar varias formas de parseo
+                  const valorInt = parseInt(valorOriginal.replace(',', '.'), 10);
+                  const valorFloat = parseFloat(valorOriginal.replace(',', '.'));
+                  
+                  return {
+                    original: valorOriginal,
+                    comoCadena: valorOriginal,
+                    comoEntero: valorInt,
+                    comoDecimal: valorFloat,
+                    esNaN: isNaN(valorInt)
+                  };
+                });
+              
+              // Filtrar por valores problemáticos
+              const valoresProblematicos = valoresPlazas.filter(v => 
+                isNaN(v.comoEntero) || v.comoEntero === 0 || v.comoEntero !== v.comoDecimal
+              );
+              
+              if (valoresProblematicos.length > 0) {
+                console.log(`Encontrados ${valoresProblematicos.length} valores de plazas problemáticos.`);
+                console.log('Primeros 10 ejemplos:', valoresProblematicos.slice(0, 10));
+              }
+              
+              // Verificar valores extremos
+              const valoresExtremos = valoresPlazas
+                .filter(v => !isNaN(v.comoEntero) && v.comoEntero > 100)
+                .sort((a, b) => b.comoEntero - a.comoEntero);
+                
+              if (valoresExtremos.length > 0) {
+                console.log(`Encontrados ${valoresExtremos.length} valores de plazas inusualmente altos (>100).`);
+                console.log('Primeros 5 ejemplos:', valoresExtremos.slice(0, 5));
+              }
+            };
+            
+            // Ejecutar diagnóstico sobre los datos
+            diagnosticarDatos(datosCentros);
+            
             // Procesar cada fila en el formato específico de este CSV
             const centrosProcesados = datosCentros
               .filter(fila => fila.length >= 6) // Asegurar que la fila tiene suficientes columnas
@@ -250,12 +323,30 @@ function App() {
                 let plazas = 0;
                 if (fila[5]) {
                   // Limpiar el valor y asegurar que sea un número
-                  const plazasStr = fila[5].toString().trim().replace(',', '.');
-                  plazas = parseInt(plazasStr, 10) || 0;
+                  const plazasStr = fila[5].toString().trim().replace(/\./g, '').replace(',', '.');
+                  
+                  // Intentar convertir a entero primero
+                  plazas = parseInt(plazasStr, 10);
+                  // Si no es un entero válido, probar como float y redondear
+                  if (isNaN(plazas)) {
+                    const plazasFloat = parseFloat(plazasStr);
+                    if (!isNaN(plazasFloat)) {
+                      plazas = Math.round(plazasFloat);
+                    }
+                  }
+                  
+                  // Para diagnóstico, verificar casos específicos
+                  if (plazas > 100) {
+                    console.log(`Valor inusualmente alto de plazas: ${plazas} (original: "${fila[5]}") en centro: ${fila[3] || 'sin nombre'}`);
+                  }
+                  
+                  // Asegurar que sea al menos 0
+                  plazas = plazas || 0;
                 }
                 
                 return {
                   id: index + 1,
+                  codigo: fila[2] ? fila[2].toString().trim() : '',
                   localidad: fila[0] ? fila[0].toString().trim() : '',
                   departamento: fila[1] ? fila[1].toString().trim() : '',
                   centro: fila[3] ? fila[3].toString().trim() : '',
@@ -276,6 +367,53 @@ function App() {
             console.log('Primeros 5 centros procesados:', centrosProcesados.slice(0, 5));
             console.log('Últimos 5 centros procesados:', centrosProcesados.slice(-5));
             
+            // Verificar si el total de plazas es el esperado
+            const totalPlazas = centrosProcesados.reduce((suma, centro) => suma + centro.plazas, 0);
+            console.log(`Total de plazas calculado: ${totalPlazas}`);
+            
+            // Si el total no coincide aproximadamente con el esperado (7066), hay un problema
+            const totalEsperado = 7066;
+            const diferenciaPermitida = 100; // Permitir cierta diferencia por redondeo
+            if (Math.abs(totalPlazas - totalEsperado) > diferenciaPermitida) {
+              console.warn(`Alerta: El total de plazas calculado (${totalPlazas}) difiere significativamente del esperado (${totalEsperado})`);
+              
+              // Crear archivo de diagnóstico
+              const datosDiagnostico = {
+                totalCalculado: totalPlazas,
+                totalEsperado: totalEsperado,
+                diferenciaAbsoluta: Math.abs(totalPlazas - totalEsperado),
+                diferenciaPorcentaje: Math.abs((totalPlazas - totalEsperado) / totalEsperado * 100).toFixed(2) + '%',
+                totalCentros: centrosProcesados.length,
+                distribucionPlazas: {}
+              };
+              
+              // Calcular distribución de plazas para diagnóstico
+              centrosProcesados.forEach(c => {
+                const plazoKey = c.plazas.toString();
+                if (datosDiagnostico.distribucionPlazas[plazoKey]) {
+                  datosDiagnostico.distribucionPlazas[plazoKey]++;
+                } else {
+                  datosDiagnostico.distribucionPlazas[plazoKey] = 1;
+                }
+              });
+              
+              // Exportar los datos a la consola en formato JSON
+              console.log('DATOS DE DIAGNÓSTICO:', JSON.stringify(datosDiagnostico, null, 2));
+              
+              // Detectar los centros con mayor número de plazas (posibles errores)
+              const centrosConMasPlazas = [...centrosProcesados]
+                .sort((a, b) => b.plazas - a.plazas)
+                .slice(0, 10);
+              console.log('Centros con más plazas (revisar posibles errores):', centrosConMasPlazas);
+              
+              // Imprimir algunas estadísticas adicionales
+              const totalPlazasMayores100 = centrosProcesados
+                .filter(c => c.plazas > 100)
+                .reduce((suma, c) => suma + c.plazas, 0);
+              
+              console.log(`Total de plazas en centros con más de 100 plazas: ${totalPlazasMayores100} (${(totalPlazasMayores100/totalPlazas*100).toFixed(2)}% del total)`);
+            }
+            
             if (centrosProcesados.length === 0) {
               console.error('No se pudieron extraer centros con plazas > 0');
               usarDatosSimulados();
@@ -287,9 +425,6 @@ function App() {
               ...centro,
               asignadas: 0
             }));
-            
-            // Calcular el total de plazas
-            const totalPlazas = plazasIniciales.reduce((suma, centro) => suma + centro.plazas, 0);
             
             console.log(`CSV procesado con éxito. Total de centros: ${centrosProcesados.length}, Total plazas: ${totalPlazas}`);
             
@@ -563,6 +698,7 @@ function App() {
       return;
     }
     
+    // Mostrar el indicador de carga
     setIsProcessing(true);
     
     try {
@@ -594,18 +730,19 @@ function App() {
         console.log("Nueva solicitud creada con ID:", docRef.id);
       }
       
-      // Limpiar formulario y actualizar estado
-      setOrderNumber('');
-      setCentrosSeleccionados([]);
-      
-      // Procesamiento exitoso
-      alert("Solicitud guardada correctamente");
-      setIsProcessing(false);
+      // Esperar un momento para que se completen las actualizaciones
+      setTimeout(() => {
+        // Reiniciar la página para refrescar todos los datos
+        window.location.reload();
+      }, 1500);
     } catch (error) {
       console.error("Error al guardar solicitud:", error);
+      // Mostrar error pero mantener el formulario para permitir intentar de nuevo
       alert("Error al guardar la solicitud: " + error.message);
+      // Ocultar indicador de carga
       setIsProcessing(false);
     }
+    // No ocultamos el indicador de carga porque vamos a recargar la página
   };
 
   // Función para manejar la selección de múltiples centros con checkboxes
@@ -667,17 +804,18 @@ function App() {
           <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ddd', borderRadius: '5px' }}>
             <h2>Solicitar Plaza</h2>
             <form onSubmit={handleOrderSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-    <div>
+              <div>
                 <label htmlFor="orderInput" style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Número de Orden:</label>
-        <input 
+                <input 
                   id="orderInput"
-          type="number" 
-          value={orderNumber} 
-          onChange={e => setOrderNumber(e.target.value)} 
+                  type="number" 
+                  value={orderNumber} 
+                  onChange={e => setOrderNumber(e.target.value)} 
                   placeholder="Introduce tu número de orden" 
                   style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
                   required
                   min="1"
+                  disabled={isProcessing}
                 />
               </div>
               
@@ -693,71 +831,45 @@ function App() {
                     border: '1px solid #ddd',
                     borderRadius: '4px',
                     padding: '10px',
-                    backgroundColor: '#fff'
+                    backgroundColor: isProcessing ? '#f5f5f5' : '#fff'
                   }}
                 >
                   {availablePlazas
                     .filter(plaza => (plaza.plazas - plaza.asignadas) > 0)
                     .sort((a, b) => a.id - b.id)
-                    .map((plaza) => {
-                      const disponibles = plaza.plazas - plaza.asignadas;
-                      const estaLleno = disponibles === 0;
-                      return (
-                        <div 
-                          key={plaza.id}
-                          style={{
-                            padding: '8px',
-                            borderBottom: '1px solid #eee',
-                            display: 'flex',
-                            alignItems: 'center',
-                            opacity: estaLleno ? 0.5 : 1
-                          }}
-                        >
-                          <input
-                            type="checkbox"
-                            id={`centro-${plaza.id}`}
-                            value={plaza.id}
-                            checked={centrosSeleccionados.includes(plaza.id)}
-                            onChange={handleCentroChange}
-                            disabled={estaLleno}
-                            style={{ marginRight: '10px' }}
-                          />
-                          <label 
-                            htmlFor={`centro-${plaza.id}`}
-                            style={{ 
-                              cursor: estaLleno ? 'not-allowed' : 'pointer',
-                              display: 'flex',
-                              flexDirection: 'column'
-                            }}
-                          >
-                            <span style={{ fontWeight: 'bold' }}>{plaza.centro} - {plaza.localidad}</span>
-                            <span style={{ fontSize: '0.9em', color: '#666' }}>
-                              {plaza.municipio} ({disponibles} de {plaza.plazas} plazas disponibles)
-                            </span>
-                          </label>
-                        </div>
-                      );
-                    })}
+                    .map((plaza, index) => (
+                      <div key={index} style={{ marginBottom: '8px', display: 'flex', alignItems: 'center' }}>
+                        <input
+                          type="checkbox"
+                          id={`centro-${plaza.id}`}
+                          value={plaza.id}
+                          checked={centrosSeleccionados.includes(plaza.id)}
+                          onChange={handleCentroChange}
+                          style={{ marginRight: '8px' }}
+                          disabled={isProcessing}
+                        />
+                        <label htmlFor={`centro-${plaza.id}`} style={{ fontSize: '14px', cursor: isProcessing ? 'default' : 'pointer' }}>
+                          {plaza.id}. <strong>{plaza.centro}</strong> - {plaza.localidad} ({plaza.municipio}) 
+                          {plaza.plazas > 1 && ` - ${plaza.plazas - plaza.asignadas} plaza${(plaza.plazas - plaza.asignadas) !== 1 ? 's' : ''} disponible${(plaza.plazas - plaza.asignadas) !== 1 ? 's' : ''}`}
+                        </label>
+                      </div>
+                    ))}
                 </div>
-                <p style={{ margin: '5px 0 0 0', fontSize: '14px', color: '#666' }}>
-                  Marca las casillas de los centros que te interesan. El orden de selección determina la prioridad.
-                </p>
               </div>
               
               <button 
                 type="submit" 
                 disabled={isProcessing}
                 style={{ 
-                  padding: '10px 16px', 
+                  padding: '10px', 
                   backgroundColor: isProcessing ? '#cccccc' : '#4CAF50', 
                   color: 'white', 
                   border: 'none', 
                   borderRadius: '4px', 
                   cursor: isProcessing ? 'not-allowed' : 'pointer',
-                  marginTop: '10px',
-                  alignSelf: 'flex-start',
                   display: 'flex',
-                  alignItems: 'center'
+                  alignItems: 'center',
+                  justifyContent: 'center'
                 }}
               >
                 {isProcessing && (
@@ -774,9 +886,9 @@ function App() {
                     }} 
                   />
                 )}
-                {isProcessing ? 'Procesando...' : 'Solicitar Plaza'}
+                {isProcessing ? 'Guardando solicitud...' : 'Enviar Solicitud'}
               </button>
-      </form>
+            </form>
             
             <SolicitudesPendientes 
               solicitudes={solicitudes} 
