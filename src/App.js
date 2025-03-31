@@ -55,9 +55,6 @@ const nursingDecoration = (
   </div>
 );
 
-// Variable para almacenar las funciones de cancelación de escuchas
-let unsubscribeFunc = null;
-
 function App() {
   const [excelData, setExcelData] = useState([]);
   const [orderNumber, setOrderNumber] = useState('');
@@ -79,94 +76,64 @@ function App() {
   // Última actualización (timestamp)
   const [ultimaActualizacion, setUltimaActualizacion] = useState(null);
 
-  // Cargar datos al iniciar y configurar la escucha de Firebase
+  // Cargar datos del CSV al iniciar y configurar la escucha de Firebase
   useEffect(() => {
-    // Configurar escuchas en tiempo real para Firebase
-    configureRealtimeListeners();
+    cargarTodosLosDatos();
     
-    // Limpiar las escuchas al desmontar
+    // Limpiar al desmontar
     return () => {
-      if (typeof unsubscribeFunc === 'function') {
-        unsubscribeFunc();
-      }
+      // Código de limpieza si es necesario
     };
   }, []);
 
-  // Configurar escuchas en tiempo real para Firebase
-  const configureRealtimeListeners = () => {
+  // Función para cargar todos los datos
+  const cargarTodosLosDatos = async () => {
     setIsLoading(true);
-    console.log("Configurando escuchas en tiempo real para Firebase...");
+    console.log("Iniciando carga de datos...");
     
     try {
-      // 1. Escucha para centros
-      console.log("Configurando escucha para centros...");
+      // 1. Cargar centros
       const centrosQuery = query(collection(db, "centros"));
-      const unsubCentros = onSnapshot(centrosQuery, (snapshot) => {
-        const centrosData = snapshot.docs.map(doc => ({
-          docId: doc.id,
-          ...doc.data()
-        }));
-        
-        setAvailablePlazas(centrosData);
-        
-        // Calcular total de plazas
-        const total = centrosData.reduce((acc, centro) => {
-          const plazas = parseInt(centro.plazas, 10);
-          return acc + (isNaN(plazas) ? 0 : plazas);
-        }, 0);
-        
-        setTotalPlazas(total);
-        
-        // Registrar actualización
-        setUltimaActualizacion(new Date().toLocaleString());
-      });
+      const centrosSnapshot = await getDocs(centrosQuery);
+      const centrosData = centrosSnapshot.docs.map(doc => ({
+        docId: doc.id,
+        ...doc.data()
+      }));
+      setAvailablePlazas(centrosData);
       
-      // 2. Escucha para asignaciones
-      console.log("Configurando escucha para asignaciones...");
-      const asignacionesQuery = query(collection(db, "asignaciones"), orderBy("timestamp", "desc"));
-      const unsubAsignaciones = onSnapshot(asignacionesQuery, (snapshot) => {
-        const asignacionesData = snapshot.docs.map(doc => ({
-          docId: doc.id,
-          ...doc.data()
-        }));
-        
-        setAssignments(asignacionesData);
-        
-        // Verificar asignación del usuario actual si hay un número de orden
-        if (orderNumber) {
-          const numOrden = parseInt(orderNumber, 10);
-          const asignacionUsuario = asignacionesData.find(a => a.order === numOrden);
-          
-          if (asignacionUsuario) {
-            setAssignment(asignacionUsuario);
-          }
-        }
-      });
+      // 2. Cargar asignaciones
+      const asignacionesQuery = query(collection(db, "asignaciones"));
+      const asignacionesSnapshot = await getDocs(asignacionesQuery);
+      const asignacionesData = asignacionesSnapshot.docs.map(doc => ({
+        docId: doc.id,
+        ...doc.data()
+      }));
+      setAssignments(asignacionesData);
       
-      // 3. Escucha para solicitudes pendientes
-      console.log("Configurando escucha para solicitudes pendientes...");
-      const solicitudesQuery = query(collection(db, "solicitudesPendientes"), orderBy("timestamp", "desc"));
-      const unsubSolicitudes = onSnapshot(solicitudesQuery, (snapshot) => {
-        const solicitudesData = snapshot.docs.map(doc => ({
-          docId: doc.id,
-          ...doc.data()
-        }));
-        
-        setSolicitudes(solicitudesData);
-      });
+      // 3. Cargar solicitudes pendientes
+      const solicitudesQuery = query(collection(db, "solicitudesPendientes"));
+      const solicitudesSnapshot = await getDocs(solicitudesQuery);
+      const solicitudesData = solicitudesSnapshot.docs.map(doc => ({
+        docId: doc.id,
+        ...doc.data()
+      }));
+      setSolicitudes(solicitudesData);
       
-      // Guardar las funciones para cancelar las escuchas
-      unsubscribeFunc = () => {
-        console.log("Cancelando escuchas en tiempo real...");
-        unsubCentros();
-        unsubAsignaciones();
-        unsubSolicitudes();
-      };
+      // Calcular total de plazas
+      const total = centrosData.reduce((acc, centro) => {
+        const plazas = parseInt(centro.plazas, 10);
+        return acc + (isNaN(plazas) ? 0 : plazas);
+      }, 0);
+      setTotalPlazas(total);
+      
+      // Registrar actualización
+      setUltimaActualizacion(new Date().toLocaleString());
       
       setIsLoading(false);
+      console.log("Datos cargados con éxito.");
     } catch (error) {
-      console.error("Error al configurar escuchas en tiempo real:", error);
-      alert(`Error al conectar con Firebase: ${error.message}`);
+      console.error("Error al cargar todos los datos:", error);
+      alert(`Error al cargar datos: ${error.message}`);
       setIsLoading(false);
     }
   };
@@ -182,6 +149,8 @@ function App() {
       setTimeout(() => {
         // Ocultar el indicador de carga
         setIsProcessing(false);
+        // Recargar para asegurar que los datos estén actualizados
+        window.location.reload();
       }, 2000);
     } catch (error) {
       console.error("Error al procesar automáticamente:", error);
@@ -356,9 +325,10 @@ function App() {
           
           alert(`Procesamiento completado. Se han asignado ${nuevasAsignaciones.length} plazas según prioridad por orden.`);
           
-          // No necesitamos actualizar los estados manualmente ya que las escuchas en tiempo real lo harán
-          
           setIsProcessing(false);
+          
+          // Recargar los datos para reflejar los cambios
+          cargarTodosLosDatos();
         } catch (error) {
           console.error("Error al guardar asignaciones:", error);
           alert(`Error al guardar asignaciones: ${error.message}`);
@@ -439,6 +409,8 @@ function App() {
           alert('Tu solicitud ha sido guardada, pero hubo un error al procesar las asignaciones: ' + processingError.message);
         } finally {
           setIsProcessing(false);
+          // Recargar datos para mostrar cambios
+          cargarTodosLosDatos();
         }
       }, 1000);
     } catch (error) {
@@ -486,7 +458,7 @@ function App() {
             <span style={{ fontWeight: 'bold', marginRight: '5px' }}>ℹ️</span>
             Datos actualizados: {ultimaActualizacion}
             <button 
-              onClick={configureRealtimeListeners} 
+              onClick={cargarTodosLosDatos} 
               style={{
                 marginLeft: '10px',
                 backgroundColor: '#2196f3',
