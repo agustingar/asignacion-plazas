@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
 import { db } from './firebase';
-import { collection, addDoc, getDocs, doc, updateDoc, onSnapshot, query, orderBy, deleteDoc } from 'firebase/firestore';
+import { collection, addDoc, getDocs, doc, updateDoc, onSnapshot, query, orderBy, deleteDoc, setDoc } from 'firebase/firestore';
 
 // Definir el estilo para la animación del spinner
 const spinnerAnimation = `
@@ -67,6 +67,8 @@ function App() {
   const [availablePlazas, setAvailablePlazas] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [busquedaCentros, setBusquedaCentros] = useState('');
+  const [loadingProcess, setLoadingProcess] = useState(false);
+  const [processingMessage, setProcessingMessage] = useState('');
 
   // Cargar datos del CSV al iniciar y configurar la escucha de Firebase
   useEffect(() => {
@@ -534,161 +536,124 @@ function App() {
     };
   }, []);
 
-  // Función para procesar todas las solicitudes pendientes
-  const procesarSolicitudes = async () => {
-    setIsProcessing(true);
+  // Procesar solicitudes
+  const procesarSolicitudes = useCallback(async () => {
+    setLoadingProcess(true);
+    setProcessingMessage('Procesando solicitudes...');
     
     try {
-      // Ordenar solicitudes por número de orden (prioridad)
-      const solicitudesOrdenadas = [...solicitudes].sort((a, b) => a.orden - b.orden);
+      // 1. Obtener todas las solicitudes
+      const solicitudesSnapshot = await getDocs(collection(db, 'solicitudes'));
+      const todasLasSolicitudes = solicitudesSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
       
-      // Lista de nuevas asignaciones realizadas
+      console.log(`Total de solicitudes encontradas: ${todasLasSolicitudes.length}`);
+      
+      if (todasLasSolicitudes.length === 0) {
+        setProcessingMessage('No hay solicitudes pendientes');
+        setLoadingProcess(false);
+        return;
+      }
+      
+      // 2. Obtener las plazas disponibles actualizadas
+      const plazasSnapshot = await getDocs(collection(db, 'plazas'));
+      const plazasDisponibles = plazasSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      
+      console.log(`Total de centros encontrados: ${plazasDisponibles.length}`);
+      
+      // 3. Crear mapa de centros y plazas disponibles
+      const centrosMap = {};
+      plazasDisponibles.forEach(plaza => {
+        centrosMap[plaza.id] = {
+          ...plaza,
+          plazasDisponibles: plaza.plazas - plaza.asignadas
+        };
+      });
+      
+      // 4. Obtener asignaciones existentes
+      const asignacionesSnapshot = await getDocs(collection(db, 'asignaciones'));
+      const asignacionesExistentes = asignacionesSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      
+      // Crear conjunto de órdenes ya asignados
+      const ordenesYaAsignados = new Set();
+      asignacionesExistentes.forEach(asignacion => {
+        ordenesYaAsignados.add(asignacion.order);
+      });
+      
+      console.log(`Total de órdenes ya asignados: ${ordenesYaAsignados.size}`);
+      
+      // 5. Filtrar solicitudes que no tienen asignación aún
+      const solicitudesPendientes = todasLasSolicitudes.filter(sol => !ordenesYaAsignados.has(sol.orden));
+      
+      // 6. Ordenar solicitudes pendientes por número de orden (prioridad a números más bajos)
+      const solicitudesOrdenadas = [...solicitudesPendientes].sort((a, b) => a.orden - b.orden);
+      
+      console.log(`Solicitudes pendientes ordenadas: ${solicitudesOrdenadas.length}`);
+      
+      // 7. Procesar cada solicitud en orden
       const nuevasAsignaciones = [];
       
-      // Copia de las plazas disponibles para trabajar
-      const plazasActualizadas = [...availablePlazas];
-      
-      // Registro de centros ya ocupados para evitar asignar el mismo centro más de una vez
-      const centrosOcupados = new Set();
-      
-      // Conjunto para almacenar los IDs de orden ya procesados (no necesariamente asignados)
-      const ordenesProcesados = new Set();
-      
-      // Mapa para almacenar todas las asignaciones por orden
-      const asignacionesPorOrden = new Map();
-      
-      console.log("Procesando solicitudes en orden de prioridad...");
-      console.log(`Total de solicitudes a procesar: ${solicitudesOrdenadas.length}`);
-      
-      // Primera pasada: Procesar cada solicitud en orden de prioridad (menor a mayor)
       for (const solicitud of solicitudesOrdenadas) {
-        const numOrden = solicitud.orden;
-        
-        // Verificar si este número de orden ya tiene asignación - si es así, continuamos sin asignar
-        const asignacionExistente = assignments.find(a => a.order === numOrden);
-        if (asignacionExistente) {
-          console.log(`Orden ${numOrden} ya tiene asignación. Se omite.`);
-          continue;
-        }
-        
-        console.log(`Procesando solicitud para orden ${numOrden} con ${solicitud.centrosIds?.length || 0} centros seleccionados`);
-        
-        // Verificar si hay centros seleccionados válidos
-        if (!solicitud.centrosIds || solicitud.centrosIds.length === 0) {
-          console.log(`Orden ${numOrden} no tiene centros seleccionados válidos.`);
-          continue;
-        }
-        
-        // Crear un array para almacenar las asignaciones para este orden
-        const asignacionesParaEsteOrden = [];
-        
-        // Verificar cada centro solicitado en orden de preferencia
+        // Verificar preferencias de centros en orden
         for (const centroId of solicitud.centrosIds) {
-          // Si el centro ya está ocupado, continuar con el siguiente
-          if (centrosOcupados.has(centroId)) {
-            console.log(`Centro ${centroId} ya está ocupado. Verificando siguiente preferencia.`);
-            continue;
-          }
-          
-          // Buscar el centro solicitado
-          const centroBuscado = plazasActualizadas.find(p => p.id === centroId);
-          
-          if (centroBuscado && centroBuscado.asignadas < centroBuscado.plazas) {
-            // Hay plaza disponible en el centro solicitado
-            console.log(`Asignando centro ${centroId} (${centroBuscado.centro}) a orden ${numOrden}`);
+          // Verificar si el centro existe y tiene plazas disponibles
+          if (centrosMap[centroId] && centrosMap[centroId].plazasDisponibles > 0) {
+            // Asignar plaza
+            centrosMap[centroId].plazasDisponibles--;
+            centrosMap[centroId].asignadas++;
             
-            // Actualizar plazas
-            const idx = plazasActualizadas.findIndex(p => p.id === centroId);
-            plazasActualizadas[idx] = {
-              ...plazasActualizadas[idx],
-              asignadas: plazasActualizadas[idx].asignadas + 1
-            };
-            
-            // Crear nueva asignación
             const nuevaAsignacion = {
-              order: numOrden,
-              id: centroBuscado.id,
-              localidad: centroBuscado.localidad,
-              centro: centroBuscado.centro,
-              municipio: centroBuscado.municipio,
+              id: centroId,
+              order: solicitud.orden,
+              centro: centrosMap[centroId].centro,
+              localidad: centrosMap[centroId].localidad,
+              municipio: centrosMap[centroId].municipio,
               timestamp: new Date().getTime()
             };
             
-            // Guardar la asignación
-            asignacionesParaEsteOrden.push(nuevaAsignacion);
-            centrosOcupados.add(centroId);
+            nuevasAsignaciones.push(nuevaAsignacion);
+            console.log(`Asignada plaza en ${centrosMap[centroId].centro} a orden ${solicitud.orden}`);
             
-            // Si ya no hay más plazas disponibles en este centro, marcarlo como ocupado
-            if (plazasActualizadas[idx].asignadas >= plazasActualizadas[idx].plazas) {
-              console.log(`Centro ${centroId} ahora está completamente ocupado.`);
-            }
-          } else {
-            console.log(`No hay plazas disponibles en centro ${centroId} o no existe.`);
+            // Actualizar en Firebase
+            const plazaRef = doc(db, 'plazas', centroId);
+            await updateDoc(plazaRef, {
+              asignadas: centrosMap[centroId].asignadas
+            });
+            
+            // Guardar asignación
+            await setDoc(doc(db, 'asignaciones', `${solicitud.orden}-${centroId}`), nuevaAsignacion);
+            
+            // Salir del bucle de centros ya que se asignó una plaza
+            break;
           }
-        }
-        
-        // Guardar las asignaciones para este orden
-        if (asignacionesParaEsteOrden.length > 0) {
-          asignacionesPorOrden.set(numOrden, asignacionesParaEsteOrden);
-          nuevasAsignaciones.push(...asignacionesParaEsteOrden);
-          // Marcar este orden como procesado (sólo si se asignó plaza)
-          ordenesProcesados.add(numOrden);
-        } else {
-          console.log(`No se pudieron asignar centros para el orden ${numOrden}`);
         }
       }
       
-      console.log(`Total de nuevas asignaciones: ${nuevasAsignaciones.length}`);
-      console.log(`Órdenes procesados: ${ordenesProcesados.size}`);
+      console.log(`Proceso completado. Nuevas asignaciones: ${nuevasAsignaciones.length}`);
       
-      // Actualizar Firebase con las nuevas asignaciones
+      // 8. Notificar finalización
       if (nuevasAsignaciones.length > 0) {
-        try {
-          // 1. Guardar las nuevas asignaciones
-          for (const asignacion of nuevasAsignaciones) {
-            await addDoc(collection(db, "asignaciones"), asignacion);
-          }
-          
-          // 2. Actualizar las plazas disponibles
-          for (const plaza of plazasActualizadas) {
-            if (plaza.docId) { // Solo si tiene ID de documento
-              const centroRef = doc(db, "centros", plaza.docId);
-              await updateDoc(centroRef, { asignadas: plaza.asignadas });
-            }
-          }
-          
-          // 3. Ya no eliminamos las solicitudes, para mantener el historial y permitir asignaciones futuras
-          // Solo actualizamos la UI
-          
-          // Encontrar y establecer la asignación para el número de orden actual si existe
-          if (orderNumber) {
-            const ordenActual = parseInt(orderNumber, 10);
-            const misAsignaciones = asignacionesPorOrden.get(ordenActual) || [];
-            if (misAsignaciones.length > 0) {
-              // Mostrar la primera asignación (generalmente la de mayor preferencia)
-              setAssignment(misAsignaciones[0]);
-            }
-          }
-          
-          if (nuevasAsignaciones.length > 0) {
-            alert(`Procesamiento completado. Se han asignado ${nuevasAsignaciones.length} plazas para ${ordenesProcesados.size} solicitudes.`);
-          } else {
-            alert(`No se han realizado asignaciones porque todos los centros solicitados están llenos.`);
-          }
-        } catch (error) {
-          console.error("Error al actualizar Firebase:", error);
-          alert("Error al procesar solicitudes. Inténtelo de nuevo.");
-        }
+        setProcessingMessage(`Se han asignado ${nuevasAsignaciones.length} plazas según prioridad por orden.`);
+        // Actualizar lista local de asignaciones
+        setAssignments(prev => [...prev, ...nuevasAsignaciones]);
       } else {
-        alert("No se han podido realizar nuevas asignaciones. Todas las plazas solicitadas ya están ocupadas o no hay solicitudes pendientes.");
+        setProcessingMessage('No se han podido realizar nuevas asignaciones. Todas las plazas están ocupadas o no hay solicitudes con centros disponibles.');
       }
+    } catch (error) {
+      console.error('Error al procesar solicitudes:', error);
+      setProcessingMessage(`Error al procesar solicitudes: ${error.message}`);
     } finally {
-      // Asegurarse de ocultar el loader incluso si hay error
-      setTimeout(() => {
-        setIsProcessing(false);
-      }, 1000);
+      setLoadingProcess(false);
     }
-  };
+  }, [db]);
 
   const handleOrderSubmit = async (e) => {
     e.preventDefault();
@@ -780,9 +745,9 @@ function App() {
             };
             
             asignacionExitosa = true;
-            break;
-          }
-        }
+        break;
+      }
+    }
         
         if (asignacionExitosa && centroAsignado) {
           try {
@@ -969,13 +934,13 @@ function App() {
           <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ddd', borderRadius: '5px' }}>
             <h2 style={{ color: '#18539E' }}>Solicitar Plaza</h2>
             <form onSubmit={handleOrderSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-              <div>
+    <div>
                 <label htmlFor="orderInput" style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Número de Orden:</label>
-                <input 
+        <input 
                   id="orderInput"
-                  type="number" 
-                  value={orderNumber} 
-                  onChange={e => setOrderNumber(e.target.value)} 
+          type="number" 
+          value={orderNumber} 
+          onChange={e => setOrderNumber(e.target.value)} 
                   placeholder="Introduce tu número de orden" 
                   style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
                   required
@@ -984,7 +949,7 @@ function App() {
                 />
               </div>
               
-              <div>
+        <div>
                 <label htmlFor="centrosGroup" style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
                   Centros de Trabajo (selecciona múltiples en orden de preferencia):
                 </label>
@@ -1004,7 +969,7 @@ function App() {
                     }}
                     disabled={isProcessing}
                   />
-                </div>
+        </div>
                 
                 <div className="mobile-scroll-hint" style={{
                   display: 'none',
@@ -1217,6 +1182,9 @@ function App() {
               <h2 style={{ color: '#18539E' }}>Solicitudes Pendientes</h2>
               <div style={{ marginBottom: '15px', fontSize: '14px' }}>
                 A continuación se muestran todas las solicitudes pendientes con sus preferencias de centros en orden.
+                <p style={{ color: '#d35400', fontWeight: 'bold', marginTop: '5px' }}>
+                  Las solicitudes se procesan por orden de prioridad (número de orden menor = mayor prioridad)
+                </p>
               </div>
               
               <div style={{ overflowX: 'auto' }}>
@@ -1226,33 +1194,88 @@ function App() {
                       <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#d35400' }}>Nº Orden</th>
                       <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#d35400' }}>Fecha/Hora</th>
                       <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#d35400' }}>Centros Seleccionados (en orden de preferencia)</th>
+                      <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', color: '#d35400' }}>Estado</th>
                     </tr>
                   </thead>
                   <tbody>
                     {solicitudes
-                      .sort((a, b) => b.timestamp - a.timestamp)
+                      .sort((a, b) => a.orden - b.orden) // Ordenar por número de orden (menor primero)
                       .map((solicitud, index) => {
                         // Convertir timestamp a fecha legible
                         const fecha = new Date(solicitud.timestamp);
                         const fechaFormateada = `${fecha.toLocaleDateString()} ${fecha.toLocaleTimeString()}`;
                         
+                        // Verificar si tiene asignación
+                        const tieneAsignacion = assignments.some(a => a.order === solicitud.orden);
+                        
                         return (
-                          <tr key={index} style={{ backgroundColor: index % 2 === 0 ? 'white' : '#fdf2e9' }}>
-                            <td style={{ border: '1px solid #ddd', padding: '10px', fontWeight: 'bold' }}>{solicitud.orden}</td>
+                          <tr key={index} style={{ 
+                            backgroundColor: tieneAsignacion ? '#e8f5e9' : (index % 2 === 0 ? 'white' : '#fdf2e9'),
+                            opacity: tieneAsignacion ? 0.8 : 1
+                          }}>
+                            <td style={{ 
+                              border: '1px solid #ddd', 
+                              padding: '10px', 
+                              fontWeight: 'bold',
+                              backgroundColor: solicitud.orden <= 50 ? '#fff3cd' : 'inherit' // Destacar órdenes bajos
+                            }}>
+                              {solicitud.orden}
+                              {solicitud.orden <= 50 && (
+                                <span style={{ 
+                                  display: 'inline-block', 
+                                  marginLeft: '5px', 
+                                  fontSize: '12px', 
+                                  color: '#856404',
+                                  backgroundColor: '#fff3cd',
+                                  padding: '2px 5px',
+                                  borderRadius: '3px'
+                                }}>
+                                  Alta prioridad
+                                </span>
+                              )}
+                            </td>
                             <td style={{ border: '1px solid #ddd', padding: '10px' }}>{fechaFormateada}</td>
                             <td style={{ border: '1px solid #ddd', padding: '10px' }}>
                               <ol style={{ margin: '0', paddingLeft: '20px' }}>
                                 {solicitud.centrosIds.map((centroId, idx) => {
                                   // Buscar detalles del centro
                                   const centro = availablePlazas.find(p => p.id === centroId);
+                                  
+                                  // Buscar si este centro concreto tiene asignación para este orden
+                                  const asignadoAEsteCentro = assignments.some(a => 
+                                    a.order === solicitud.orden && a.id === centroId);
+                                    
                                   return (
-                                    <li key={idx} style={{ marginBottom: '5px' }}>
+                                    <li key={idx} style={{ 
+                                      marginBottom: '5px',
+                                      backgroundColor: asignadoAEsteCentro ? '#e8f5e9' : 'inherit',
+                                      padding: asignadoAEsteCentro ? '3px 5px' : '0',
+                                      borderRadius: asignadoAEsteCentro ? '3px' : '0'
+                                    }}>
                                       {centro ? (
                                         <>
                                           <strong>{centro.centro}</strong> - {centro.localidad} ({centro.municipio})
-                                          {(centro.plazas - centro.asignadas) <= 0 && (
-                                            <span style={{ color: 'red', marginLeft: '10px', fontSize: '12px', fontWeight: 'bold' }}>
+                                          {(centro.plazas - centro.asignadas) <= 0 && !asignadoAEsteCentro && (
+                                            <span style={{ 
+                                              color: 'red', 
+                                              marginLeft: '10px', 
+                                              fontSize: '12px', 
+                                              fontWeight: 'bold' 
+                                            }}>
                                               COMPLETO
+                                            </span>
+                                          )}
+                                          {asignadoAEsteCentro && (
+                                            <span style={{ 
+                                              color: 'green', 
+                                              marginLeft: '10px', 
+                                              fontSize: '12px', 
+                                              fontWeight: 'bold',
+                                              border: '1px solid green',
+                                              padding: '1px 4px',
+                                              borderRadius: '3px'
+                                            }}>
+                                              ✓ ASIGNADO
                                             </span>
                                           )}
                                         </>
@@ -1263,6 +1286,22 @@ function App() {
                                   );
                                 })}
                               </ol>
+                            </td>
+                            <td style={{ 
+                              border: '1px solid #ddd', 
+                              padding: '10px', 
+                              textAlign: 'center',
+                              fontWeight: 'bold'
+                            }}>
+                              {tieneAsignacion ? (
+                                <span style={{ color: 'green' }}>
+                                  ASIGNADO
+                                </span>
+                              ) : (
+                                <span style={{ color: '#d35400' }}>
+                                  EN ESPERA
+                                </span>
+                              )}
                             </td>
                           </tr>
                         );
@@ -1378,6 +1417,10 @@ function Dashboard({ assignments }) {
         </button>
       </div>
       
+      <div style={{ marginBottom: '15px', fontSize: '14px' }}>
+        Las plazas se asignan por número de orden (a menor número, mayor prioridad).
+      </div>
+      
       <div style={{ overflowX: 'auto', paddingBottom: '5px' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
@@ -1391,17 +1434,52 @@ function Dashboard({ assignments }) {
               const asignacionesDeEsteOrden = asignacionesPorOrden[orden];
               
               return (
-                <tr key={index} style={{ backgroundColor: index % 2 === 0 ? 'white' : '#f9f9f9' }}>
-                  <td style={{ border: '1px solid #ddd', padding: '10px', fontWeight: 'bold' }}>
+                <tr key={index} style={{ 
+                  backgroundColor: index % 2 === 0 ? 'white' : '#f9f9f9',
+                  border: orden <= 50 ? '2px solid #fff3cd' : '1px solid #ddd' // Destacar órdenes altos
+                }}>
+                  <td style={{ 
+                    border: '1px solid #ddd', 
+                    padding: '10px', 
+                    fontWeight: 'bold',
+                    backgroundColor: orden <= 50 ? '#fff3cd' : 'inherit'
+                  }}>
                     {orden}
+                    {orden <= 50 && (
+                      <span style={{ 
+                        display: 'inline-block', 
+                        marginLeft: '5px', 
+                        fontSize: '12px', 
+                        color: '#856404',
+                        padding: '2px 5px',
+                        borderRadius: '3px'
+                      }}>
+                        Alta prioridad
+                      </span>
+                    )}
                   </td>
                   <td style={{ border: '1px solid #ddd', padding: '10px' }}>
                     <ol style={{ margin: 0, paddingLeft: '20px' }}>
-                      {asignacionesDeEsteOrden.map((asignacion, idx) => (
-                        <li key={idx} style={{ marginBottom: '5px' }}>
-                          <strong>{asignacion.centro}</strong> - {asignacion.localidad} ({asignacion.municipio})
-                        </li>
-                      ))}
+                      {asignacionesDeEsteOrden.map((asignacion, idx) => {
+                        // Fecha de asignación
+                        const fecha = new Date(asignacion.timestamp);
+                        const fechaFormateada = fecha.toLocaleDateString();
+                        
+                        return (
+                          <li key={idx} style={{ marginBottom: '5px' }}>
+                            <strong>{asignacion.centro}</strong> - {asignacion.localidad} ({asignacion.municipio})
+                            <span style={{ 
+                              display: 'inline-block', 
+                              marginLeft: '10px', 
+                              fontSize: '12px', 
+                              color: '#666',
+                              fontStyle: 'italic'
+                            }}>
+                              Asignado el {fechaFormateada}
+                            </span>
+                          </li>
+                        );
+                      })}
                     </ol>
                   </td>
                 </tr>
@@ -1409,21 +1487,6 @@ function Dashboard({ assignments }) {
             })}
           </tbody>
         </table>
-      </div>
-      
-      <div style={{ 
-        marginTop: '10px', 
-        fontSize: '14px', 
-        color: '#666', 
-        fontStyle: 'italic', 
-        textAlign: 'center',
-        display: 'flex',
-        justifyContent: 'center',
-        alignItems: 'center',
-        gap: '5px'
-      }}>
-        <span style={{ color: '#18539E', fontSize: '16px' }}>🏥</span>
-        Resumen: {assignments.length} plazas asignadas para {ordenesOrdenados.length} solicitantes
       </div>
     </div>
   );
