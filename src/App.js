@@ -564,10 +564,10 @@ function App() {
       for (const solicitud of solicitudesOrdenadas) {
         const numOrden = solicitud.orden;
         
-        // Verificar si este número de orden ya tiene asignación
+        // Verificar si este número de orden ya tiene asignación - si es así, continuamos sin asignar
         const asignacionExistente = assignments.find(a => a.order === numOrden);
-        if (asignacionExistente || ordenesProcesados.has(numOrden)) {
-          console.log(`Orden ${numOrden} ya tiene asignación o fue procesado. Se omite.`);
+        if (asignacionExistente) {
+          console.log(`Orden ${numOrden} ya tiene asignación. Se omite.`);
           continue;
         }
         
@@ -576,7 +576,6 @@ function App() {
         // Verificar si hay centros seleccionados válidos
         if (!solicitud.centrosIds || solicitud.centrosIds.length === 0) {
           console.log(`Orden ${numOrden} no tiene centros seleccionados válidos.`);
-          ordenesProcesados.add(numOrden);
           continue;
         }
         
@@ -632,12 +631,11 @@ function App() {
         if (asignacionesParaEsteOrden.length > 0) {
           asignacionesPorOrden.set(numOrden, asignacionesParaEsteOrden);
           nuevasAsignaciones.push(...asignacionesParaEsteOrden);
+          // Marcar este orden como procesado (sólo si se asignó plaza)
+          ordenesProcesados.add(numOrden);
         } else {
           console.log(`No se pudieron asignar centros para el orden ${numOrden}`);
         }
-        
-        // Marcar este orden como procesado
-        ordenesProcesados.add(numOrden);
       }
       
       console.log(`Total de nuevas asignaciones: ${nuevasAsignaciones.length}`);
@@ -659,13 +657,8 @@ function App() {
             }
           }
           
-          // 3. Eliminar las solicitudes procesadas
-          for (const solicitud of solicitudesOrdenadas) {
-            if (ordenesProcesados.has(solicitud.orden) && solicitud.docId) {
-              const solicitudRef = doc(db, "solicitudesPendientes", solicitud.docId);
-              await deleteDoc(solicitudRef);
-            }
-          }
+          // 3. Ya no eliminamos las solicitudes, para mantener el historial y permitir asignaciones futuras
+          // Solo actualizamos la UI
           
           // Encontrar y establecer la asignación para el número de orden actual si existe
           if (orderNumber) {
@@ -677,7 +670,11 @@ function App() {
             }
           }
           
-          alert(`Procesamiento completado. Se han asignado ${nuevasAsignaciones.length} plazas para ${ordenesProcesados.size} solicitudes.`);
+          if (nuevasAsignaciones.length > 0) {
+            alert(`Procesamiento completado. Se han asignado ${nuevasAsignaciones.length} plazas para ${ordenesProcesados.size} solicitudes.`);
+          } else {
+            alert(`No se han realizado asignaciones porque todos los centros solicitados están llenos.`);
+          }
         } catch (error) {
           console.error("Error al actualizar Firebase:", error);
           alert("Error al procesar solicitudes. Inténtelo de nuevo.");
@@ -710,7 +707,8 @@ function App() {
     const existingAssignment = assignments.find(a => a.order === numOrden);
     if (existingAssignment) {
       setAssignment(existingAssignment);
-      return;
+      alert(`Ya tienes una plaza asignada en: ${existingAssignment.centro}. Puedes seguir enviando solicitudes para otras plazas que te interesen aunque ya tengas una asignada.`);
+      // Permitimos continuar para que el usuario pueda añadir más solicitudes si lo desea
     }
     
     // Mostrar el indicador de carga
@@ -738,6 +736,12 @@ function App() {
         const solicitudRef = doc(db, "solicitudesPendientes", solicitudExistente.docId);
         await updateDoc(solicitudRef, datosParaGuardar);
         console.log("Solicitud actualizada correctamente");
+        
+        // Mostramos confirmación y terminamos, sin procesar asignación automática
+        // si ya existe una solicitud previa
+        setIsProcessing(false);
+        alert(`Tu solicitud ha sido actualizada. Se procesará según orden de preferencia.`);
+        return;
       } else {
         // Crear nueva solicitud en Firebase
         console.log("Creando nueva solicitud");
@@ -745,89 +749,94 @@ function App() {
         console.log("Nueva solicitud creada con ID:", docRef.id);
       }
       
-      // Procesar asignación inmediatamente
-      let asignacionExitosa = false;
-      // Copia de las plazas disponibles
-      const plazasActualizadas = [...availablePlazas];
-      let centroAsignado = null;
-      
-      // Intentar asignar según los centros seleccionados en orden de preferencia
-      for (const centroId of centrosIdsNumericos) {
-        // Buscar el centro
-        const idx = plazasActualizadas.findIndex(p => p.id === centroId);
-        if (idx >= 0 && plazasActualizadas[idx].asignadas < plazasActualizadas[idx].plazas) {
-          // Hay plaza disponible en este centro
-          const centro = plazasActualizadas[idx];
-          centroAsignado = {
-            order: numOrden,
-            id: centro.id,
-            localidad: centro.localidad,
-            centro: centro.centro,
-            municipio: centro.municipio,
-            timestamp: new Date().getTime()
-          };
-          
-          // Actualizar plazas asignadas en la copia local
-          plazasActualizadas[idx] = {
-            ...plazasActualizadas[idx],
-            asignadas: plazasActualizadas[idx].asignadas + 1
-          };
-          
-          asignacionExitosa = true;
-          break;
+      // Solo intentamos asignar automáticamente si no hay una asignación existente
+      if (!existingAssignment) {
+        // Procesar asignación inmediatamente
+        let asignacionExitosa = false;
+        // Copia de las plazas disponibles
+        const plazasActualizadas = [...availablePlazas];
+        let centroAsignado = null;
+        
+        // Intentar asignar según los centros seleccionados en orden de preferencia
+        for (const centroId of centrosIdsNumericos) {
+          // Buscar el centro
+          const idx = plazasActualizadas.findIndex(p => p.id === centroId);
+          if (idx >= 0 && plazasActualizadas[idx].asignadas < plazasActualizadas[idx].plazas) {
+            // Hay plaza disponible en este centro
+            const centro = plazasActualizadas[idx];
+            centroAsignado = {
+              order: numOrden,
+              id: centro.id,
+              localidad: centro.localidad,
+              centro: centro.centro,
+              municipio: centro.municipio,
+              timestamp: new Date().getTime()
+            };
+            
+            // Actualizar plazas asignadas en la copia local
+            plazasActualizadas[idx] = {
+              ...plazasActualizadas[idx],
+              asignadas: plazasActualizadas[idx].asignadas + 1
+            };
+            
+            asignacionExitosa = true;
+            break;
+          }
         }
-      }
-      
-      if (asignacionExitosa && centroAsignado) {
-        try {
-          // Guardar la asignación en Firebase
-          const asignacionRef = await addDoc(collection(db, "asignaciones"), centroAsignado);
-          console.log("Asignación creada con ID:", asignacionRef.id);
-          
-          // Actualizar el centro en Firebase
-          if (centroAsignado.id) {
-            const centroDocIndex = plazasActualizadas.findIndex(p => p.id === centroAsignado.id);
-            if (centroDocIndex >= 0 && plazasActualizadas[centroDocIndex].docId) {
-              const centroDocId = plazasActualizadas[centroDocIndex].docId;
-              const nuevasAsignaciones = plazasActualizadas[centroDocIndex].asignadas;
-              
-              console.log(`Actualizando centro ${centroAsignado.id} en Firebase. Plazas asignadas: ${nuevasAsignaciones}`);
-              
-              await updateDoc(doc(db, "centros", centroDocId), { 
-                asignadas: nuevasAsignaciones 
-              });
-              
-              // Actualizar el estado local de las plazas
-              setAvailablePlazas(plazasActualizadas);
-            } else {
-              console.error("No se pudo encontrar el docId del centro para actualizar:", centroAsignado.id);
+        
+        if (asignacionExitosa && centroAsignado) {
+          try {
+            // Guardar la asignación en Firebase
+            const asignacionRef = await addDoc(collection(db, "asignaciones"), centroAsignado);
+            console.log("Asignación creada con ID:", asignacionRef.id);
+            
+            // Actualizar el centro en Firebase
+            if (centroAsignado.id) {
+              const centroDocIndex = plazasActualizadas.findIndex(p => p.id === centroAsignado.id);
+              if (centroDocIndex >= 0 && plazasActualizadas[centroDocIndex].docId) {
+                const centroDocId = plazasActualizadas[centroDocIndex].docId;
+                const nuevasAsignaciones = plazasActualizadas[centroDocIndex].asignadas;
+                
+                console.log(`Actualizando centro ${centroAsignado.id} en Firebase. Plazas asignadas: ${nuevasAsignaciones}`);
+                
+                await updateDoc(doc(db, "centros", centroDocId), { 
+                  asignadas: nuevasAsignaciones 
+                });
+                
+                // Actualizar el estado local de las plazas
+                setAvailablePlazas(plazasActualizadas);
+              } else {
+                console.error("No se pudo encontrar el docId del centro para actualizar:", centroAsignado.id);
+              }
             }
+            
+            // Ya no eliminamos la solicitud, la mantenemos en el sistema
+            // para permitir futuras asignaciones si cambian las condiciones
+            
+            // Actualizar la asignación en la vista
+            setAssignment(centroAsignado);
+            
+            // Esperar un momento para que se completen las actualizaciones
+            setTimeout(() => {
+              // Mostrar mensaje de éxito
+              alert(`Plaza asignada correctamente en: ${centroAsignado.centro}`);
+              // Reiniciar la página para refrescar todos los datos
+              window.location.reload();
+            }, 1500);
+          } catch (error) {
+            console.error("Error al guardar la asignación en Firebase:", error);
+            alert("Error al guardar la asignación: " + error.message);
+            setIsProcessing(false);
           }
-          
-          // Eliminar la solicitud pendiente ya que ha sido procesada
-          if (solicitudExistente && solicitudExistente.docId) {
-            await deleteDoc(doc(db, "solicitudesPendientes", solicitudExistente.docId));
-          }
-          
-          // Actualizar la asignación en la vista
-          setAssignment(centroAsignado);
-          
-          // Esperar un momento para que se completen las actualizaciones
-          setTimeout(() => {
-            // Mostrar mensaje de éxito
-            alert(`Plaza asignada correctamente en: ${centroAsignado.centro}`);
-            // Reiniciar la página para refrescar todos los datos
-            window.location.reload();
-          }, 1500);
-        } catch (error) {
-          console.error("Error al guardar la asignación en Firebase:", error);
-          alert("Error al guardar la asignación: " + error.message);
+        } else {
+          // No se pudo asignar
           setIsProcessing(false);
+          alert("Tu solicitud ha sido registrada pero todos los centros seleccionados están llenos actualmente. Si se liberan plazas, se te asignará una de acuerdo a tu número de orden y preferencias.");
         }
       } else {
-        // No se pudo asignar
-        alert("No se ha podido realizar la asignación. Todos los centros seleccionados están completos.");
+        // Si ya hay una asignación existente, simplemente confirmamos que se guardó la solicitud
         setIsProcessing(false);
+        alert("Tu solicitud ha sido registrada. Ya tienes una plaza asignada, pero si prefieres alguna de las nuevas opciones y hay disponibilidad, se te podría reasignar en un futuro.");
       }
     } catch (error) {
       console.error("Error al guardar solicitud:", error);
