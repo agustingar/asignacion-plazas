@@ -1489,22 +1489,7 @@ function PlazasDisponibles({ availablePlazas }) {
                     </div>
                   </td>
                   <td style={{ border: '1px solid #ddd', padding: '10px' }} className="mobile-truncate">
-                    <div className="centro-info">
-                      <span>{plaza.localidad || '-'}</span>
-                      <span 
-                        className="info-icon" 
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          const allTooltips = document.querySelectorAll('.info-tooltip');
-                          allTooltips.forEach(t => t.style.display = 'none');
-                          
-                          const tooltip = e.currentTarget.nextElementSibling;
-                          tooltip.style.display = 'block';
-                          document.getElementById('tooltip-backdrop').style.display = 'block';
-                        }}
-                      >i</span>
-                      <div className="info-tooltip">{plaza.localidad || '-'}</div>
-                    </div>
+                    {plaza.localidad || '-'}
                   </td>
                   <td style={{ border: '1px solid #ddd', padding: '10px' }} className="mobile-priority-low">{plaza.municipio || '-'}</td>
                   <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }} className="mobile-priority-low">{plaza.plazas}</td>
