@@ -1084,7 +1084,7 @@ function App() {
                           disabled={isProcessing}
                         />
                         <label htmlFor={`centro-${plaza.id}`} style={{ fontSize: '14px', cursor: isProcessing ? 'default' : 'pointer' }}>
-                          {plaza.id}. <strong>{plaza.centro}</strong> - {plaza.localidad} ({plaza.municipio}) 
+                          {plaza.id}. <strong className="centro-nombre">{plaza.centro}</strong> - {plaza.localidad} ({plaza.municipio}) 
                           {plaza.plazas > 1 && ` - ${plaza.plazas - plaza.asignadas} plaza${(plaza.plazas - plaza.asignadas) !== 1 ? 's' : ''} disponible${(plaza.plazas - plaza.asignadas) !== 1 ? 's' : ''}`}
                         </label>
                       </div>
@@ -1390,10 +1390,58 @@ function PlazasDisponibles({ availablePlazas }) {
                 white-space: nowrap;
                 overflow: hidden;
                 text-overflow: ellipsis;
+                position: relative;
+              }
+              .info-tooltip {
+                display: none;
+                position: fixed;
+                left: 50%;
+                top: 50%;
+                transform: translate(-50%, -50%);
+                background: rgba(24, 83, 158, 0.95);
+                color: white;
+                padding: 12px 15px;
+                border-radius: 6px;
+                z-index: 1000;
+                max-width: 90vw;
+                width: auto;
+                text-align: center;
+                box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+              }
+              .info-icon {
+                display: inline-block;
+                width: 16px;
+                height: 16px;
+                border-radius: 50%;
+                background-color: #18539E;
+                color: white;
+                font-size: 10px;
+                text-align: center;
+                line-height: 16px;
+                margin-left: 5px;
+                cursor: pointer;
+              }
+              .centro-info {
+                display: flex;
+                align-items: center;
+              }
+              .tooltip-backdrop {
+                display: none;
+                position: fixed;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background: rgba(0,0,0,0.5);
+                z-index: 999;
               }
             }
           `}
         </style>
+        <div id="tooltip-backdrop" className="tooltip-backdrop" onClick={() => {
+          document.querySelectorAll('.info-tooltip').forEach(el => el.style.display = 'none');
+          document.getElementById('tooltip-backdrop').style.display = 'none';
+        }}></div>
         <table className="responsive-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ backgroundColor: '#EBF4FF' }}>
@@ -1422,8 +1470,42 @@ function PlazasDisponibles({ availablePlazas }) {
                   }}
                 >
                   <td style={{ border: '1px solid #ddd', padding: '10px' }}>{plaza.id}</td>
-                  <td style={{ border: '1px solid #ddd', padding: '10px', fontWeight: 'bold' }} className="mobile-truncate">{plaza.centro || '-'}</td>
-                  <td style={{ border: '1px solid #ddd', padding: '10px' }} className="mobile-truncate">{plaza.localidad || '-'}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '10px', fontWeight: 'bold' }} className="mobile-truncate">
+                    <div className="centro-info">
+                      <span>{plaza.centro || '-'}</span>
+                      <span 
+                        className="info-icon" 
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const allTooltips = document.querySelectorAll('.info-tooltip');
+                          allTooltips.forEach(t => t.style.display = 'none');
+                          
+                          const tooltip = e.currentTarget.nextElementSibling;
+                          tooltip.style.display = 'block';
+                          document.getElementById('tooltip-backdrop').style.display = 'block';
+                        }}
+                      >i</span>
+                      <div className="info-tooltip">{plaza.centro || '-'}</div>
+                    </div>
+                  </td>
+                  <td style={{ border: '1px solid #ddd', padding: '10px' }} className="mobile-truncate">
+                    <div className="centro-info">
+                      <span>{plaza.localidad || '-'}</span>
+                      <span 
+                        className="info-icon" 
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const allTooltips = document.querySelectorAll('.info-tooltip');
+                          allTooltips.forEach(t => t.style.display = 'none');
+                          
+                          const tooltip = e.currentTarget.nextElementSibling;
+                          tooltip.style.display = 'block';
+                          document.getElementById('tooltip-backdrop').style.display = 'block';
+                        }}
+                      >i</span>
+                      <div className="info-tooltip">{plaza.localidad || '-'}</div>
+                    </div>
+                  </td>
                   <td style={{ border: '1px solid #ddd', padding: '10px' }} className="mobile-priority-low">{plaza.municipio || '-'}</td>
                   <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }} className="mobile-priority-low">{plaza.plazas}</td>
                   <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }} className="mobile-priority-low">{plaza.asignadas}</td>
@@ -1599,5 +1681,27 @@ function Footer() {
     </div>
   );
 }
+
+// Añadir estilos para mostrar nombres completos de centros en la sección de selección
+<style>
+  {`
+    @media (max-width: 768px) {
+      .centro-nombre {
+        display: inline;
+        word-break: break-word;
+        white-space: normal;
+      }
+      label {
+        display: block;
+        padding-left: 24px;
+        text-indent: -24px;
+        margin-bottom: 5px;
+      }
+      input[type="checkbox"] {
+        margin-right: 6px !important;
+      }
+    }
+  `}
+</style>
 
 export default App;
