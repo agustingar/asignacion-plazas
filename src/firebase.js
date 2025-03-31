@@ -19,17 +19,33 @@ const firebaseConfig = {
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
-const analytics = getAnalytics(app);
+
+// Inicializar analytics solo si estamos en un navegador y no en modo servidor
+let analytics = null;
+try {
+  if (typeof window !== 'undefined') {
+    analytics = getAnalytics(app);
+  }
+} catch (error) {
+  console.error("Error al inicializar analytics:", error);
+}
+
 const db = getFirestore(app);
 
 // Habilitar persistencia para que funcione offline
-enableIndexedDbPersistence(db)
-  .catch((err) => {
-    if (err.code === 'failed-precondition') {
-      console.warn('La persistencia falló: múltiples pestañas abiertas');
-    } else if (err.code === 'unimplemented') {
-      console.warn('El navegador no soporta persistencia');
-    }
-  });
+try {
+  enableIndexedDbPersistence(db)
+    .catch((err) => {
+      if (err.code === 'failed-precondition') {
+        console.warn('La persistencia falló: múltiples pestañas abiertas');
+      } else if (err.code === 'unimplemented') {
+        console.warn('El navegador no soporta persistencia');
+      } else {
+        console.error('Error al habilitar persistencia:', err);
+      }
+    });
+} catch (error) {
+  console.error("Error al configurar persistencia:", error);
+}
 
 export { db }; 

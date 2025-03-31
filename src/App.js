@@ -844,6 +844,8 @@ function App() {
       // Hacerlo con datos locales primero para reducir consultas Firebase
       const solicitudExistenteLocal = solicitudes.find(s => s.orden === numOrden);
       
+      let guardadoExitoso = false;
+      
       if (solicitudExistenteLocal) {
         // Actualizar la solicitud existente con los nuevos centros seleccionados
         console.log("Actualizando solicitud existente:", solicitudExistenteLocal.id);
@@ -851,11 +853,12 @@ function App() {
           const solicitudRef = doc(db, "solicitudes", solicitudExistenteLocal.id);
           await updateDoc(solicitudRef, datosParaGuardar);
           console.log("Solicitud actualizada correctamente");
+          guardadoExitoso = true;
         } catch (error) {
           console.error("Error al actualizar solicitud:", error);
-          if (error.message && error.message.includes('quota')) {
+          if (error.message && (error.message.includes('quota') || error.message.includes('permission'))) {
             setIsProcessing(false);
-            alert('Firebase Quota Exceeded: Se ha superado el límite de operaciones gratuitas. Intente más tarde o contacte al administrador para actualizar el plan de Firebase.');
+            alert('Error de permisos en Firebase: No se pudo actualizar la solicitud. Contacte al administrador.');
             return;
           }
           throw error;
@@ -866,53 +869,82 @@ function App() {
         try {
           const docRef = await addDoc(collection(db, "solicitudes"), datosParaGuardar);
           console.log("Nueva solicitud creada con ID:", docRef.id);
+          guardadoExitoso = true;
         } catch (error) {
           console.error("Error al crear solicitud:", error);
-          if (error.message && error.message.includes('quota')) {
+          if (error.message && (error.message.includes('quota') || error.message.includes('permission'))) {
             setIsProcessing(false);
-            alert('Firebase Quota Exceeded: Se ha superado el límite de operaciones gratuitas. Intente más tarde o contacte al administrador para actualizar el plan de Firebase.');
+            alert('Error de permisos en Firebase: No se pudo crear la solicitud. Contacte al administrador.');
             return;
           }
           throw error;
         }
       }
       
-      // Actualizar localmente las solicitudes
-      if (solicitudExistenteLocal) {
-        // Actualizar la solicitud existente
-        setSolicitudes(prevSolicitudes => 
-          prevSolicitudes.map(sol => 
-            sol.orden === numOrden ? {...sol, centrosIds: centrosIdsNumericos, timestamp: Date.now()} : sol
-          )
-        );
-      } else {
-        // Añadir la nueva solicitud
-        setSolicitudes(prevSolicitudes => [
-          ...prevSolicitudes, 
-          {
-            orden: numOrden,
-            centrosIds: centrosIdsNumericos,
-            timestamp: Date.now(),
-            id: `temp-${Date.now()}` // ID temporal hasta que se recargue
-          }
-        ]);
-      }
-      
-      // Procesar automáticamente todas las solicitudes después de guardar
-      try {
-        console.log("Procesando todas las solicitudes automáticamente...");
-        await procesarSolicitudes();
-      } catch (error) {
-        console.error("Error al procesar solicitudes automáticamente:", error);
-        
-        if (error.message && error.message.includes('quota')) {
-          setIsProcessing(false);
-          alert('Firebase Quota Exceeded: Se ha superado el límite de operaciones gratuitas. Tu solicitud se ha guardado, pero no se han podido procesar las asignaciones. Intente más tarde o contacte al administrador.');
-          return;
+      // Si el guardado fue exitoso, actualizar localmente las solicitudes
+      if (guardadoExitoso) {
+        if (solicitudExistenteLocal) {
+          // Actualizar la solicitud existente
+          setSolicitudes(prevSolicitudes => 
+            prevSolicitudes.map(sol => 
+              sol.orden === numOrden ? {...sol, centrosIds: centrosIdsNumericos, timestamp: Date.now()} : sol
+            )
+          );
+        } else {
+          // Añadir la nueva solicitud
+          setSolicitudes(prevSolicitudes => [
+            ...prevSolicitudes, 
+            {
+              orden: numOrden,
+              centrosIds: centrosIdsNumericos,
+              timestamp: Date.now(),
+              id: `temp-${Date.now()}` // ID temporal hasta que se recargue
+            }
+          ]);
         }
         
+        // Informar al usuario
+        alert(`Tu solicitud ha sido ${solicitudExistenteLocal ? 'actualizada' : 'registrada'} correctamente. Se procesará según prioridad por número de orden.`);
+        
+        // Limpiar el formulario
+        setOrderNumber('');
+        setCentrosSeleccionados([]);
+        
+        // Intentar procesar automáticamente las solicitudes
+        try {
+          console.log("Procesando todas las solicitudes automáticamente...");
+          await procesarSolicitudes();
+          
+          // El procesamiento puede tardar, así que esperamos un poco antes de recargar
+          setTimeout(() => {
+            setIsProcessing(false);
+            // Recargar la página para actualizar toda la información
+            window.location.reload();
+          }, 1500);
+        } catch (error) {
+          console.error("Error al procesar solicitudes automáticamente:", error);
+          
+          // Si es un error de permisos, informar al usuario pero la solicitud ya está guardada
+          if (error.message && (error.message.includes('quota') || error.message.includes('permission'))) {
+            setTimeout(() => {
+              setIsProcessing(false);
+              alert('Tu solicitud ha sido guardada, pero no se pudieron procesar las asignaciones debido a restricciones de Firebase. Las asignaciones se procesarán más tarde.');
+              window.location.reload(); // Recargar igualmente para actualizar la interfaz
+            }, 1000);
+            return;
+          }
+          
+          // Para otros errores, informar y recargar
+          setTimeout(() => {
+            setIsProcessing(false);
+            alert("Se ha guardado tu solicitud, pero ha ocurrido un error al procesar las asignaciones. Por favor, intenta más tarde.");
+            window.location.reload(); // Recargar igualmente para actualizar la interfaz
+          }, 1000);
+        }
+      } else {
+        // Si no se pudo guardar, informar al usuario
         setIsProcessing(false);
-        alert("Se ha guardado tu solicitud, pero ha ocurrido un error al procesar las asignaciones: " + error.message);
+        alert("No se pudo procesar tu solicitud. Por favor, intenta más tarde.");
       }
     } catch (error) {
       console.error("Error al guardar solicitud:", error);
@@ -920,7 +952,9 @@ function App() {
       alert("Error al guardar la solicitud: " + error.message);
     } finally {
       // Ocultar indicador de carga si no se ha hecho ya
-      setIsProcessing(false);
+      setTimeout(() => {
+        setIsProcessing(false);
+      }, 500);
     }
   };
 
