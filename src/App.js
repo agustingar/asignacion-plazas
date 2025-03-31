@@ -1385,6 +1385,9 @@ function PlazasDisponibles({ availablePlazas }) {
               .responsive-table .mobile-priority-low {
                 display: none;
               }
+              .mobile-only-column {
+                display: table-cell !important;
+              }
               .responsive-table .mobile-truncate {
                 max-width: 120px;
                 white-space: nowrap;
@@ -1400,26 +1403,29 @@ function PlazasDisponibles({ availablePlazas }) {
                 transform: translate(-50%, -50%);
                 background: rgba(24, 83, 158, 0.95);
                 color: white;
-                padding: 12px 15px;
-                border-radius: 6px;
+                padding: 20px;
+                border-radius: 8px;
                 z-index: 1000;
                 max-width: 90vw;
                 width: auto;
                 text-align: center;
-                box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+                box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+                font-size: 16px;
+                line-height: 1.4;
               }
               .info-icon {
                 display: inline-block;
-                width: 16px;
-                height: 16px;
+                width: 18px;
+                height: 18px;
                 border-radius: 50%;
                 background-color: #18539E;
                 color: white;
-                font-size: 10px;
+                font-size: 12px;
                 text-align: center;
-                line-height: 16px;
+                line-height: 18px;
                 margin-left: 5px;
                 cursor: pointer;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.2);
               }
               .centro-info {
                 display: flex;
@@ -1434,6 +1440,18 @@ function PlazasDisponibles({ availablePlazas }) {
                 bottom: 0;
                 background: rgba(0,0,0,0.5);
                 z-index: 999;
+              }
+              .mas-info-btn {
+                display: inline-block;
+                padding: 3px 6px;
+                background-color: #f0f8ff;
+                border: 1px solid #18539E;
+                border-radius: 4px;
+                color: #18539E;
+                font-size: 11px;
+                cursor: pointer;
+                text-align: center;
+                margin-top: 4px;
               }
             }
           `}
@@ -1453,6 +1471,7 @@ function PlazasDisponibles({ availablePlazas }) {
               <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', color: '#18539E' }} className="mobile-priority-low">Asig.</th>
               <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', color: '#18539E' }}>Disp.</th>
               <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', color: '#18539E' }}>Estado</th>
+              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', color: '#18539E', display: 'none' }} className="mobile-only-column">Info</th>
             </tr>
           </thead>
           <tbody>
@@ -1485,7 +1504,30 @@ function PlazasDisponibles({ availablePlazas }) {
                           document.getElementById('tooltip-backdrop').style.display = 'block';
                         }}
                       >i</span>
-                      <div className="info-tooltip">{plaza.centro || '-'}</div>
+                      <div className="info-tooltip">
+                        <div style={{ fontWeight: 'bold', marginBottom: '10px', fontSize: '18px', borderBottom: '1px solid rgba(255,255,255,0.3)', paddingBottom: '8px' }}>
+                          Centro de trabajo
+                        </div>
+                        {plaza.centro || '-'}
+                        <div style={{ marginTop: '15px', fontSize: '14px', color: 'rgba(255,255,255,0.8)' }}>
+                          {plaza.localidad} ({plaza.municipio})
+                        </div>
+                        <div style={{ marginTop: '15px', fontSize: '13px', color: 'rgba(255,255,255,0.7)' }}>
+                          Toca fuera para cerrar
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mas-info-btn" 
+                      style={{ display: 'none' }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const infoIcon = e.currentTarget.previousElementSibling.querySelector('.info-icon');
+                        if (infoIcon) {
+                          infoIcon.click();
+                        }
+                      }}
+                    >
+                      Ver nombre completo
                     </div>
                   </td>
                   <td style={{ border: '1px solid #ddd', padding: '10px' }} className="mobile-truncate">
@@ -1504,6 +1546,60 @@ function PlazasDisponibles({ availablePlazas }) {
                       <span style={{ color: 'green' }}>OK</span>
                     )}
                   </td>
+                  <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', display: 'none' }} className="mobile-only-column">
+                    <button
+                      onClick={() => {
+                        const tooltip = document.createElement('div');
+                        tooltip.className = 'info-tooltip';
+                        tooltip.style.display = 'block';
+                        
+                        tooltip.innerHTML = `
+                          <div style="font-weight: bold; margin-bottom: 10px; font-size: 18px; border-bottom: 1px solid rgba(255,255,255,0.3); padding-bottom: 8px;">
+                            Detalles del centro
+                          </div>
+                          <div style="margin-bottom: 15px;">
+                            <strong>Centro:</strong> ${plaza.centro || '-'}
+                          </div>
+                          <div style="margin-bottom: 10px;">
+                            <strong>Localidad:</strong> ${plaza.localidad || '-'}
+                          </div>
+                          <div style="margin-bottom: 10px;">
+                            <strong>Municipio:</strong> ${plaza.municipio || '-'}
+                          </div>
+                          <div style="margin-bottom: 10px;">
+                            <strong>Plazas totales:</strong> ${plaza.plazas}
+                          </div>
+                          <div style="margin-bottom: 15px;">
+                            <strong>Plazas disponibles:</strong> ${plaza.plazas - plaza.asignadas}
+                          </div>
+                          <div style="margin-top: 15px; font-size: 13px; color: rgba(255,255,255,0.7)">
+                            Toca fuera para cerrar
+                          </div>
+                        `;
+                        
+                        document.body.appendChild(tooltip);
+                        
+                        const backdrop = document.getElementById('tooltip-backdrop');
+                        backdrop.style.display = 'block';
+                        
+                        backdrop.onclick = () => {
+                          tooltip.remove();
+                          backdrop.style.display = 'none';
+                        };
+                      }}
+                      style={{
+                        padding: '2px 6px',
+                        backgroundColor: '#18539E',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '4px',
+                        fontSize: '11px',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      Ver
+                    </button>
+                  </td>
                 </tr>
               );
             })}
@@ -1513,6 +1609,7 @@ function PlazasDisponibles({ availablePlazas }) {
               <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }} className="mobile-priority-low">{filteredPlazas.reduce((sum, p) => sum + p.asignadas, 0)}</td>
               <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }}>{filteredPlazas.reduce((sum, p) => sum + (p.plazas - p.asignadas), 0)}</td>
               <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }}></td>
+              <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', display: 'none' }} className="mobile-only-column"></td>
             </tr>
           </tbody>
         </table>
