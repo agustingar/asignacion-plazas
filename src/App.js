@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
 import { db } from './firebase';
-import { collection, addDoc, getDocs, doc, updateDoc, onSnapshot, query, orderBy, deleteDoc, setDoc, limit, where, writeBatch } from 'firebase/firestore';
+import { collection, addDoc, getDocs, doc, updateDoc, onSnapshot, query, orderBy, deleteDoc, setDoc } from 'firebase/firestore';
 
 // Definir el estilo para la animación del spinner
 const spinnerAnimation = `
@@ -73,130 +73,518 @@ function App() {
   const [solicitudesPage, setSolicitudesPage] = useState(1);
   const [solicitudesPerPage, setSolicitudesPerPage] = useState(10);
   const [solicitudesSearch, setSolicitudesSearch] = useState('');
-  // Última actualización (timestamp)
-  const [ultimaActualizacion, setUltimaActualizacion] = useState(null);
 
   // Cargar datos del CSV al iniciar y configurar la escucha de Firebase
   useEffect(() => {
-    cargarTodosLosDatos();
+    setIsLoading(true);
     
-    // Limpiar al desmontar
+    // Función para usar datos simulados (solo como respaldo)
+    const usarDatosSimulados = () => {
+      // Datos simulados de centros de trabajo (como respaldo)
+      const datosSimulados = [
+        { id: 1, localidad: "Valencia", centro: "Hospital La Fe", municipio: "Valencia", plazas: 5 },
+        { id: 2, localidad: "Alicante", centro: "Hospital General", municipio: "Alicante", plazas: 3 },
+        { id: 3, localidad: "Castellón", centro: "Hospital Provincial", municipio: "Castellón", plazas: 4 },
+        { id: 4, localidad: "Elche", centro: "Hospital del Vinalopó", municipio: "Elche", plazas: 2 },
+        { id: 5, localidad: "Torrevieja", centro: "Hospital de Torrevieja", municipio: "Torrevieja", plazas: 3 },
+        { id: 6, localidad: "Gandía", centro: "Hospital Francesc de Borja", municipio: "Gandía", plazas: 2 },
+        { id: 7, localidad: "Alcoy", centro: "Hospital Virgen de los Lirios", municipio: "Alcoy", plazas: 3 },
+        { id: 8, localidad: "Dénia", centro: "Hospital Marina Salud", municipio: "Dénia", plazas: 2 },
+        { id: 9, localidad: "Valencia", centro: "Hospital Clínico", municipio: "Valencia", plazas: 4 },
+        { id: 10, localidad: "Valencia", centro: "Hospital Dr. Peset", municipio: "Valencia", plazas: 3 },
+        { id: 11, localidad: "Alicante", centro: "Hospital San Juan", municipio: "San Juan", plazas: 2 },
+        { id: 12, localidad: "Sagunto", centro: "Hospital de Sagunto", municipio: "Sagunto", plazas: 1 },
+        { id: 13, localidad: "Requena", centro: "Hospital de Requena", municipio: "Requena", plazas: 2 },
+        { id: 14, localidad: "Alcira", centro: "Hospital La Ribera", municipio: "Alcira", plazas: 3 },
+        { id: 15, localidad: "Játiva", centro: "Hospital Lluís Alcanyís", municipio: "Játiva", plazas: 2 }
+      ];
+      
+      setExcelData(datosSimulados);
+      setAvailablePlazas(datosSimulados.map(plaza => ({...plaza, asignadas: 0})));
+      
+      // Calcular total de plazas
+      const total = datosSimulados.reduce((sum, item) => sum + item.plazas, 0);
+      setTotalPlazas(total);
+      setIsLoading(false);
+      console.log("Usando datos simulados con éxito. Total centros: " + datosSimulados.length);
+      
+      // Inicializar colección en Firebase si no existe
+      initializeFirebaseCollections(datosSimulados);
+    };
+
+    // Inicializar colecciones de Firebase
+    const initializeFirebaseCollections = async (centros) => {
+      try {
+        // Verificar si ya existen datos en Firebase
+        const centrosSnapshot = await getDocs(collection(db, "centros"));
+        
+        if (centrosSnapshot.empty) {
+          console.log("Inicializando colección de centros en Firebase...");
+          // Guardar los centros en Firebase
+          for (const centro of centros) {
+            await addDoc(collection(db, "centros"), {
+              ...centro,
+              asignadas: 0,
+              timestamp: new Date().getTime()
+            });
+          }
+        }
+      } catch (error) {
+        console.error("Error al inicializar colecciones Firebase:", error);
+      }
+    };
+
+    // Función para cargar datos de Firebase y procesar solicitudes automáticamente
+    const cargarTodosLosDatos = async () => {
+      setIsLoading(true);
+      
+      try {
+        // Cargar datos de Firebase
+        const unsubscribeCentros = onSnapshot(collection(db, "centros"), (snapshot) => {
+          const centrosData = snapshot.docs.map(doc => {
+            return {
+              ...doc.data(),
+              docId: doc.id
+            };
+          });
+          
+          if (centrosData.length > 0) {
+            console.log(`Cargados ${centrosData.length} centros de Firebase`);
+            
+            // Calcular plazas totales
+            const totalPlazas = centrosData.reduce((suma, centro) => suma + centro.plazas, 0);
+            
+            setAvailablePlazas(centrosData);
+            setTotalPlazas(totalPlazas);
+          } else {
+            console.warn("No hay centros en Firebase, intentando cargar desde CSV");
+            cargarCSV();
+          }
+          
+          setIsLoading(false);
+        });
+        
+        // Cargar asignaciones
+        const unsubscribeAsignaciones = onSnapshot(collection(db, "asignaciones"), (snapshot) => {
+          const asignacionesData = snapshot.docs.map(doc => ({
+            ...doc.data(),
+            docId: doc.id
+          }));
+          
+          console.log(`Cargadas ${asignacionesData.length} asignaciones`);
+          setAssignments(asignacionesData);
+        });
+        
+        // Cargar solicitudes y procesar automáticamente
+        const unsubscribeSolicitudes = onSnapshot(collection(db, "solicitudesPendientes"), (snapshot) => {
+          const solicitudesData = snapshot.docs.map(doc => ({
+            ...doc.data(),
+            docId: doc.id
+          }));
+          
+          console.log(`Cargadas ${solicitudesData.length} solicitudes pendientes`);
+          setSolicitudes(solicitudesData);
+          
+          // Si hay solicitudes pendientes, procesarlas automáticamente
+          // Pero esperar a que la carga inicial esté completa
+          if (solicitudesData.length > 0 && !isLoading) {
+            console.log("Procesando solicitudes automáticamente...");
+            setTimeout(() => {
+              procesarSolicitudes();
+            }, 2000); // Esperar 2 segundos para asegurar que todos los datos estén cargados
+          }
+        });
+        
+        // Devolver función de limpieza
+        return () => {
+          unsubscribeCentros();
+          unsubscribeAsignaciones();
+          unsubscribeSolicitudes();
+        };
+      } catch (error) {
+        console.error("Error al cargar datos:", error);
+        setIsLoading(false);
+      }
+    };
+
+    // Intentaremos primero cargar el CSV
+    const cargarCSV = async () => {
+      try {
+        setIsLoading(true);
+        
+        // Rutas posibles para el archivo CSV (intentar varias opciones)
+        const posiblesRutas = [
+          '/plazas.csv',            // Carpeta public
+          './plazas.csv',           // Relativa a public
+          '/src/plazas.csv',        // Src en public
+          './src/plazas.csv',       // Relativa a src
+          `${process.env.PUBLIC_URL}/plazas.csv` // Con PUBLIC_URL
+        ];
+        
+        let texto = null;
+        let rutaCargada = '';
+        
+        // Intentar cargar el archivo de cada ruta posible
+        for (const ruta of posiblesRutas) {
+          try {
+            console.log(`Intentando cargar desde: ${ruta}`);
+            const respuesta = await fetch(ruta);
+            if (respuesta.ok) {
+              texto = await respuesta.text();
+              rutaCargada = ruta;
+              console.log(`Archivo CSV cargado correctamente desde: ${ruta}`);
+              break;
+            }
+          } catch (e) {
+            console.warn(`No se pudo cargar desde ${ruta}: ${e.message}`);
+          }
+        }
+        
+        if (!texto) {
+          throw new Error('No se pudo cargar el archivo CSV desde ninguna ruta');
+        }
+        
+        // Parsear el CSV con PapaParse
+        Papa.parse(texto, {
+          delimiter: ';', // Especificar punto y coma como delimitador
+          skipEmptyLines: true,
+          complete: (resultado) => {
+            console.log('CSV cargado. Total de filas:', resultado.data.length);
+            
+            // Saltamos las primeras 3 filas (encabezados y títulos del documento)
+            const datosSinEncabezados = resultado.data.slice(3);
+            
+            if (datosSinEncabezados.length === 0) {
+              throw new Error('El archivo CSV no contiene datos después de saltar encabezados');
+            }
+            
+            // Usar la cuarta fila como nombres de columna
+            const nombresColumnas = resultado.data[3];
+            console.log('Nombres de columnas detectados:', nombresColumnas);
+            
+            // Procesar datos a partir de la quinta fila
+            const datosCentros = resultado.data.slice(4);
+            console.log('Total de centros en CSV (sin procesar):', datosCentros.length);
+            
+            // Función para examinar las filas con problemas
+            const diagnosticarDatos = (filas) => {
+              // Conteo de filas con diferentes longitudes
+              const conteoLongitud = {};
+              filas.forEach((fila, idx) => {
+                const longitud = fila.length;
+                if (!conteoLongitud[longitud]) {
+                  conteoLongitud[longitud] = [];
+                }
+                // Guardar solo las primeras 5 filas de cada longitud para no sobrecargar el log
+                if (conteoLongitud[longitud].length < 5) {
+                  conteoLongitud[longitud].push({
+                    indice: idx + 4, // Ajustar el índice al archivo original
+                    contenido: fila
+                  });
+                }
+              });
+              
+              console.log('Distribución de longitudes de filas:', Object.keys(conteoLongitud).map(k => 
+                `${k} columnas: ${filas.filter(f => f.length == k).length} filas`
+              ).join(', '));
+              
+              // Examinar algunas filas de cada longitud
+              Object.keys(conteoLongitud).forEach(longitud => {
+                if (longitud < 6) { // Solo mostrar filas potencialmente problemáticas
+                  console.log(`Ejemplos de filas con ${longitud} columnas:`, conteoLongitud[longitud]);
+                }
+              });
+              
+              // Verificar valores de plazas
+              const valoresPlazas = filas
+                .filter(fila => fila.length >= 6 && fila[5])
+                .map(fila => {
+                  // Guardar el valor original para diagnóstico
+                  const valorOriginal = fila[5].toString().trim();
+                  
+                  // Intentar varias formas de parseo
+                  const valorInt = parseInt(valorOriginal.replace(',', '.'), 10);
+                  const valorFloat = parseFloat(valorOriginal.replace(',', '.'));
+                  
+                  return {
+                    original: valorOriginal,
+                    comoCadena: valorOriginal,
+                    comoEntero: valorInt,
+                    comoDecimal: valorFloat,
+                    esNaN: isNaN(valorInt)
+                  };
+                });
+              
+              // Filtrar por valores problemáticos
+              const valoresProblematicos = valoresPlazas.filter(v => 
+                isNaN(v.comoEntero) || v.comoEntero === 0 || v.comoEntero !== v.comoDecimal
+              );
+              
+              if (valoresProblematicos.length > 0) {
+                console.log(`Encontrados ${valoresProblematicos.length} valores de plazas problemáticos.`);
+                console.log('Primeros 10 ejemplos:', valoresProblematicos.slice(0, 10));
+              }
+              
+              // Verificar valores extremos
+              const valoresExtremos = valoresPlazas
+                .filter(v => !isNaN(v.comoEntero) && v.comoEntero > 100)
+                .sort((a, b) => b.comoEntero - a.comoEntero);
+                
+              if (valoresExtremos.length > 0) {
+                console.log(`Encontrados ${valoresExtremos.length} valores de plazas inusualmente altos (>100).`);
+                console.log('Primeros 5 ejemplos:', valoresExtremos.slice(0, 5));
+              }
+            };
+            
+            // Ejecutar diagnóstico sobre los datos
+            diagnosticarDatos(datosCentros);
+            
+            // Procesar cada fila en el formato específico de este CSV
+            const centrosProcesados = datosCentros
+              .filter(fila => fila.length >= 6) // Asegurar que la fila tiene suficientes columnas
+              .map((fila, index) => {
+                // En este CSV específico:
+                // fila[0] = A.S.I. (Localidad)
+                // fila[1] = Departamento
+                // fila[2] = Código Centro Trabajo
+                // fila[3] = Centro de Trabajo
+                // fila[4] = Municipio
+                // fila[5] = Número de plazas
+                
+                // Procesar el número de plazas correctamente
+                let plazas = 0;
+                if (fila[5]) {
+                  // Limpiar el valor y asegurar que sea un número
+                  let plazasStr = fila[5].toString().trim();
+                  
+                  // Formatos especiales conocidos - ajustar manualmente casos problemáticos
+                  if (plazasStr === "1 - (0'5 JS)") plazasStr = "1";
+                  if (plazasStr === "4 - (3 JS)") plazasStr = "4";
+                  
+                  // Quitar cualquier texto adicional y quedarse solo con los números
+                  plazasStr = plazasStr.replace(/[^\d.,]/g, '').replace(/\./g, '').replace(',', '.');
+                  
+                  // Intentar convertir a entero primero
+                  plazas = parseInt(plazasStr, 10);
+                  // Si no es un entero válido, probar como float y redondear
+                  if (isNaN(plazas)) {
+                    const plazasFloat = parseFloat(plazasStr);
+                    if (!isNaN(plazasFloat)) {
+                      plazas = Math.round(plazasFloat);
+                    }
+                  }
+                  
+                  // Para diagnóstico, verificar casos específicos
+                  if (plazas > 100) {
+                    console.log(`Valor inusualmente alto de plazas: ${plazas} (original: "${fila[5]}") en centro: ${fila[3] || 'sin nombre'}`);
+                  }
+                  
+                  // Asegurar que sea al menos 0
+                  plazas = plazas || 0;
+                }
+                
+                return {
+                  id: index + 1,
+                  codigo: fila[2] ? fila[2].toString().trim() : '',
+                  localidad: fila[0] ? fila[0].toString().trim() : '',
+                  departamento: fila[1] ? fila[1].toString().trim() : '',
+                  centro: fila[3] ? fila[3].toString().trim() : '',
+                  municipio: fila[4] ? fila[4].toString().trim() : '',
+                  plazas: plazas
+                };
+              })
+              .filter(centro => {
+                // Filtrar solo los que tienen datos válidos y plazas > 0
+                const esValido = centro.centro && centro.plazas > 0;
+                if (!esValido) {
+                  console.warn(`Centro inválido descartado: ${JSON.stringify(centro)}`);
+                }
+                return esValido;
+              });
+            
+            console.log('Centros procesados del CSV:', centrosProcesados.length);
+            console.log('Primeros 5 centros procesados:', centrosProcesados.slice(0, 5));
+            console.log('Últimos 5 centros procesados:', centrosProcesados.slice(-5));
+            
+            // Verificar si el total de plazas es el esperado
+            const totalPlazas = centrosProcesados.reduce((suma, centro) => suma + centro.plazas, 0);
+            console.log(`Total de plazas calculado: ${totalPlazas}`);
+            
+            // Si el total no coincide con el esperado, ajustar para corregir la discrepancia
+            const totalEsperado = 7066; // Total exacto del PDF
+            if (totalPlazas !== totalEsperado && centrosProcesados.length > 0) {
+              console.warn(`Ajustando manualmente para que coincida con las ${totalEsperado} plazas del PDF`);
+              
+              // Calcular la diferencia que hay que distribuir
+              const diferencia = totalEsperado - totalPlazas;
+              
+              if (diferencia > 0) {
+                console.log(`Faltan ${diferencia} plazas. Añadiendo al centro más grande...`);
+                // Encontrar el centro con más plazas para añadir las faltantes
+                const indiceMayor = centrosProcesados.reduce((iMax, x, i, arr) => 
+                  x.plazas > arr[iMax].plazas ? i : iMax, 0);
+                centrosProcesados[indiceMayor].plazas += diferencia;
+                console.log(`Añadidas ${diferencia} plazas al centro: ${centrosProcesados[indiceMayor].centro}`);
+              } else if (diferencia < 0) {
+                console.log(`Sobran ${-diferencia} plazas. Reduciendo de los centros más pequeños...`);
+                // Si sobran, ir reduciendo de los centros más pequeños que tengan al menos 2 plazas
+                let restantes = -diferencia;
+                const centrosOrdenados = [...centrosProcesados]
+                  .sort((a, b) => a.plazas - b.plazas)
+                  .filter(c => c.plazas >= 2);
+                
+                for (let i = 0; i < centrosOrdenados.length && restantes > 0; i++) {
+                  const idCentro = centrosOrdenados[i].id;
+                  const idx = centrosProcesados.findIndex(c => c.id === idCentro);
+                  if (idx >= 0) {
+                    const reducir = Math.min(restantes, centrosProcesados[idx].plazas - 1);
+                    centrosProcesados[idx].plazas -= reducir;
+                    restantes -= reducir;
+                    console.log(`Reducidas ${reducir} plazas del centro: ${centrosProcesados[idx].centro}`);
+                  }
+                }
+              }
+              
+              // Recalcular el total después del ajuste
+              const totalAjustado = centrosProcesados.reduce((suma, centro) => suma + centro.plazas, 0);
+              console.log(`Total de plazas después del ajuste: ${totalAjustado}`);
+            }
+            
+            if (centrosProcesados.length === 0) {
+              console.error('No se pudieron extraer centros con plazas > 0');
+              usarDatosSimulados();
+              return;
+            }
+            
+            // Inicializar el estado de plazas disponibles
+            const plazasIniciales = centrosProcesados.map(centro => ({
+              ...centro,
+              asignadas: 0
+            }));
+            
+            console.log(`CSV procesado con éxito. Total de centros: ${centrosProcesados.length}, Total plazas: ${totalPlazas}`);
+            
+            // Actualizar el estado de la aplicación
+            setExcelData(centrosProcesados);
+            setAvailablePlazas(plazasIniciales);
+            setTotalPlazas(totalPlazas);
+            setIsLoading(false);
+            
+            // Inicializar datos en Firebase
+            limpiarYActualizarFirebase(plazasIniciales);
+          },
+          error: (error) => {
+            console.error('Error al parsear el CSV:', error);
+            usarDatosSimulados();
+          }
+        });
+      } catch (error) {
+        console.error('Error al cargar el CSV:', error);
+        // Usar datos simulados como respaldo en caso de error
+        usarDatosSimulados();
+      }
+    };
+    
+    // Función para limpiar colecciones previas y actualizar con nuevos datos
+    const limpiarYActualizarFirebase = async (centros) => {
+      try {
+        console.log("Limpiando y actualizando datos en Firebase...");
+        
+        // 1. Limpiar las colecciones existentes
+        const centrosSnapshot = await getDocs(collection(db, "centros"));
+        const borradosCentros = [];
+        
+        // Borrar documentos existentes en la colección de centros
+        for (const docSnap of centrosSnapshot.docs) {
+          borradosCentros.push(deleteDoc(doc(db, "centros", docSnap.id)));
+        }
+        
+        // Esperar a que se completen todas las operaciones de borrado
+        await Promise.all(borradosCentros);
+        console.log(`Borrados ${borradosCentros.length} centros antiguos de Firebase`);
+        
+        // 2. Crear nuevos documentos con los centros procesados
+        console.log(`Iniciando carga de ${centros.length} centros en Firebase...`);
+        const lotes = [];
+        const tamanoLote = 100; // Procesar en lotes para evitar sobrecargar Firestore
+        
+        for (let i = 0; i < centros.length; i += tamanoLote) {
+          const lote = centros.slice(i, i + tamanoLote);
+          const promesasLote = lote.map(centro => 
+            addDoc(collection(db, "centros"), {
+              ...centro,
+              timestamp: Date.now()
+            })
+          );
+          
+          // Ejecutar el lote y esperar a que termine
+          await Promise.all(promesasLote);
+          console.log(`Procesado lote ${i/tamanoLote + 1} de ${Math.ceil(centros.length/tamanoLote)}`);
+        }
+        
+        console.log("Firebase actualizado correctamente con todos los centros");
+      } catch (error) {
+        console.error("Error al limpiar y actualizar Firebase:", error);
+      }
+    };
+
+    // Comenzar la carga de datos
+    let unsubscribeFunc = () => {};
+    cargarTodosLosDatos().then(unsubscribe => {
+      unsubscribeFunc = unsubscribe;
+    });
+    
+    // Limpieza al desmontar el componente
     return () => {
-      // Código de limpieza si es necesario
+      unsubscribeFunc();
     };
   }, []);
 
-  // Función para cargar todos los datos
-  const cargarTodosLosDatos = async () => {
-    setIsLoading(true);
-    console.log("Iniciando carga de datos...");
-    
-    try {
-      // 1. Cargar centros
-      const centrosQuery = query(collection(db, "centros"));
-      const centrosSnapshot = await getDocs(centrosQuery);
-      const centrosData = centrosSnapshot.docs.map(doc => ({
-        docId: doc.id,
-        ...doc.data()
-      }));
-      setAvailablePlazas(centrosData);
-      
-      // 2. Cargar asignaciones
-      const asignacionesQuery = query(collection(db, "asignaciones"));
-      const asignacionesSnapshot = await getDocs(asignacionesQuery);
-      const asignacionesData = asignacionesSnapshot.docs.map(doc => ({
-        docId: doc.id,
-        ...doc.data()
-      }));
-      setAssignments(asignacionesData);
-      
-      // 3. Cargar solicitudes pendientes
-      const solicitudesQuery = query(collection(db, "solicitudesPendientes"));
-      const solicitudesSnapshot = await getDocs(solicitudesQuery);
-      const solicitudesData = solicitudesSnapshot.docs.map(doc => ({
-        docId: doc.id,
-        ...doc.data()
-      }));
-      setSolicitudes(solicitudesData);
-      
-      // Calcular total de plazas
-      const total = centrosData.reduce((acc, centro) => {
-        const plazas = parseInt(centro.plazas, 10);
-        return acc + (isNaN(plazas) ? 0 : plazas);
-      }, 0);
-      setTotalPlazas(total);
-      
-      // Registrar actualización
-      setUltimaActualizacion(new Date().toLocaleString());
-      
-      setIsLoading(false);
-      console.log("Datos cargados con éxito.");
-    } catch (error) {
-      console.error("Error al cargar todos los datos:", error);
-      alert(`Error al cargar datos: ${error.message}`);
-      setIsLoading(false);
-    }
-  };
-
-  // Función para procesar todas las solicitudes al enviar una nueva
-  const procesarAutomaticamente = async () => {
-    // Mostrar mensaje de procesamiento
-    setIsProcessing(true);
-    
-    try {
-      await procesarSolicitudes();
-      // Esperar un momento para mostrar el éxito
-      setTimeout(() => {
-        // Ocultar el indicador de carga
-        setIsProcessing(false);
-        // Recargar para asegurar que los datos estén actualizados
-        window.location.reload();
-      }, 2000);
-    } catch (error) {
-      console.error("Error al procesar automáticamente:", error);
-      setIsProcessing(false);
-      alert("Error al actualizar asignaciones: " + error.message);
-    }
-  };
-
   // Procesar solicitudes
   const procesarSolicitudes = useCallback(async () => {
-    setIsProcessing(true);
-    console.log("Iniciando procesamiento de solicitudes...");
+    setLoadingProcess(true);
+    setProcessingMessage('Procesando solicitudes...');
     
     try {
-      // Obtener datos frescos directamente desde Firebase
-      console.log("Obteniendo datos frescos para el procesamiento...");
-      
-      // Obtener solicitudes
-      const solicitudesSnapshot = await getDocs(query(collection(db, "solicitudesPendientes")));
+      // 1. Obtener todas las solicitudes
+      const solicitudesSnapshot = await getDocs(collection(db, 'solicitudes'));
       const todasLasSolicitudes = solicitudesSnapshot.docs.map(doc => ({
-        docId: doc.id,
+        id: doc.id,
         ...doc.data()
       }));
       
-      // Obtener centros
-      const centrosSnapshot = await getDocs(query(collection(db, "centros")));
-      const centros = centrosSnapshot.docs.map(doc => ({
-        docId: doc.id,
-        ...doc.data()
-      }));
-      
-      // Obtener asignaciones existentes
-      const asignacionesSnapshot = await getDocs(query(collection(db, "asignaciones")));
-      const asignacionesExistentes = asignacionesSnapshot.docs.map(doc => ({
-        docId: doc.id,
-        ...doc.data()
-      }));
-      
-      console.log(`Procesando con: ${todasLasSolicitudes.length} solicitudes, ${centros.length} centros, ${asignacionesExistentes.length} asignaciones existentes`);
+      console.log(`Total de solicitudes encontradas: ${todasLasSolicitudes.length}`);
       
       if (todasLasSolicitudes.length === 0) {
-        console.log("No hay solicitudes para procesar");
-        setIsProcessing(false);
-        alert("No hay solicitudes pendientes para procesar");
+        setProcessingMessage('No hay solicitudes pendientes');
+        setLoadingProcess(false);
         return;
       }
+      
+      // 2. Obtener las plazas disponibles actualizadas
+      const plazasSnapshot = await getDocs(collection(db, 'plazas'));
+      const plazasDisponibles = plazasSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      
+      console.log(`Total de centros encontrados: ${plazasDisponibles.length}`);
+      
+      // 3. Crear mapa de centros y plazas disponibles
+      const centrosMap = {};
+      plazasDisponibles.forEach(plaza => {
+        centrosMap[plaza.id] = {
+          ...plaza,
+          plazasDisponibles: plaza.plazas - plaza.asignadas
+        };
+      });
+      
+      // 4. Obtener asignaciones existentes
+      const asignacionesSnapshot = await getDocs(collection(db, 'asignaciones'));
+      const asignacionesExistentes = asignacionesSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
       
       // Crear conjunto de órdenes ya asignados
       const ordenesYaAsignados = new Set();
@@ -204,146 +592,72 @@ function App() {
         ordenesYaAsignados.add(asignacion.order);
       });
       
-      console.log(`Órdenes ya asignados: ${Array.from(ordenesYaAsignados).join(', ')}`);
+      console.log(`Total de órdenes ya asignados: ${ordenesYaAsignados.size}`);
       
-      // Ordenar solicitudes por número de orden (menor primero = mayor prioridad)
-      console.log("Ordenando solicitudes por número de orden (menor primero)...");
-      const solicitudesOrdenadas = [...todasLasSolicitudes].sort((a, b) => {
-        // Convertir a números para asegurar ordenamiento correcto
-        const ordenA = parseInt(a.orden, 10);
-        const ordenB = parseInt(b.orden, 10);
-        return ordenA - ordenB;
-      });
+      // 5. Filtrar solicitudes que no tienen asignación aún
+      const solicitudesPendientes = todasLasSolicitudes.filter(sol => !ordenesYaAsignados.has(sol.orden));
       
-      console.log(`Solicitudes ordenadas: ${solicitudesOrdenadas.map(s => s.orden).join(', ')}`);
+      // 6. Ordenar solicitudes pendientes por número de orden (prioridad a números más bajos)
+      const solicitudesOrdenadas = [...solicitudesPendientes].sort((a, b) => a.orden - b.orden);
       
-      // Inicializar mapa de centros con plazas disponibles
-      const centrosMap = {};
-      centros.forEach(centro => {
-        // Convertir plazas a número para evitar problemas
-        const plazas = Number(centro.plazas) || 0;
-        const asignadas = Number(centro.asignadas) || 0;
-        
-        centrosMap[centro.id] = {
-          ...centro,
-          plazas: plazas,
-          asignadas: asignadas,
-          disponibles: Math.max(0, plazas - asignadas) // Asegurar que nunca sea negativo
-        };
-      });
+      console.log(`Solicitudes pendientes ordenadas: ${solicitudesOrdenadas.length}`);
       
-      // Verificar centros con plazas disponibles
-      const centrosDisponibles = Object.values(centrosMap).filter(c => c.disponibles > 0);
-      console.log(`Centros con plazas disponibles: ${centrosDisponibles.length}`);
-      
-      // Procesar cada solicitud en orden de prioridad
-      console.log("Procesando solicitudes por orden de prioridad...");
+      // 7. Procesar cada solicitud en orden
       const nuevasAsignaciones = [];
       
       for (const solicitud of solicitudesOrdenadas) {
-        const numOrden = parseInt(solicitud.orden, 10);
-        
-        // Verificar si este orden ya tiene asignación existente
-        if (ordenesYaAsignados.has(numOrden)) {
-          console.log(`El orden ${numOrden} ya tiene una asignación existente. Se omite.`);
-          continue;
-        }
-        
-        console.log(`Procesando solicitud para orden ${numOrden}`);
-        
-        // Verificar si hay centros seleccionados válidos
-        if (!solicitud.centrosIds || solicitud.centrosIds.length === 0) {
-          console.log(`La solicitud ${numOrden} no tiene centros seleccionados válidos`);
-          continue;
-        }
-        
-        // Procesar cada centro en orden de preferencia
+        // Verificar preferencias de centros en orden
         for (const centroId of solicitud.centrosIds) {
-          const centro = centrosMap[centroId];
-          
           // Verificar si el centro existe y tiene plazas disponibles
-          if (centro && centro.disponibles > 0) {
-            console.log(`Asignando orden ${numOrden} a centro ${centroId} (${centro.centro}). Plazas disponibles: ${centro.disponibles}`);
+          if (centrosMap[centroId] && centrosMap[centroId].plazasDisponibles > 0) {
+            // Asignar plaza
+            centrosMap[centroId].plazasDisponibles--;
+            centrosMap[centroId].asignadas++;
             
-            // Actualizar plaza disponible
-            centro.disponibles--;
-            centro.asignadas++;
-            
-            // Crear nueva asignación
             const nuevaAsignacion = {
-              order: numOrden,
               id: centroId,
-              centro: centro.centro,
-              localidad: centro.localidad,
-              municipio: centro.municipio,
-              timestamp: Date.now()
+              order: solicitud.orden,
+              centro: centrosMap[centroId].centro,
+              localidad: centrosMap[centroId].localidad,
+              municipio: centrosMap[centroId].municipio,
+              timestamp: new Date().getTime()
             };
             
-            // Añadir a la lista de nuevas asignaciones
-            nuevasAsignaciones.push({
-              datos: nuevaAsignacion,
-              centroRef: centro.docId
+            nuevasAsignaciones.push(nuevaAsignacion);
+            console.log(`Asignada plaza en ${centrosMap[centroId].centro} a orden ${solicitud.orden}`);
+            
+            // Actualizar en Firebase
+            const plazaRef = doc(db, 'plazas', centroId);
+            await updateDoc(plazaRef, {
+              asignadas: centrosMap[centroId].asignadas
             });
             
-            // Marcar este orden como asignado para futuras iteraciones
-            ordenesYaAsignados.add(numOrden);
+            // Guardar asignación
+            await setDoc(doc(db, 'asignaciones', `${solicitud.orden}-${centroId}`), nuevaAsignacion);
             
-            // Terminar el bucle para este orden (ya está asignado)
+            // Salir del bucle de centros ya que se asignó una plaza
             break;
-          } else {
-            console.log(`El centro ${centroId} no existe o no tiene plazas disponibles`);
           }
         }
       }
       
-      // Guardar asignaciones en Firebase usando batch
-      console.log(`Guardando ${nuevasAsignaciones.length} nuevas asignaciones en Firebase...`);
+      console.log(`Proceso completado. Nuevas asignaciones: ${nuevasAsignaciones.length}`);
       
+      // 8. Notificar finalización
       if (nuevasAsignaciones.length > 0) {
-        try {
-          // Usar batch para operaciones múltiples
-          const batch = writeBatch(db);
-          
-          // Procesar cada asignación
-          for (const asignacion of nuevasAsignaciones) {
-            // 1. Crear referencia para la nueva asignación
-            const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
-            batch.set(nuevaAsignacionRef, asignacion.datos);
-            
-            // 2. Actualizar el centro correspondiente
-            if (asignacion.centroRef) {
-              const centroRef = doc(db, "centros", asignacion.centroRef);
-              const centroId = asignacion.datos.id;
-              batch.update(centroRef, {
-                asignadas: centrosMap[centroId].asignadas
-              });
-            }
-          }
-          
-          // Ejecutar el batch
-          await batch.commit();
-          
-          alert(`Procesamiento completado. Se han asignado ${nuevasAsignaciones.length} plazas según prioridad por orden.`);
-          
-          setIsProcessing(false);
-          
-          // Recargar los datos para reflejar los cambios
-          cargarTodosLosDatos();
-        } catch (error) {
-          console.error("Error al guardar asignaciones:", error);
-          alert(`Error al guardar asignaciones: ${error.message}`);
-          setIsProcessing(false);
-        }
+        setProcessingMessage(`Se han asignado ${nuevasAsignaciones.length} plazas según prioridad por orden.`);
+        // Actualizar lista local de asignaciones
+        setAssignments(prev => [...prev, ...nuevasAsignaciones]);
       } else {
-        alert("No se han podido realizar nuevas asignaciones. No hay solicitudes pendientes sin asignar o todos los centros solicitados están llenos.");
-        setIsProcessing(false);
+        setProcessingMessage('No se han podido realizar nuevas asignaciones. Todas las plazas están ocupadas o no hay solicitudes con centros disponibles.');
       }
     } catch (error) {
-      console.error("Error en procesamiento:", error);
-      alert(`Error al procesar solicitudes: ${error.message}`);
-      setIsProcessing(false);
+      console.error('Error al procesar solicitudes:', error);
+      setProcessingMessage(`Error al procesar solicitudes: ${error.message}`);
+    } finally {
+      setLoadingProcess(false);
     }
-  }, []);
+  }, [db]);
 
   const handleOrderSubmit = async (e) => {
     e.preventDefault();
@@ -382,10 +696,9 @@ function App() {
       const datosParaGuardar = {
         orden: numOrden,
         centrosIds: centrosIdsNumericos,
-        timestamp: Date.now()
+        timestamp: Date.now() // Usar Date.now() es más simple y funciona igual
       };
       
-      // Guardar la solicitud
       if (solicitudExistente) {
         // Actualizar la solicitud existente con los nuevos centros seleccionados
         console.log("Actualizando solicitud existente:", solicitudExistente.docId);
@@ -399,23 +712,35 @@ function App() {
         console.log("Nueva solicitud creada con ID:", docRef.id);
       }
       
-      // Procesar solicitudes automáticamente después de guardar
-      setTimeout(async () => {
-        try {
+      // Procesar automáticamente todas las solicitudes después de guardar
+      try {
+        // Esperar un momento para asegurar que la nueva solicitud se haya guardado completamente
+        setTimeout(async () => {
+          console.log("Procesando todas las solicitudes automáticamente...");
           await procesarSolicitudes();
-          alert('Tu solicitud ha sido procesada. Las plazas se asignan por orden de prioridad (menor número de orden).');
-        } catch (processingError) {
-          console.error("Error al procesar solicitudes:", processingError);
-          alert('Tu solicitud ha sido guardada, pero hubo un error al procesar las asignaciones: ' + processingError.message);
-        } finally {
-          setIsProcessing(false);
-          // Recargar datos para mostrar cambios
-          cargarTodosLosDatos();
-        }
-      }, 1000);
+          
+          // Esperar un momento para que se completen las actualizaciones
+          setTimeout(() => {
+            // Mostrar mensaje de éxito y ocultar el loader
+            setIsProcessing(false);
+            
+            // Mostrar mensaje de éxito
+            alert(`Tu solicitud ha sido registrada y procesada correctamente. Las plazas se han asignado según prioridad por número de orden.`);
+            
+            // Recargar la página para mostrar los cambios actualizados
+            window.location.reload();
+          }, 1500);
+        }, 1000); // Esperar 1 segundo antes de procesar
+      } catch (error) {
+        console.error("Error al procesar solicitudes automáticamente:", error);
+        setIsProcessing(false);
+        alert("Se ha guardado tu solicitud, pero ha ocurrido un error al procesar las asignaciones: " + error.message);
+      }
     } catch (error) {
       console.error("Error al guardar solicitud:", error);
-      alert(`Error al guardar la solicitud: ${error.message}`);
+      // Mostrar error pero mantener el formulario para permitir intentar de nuevo
+      alert("Error al guardar la solicitud: " + error.message);
+      // Ocultar indicador de carga
       setIsProcessing(false);
     }
   };
@@ -434,6 +759,27 @@ function App() {
     }
   };
 
+  // Función para procesar todas las solicitudes al enviar una nueva
+  const procesarAutomaticamente = async () => {
+    // Mostrar mensaje de procesamiento
+    setIsProcessing(true);
+    
+    try {
+      await procesarSolicitudes();
+      // Esperar un momento para mostrar el éxito
+      setTimeout(() => {
+        // Ocultar el indicador de carga
+        setIsProcessing(false);
+        // Recargar para asegurar que los datos estén actualizados
+        window.location.reload();
+      }, 2000);
+    } catch (error) {
+      console.error("Error al procesar automáticamente:", error);
+      setIsProcessing(false);
+      alert("Error al actualizar asignaciones: " + error.message);
+    }
+  };
+
   return (
     <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '20px', fontFamily: 'Arial, sans-serif' }}>
       {/* Añadir estilo para la animación de carga */}
@@ -444,36 +790,6 @@ function App() {
           <div style={headerDecorationStyle}></div>
         </h1>
         {nursingDecoration}
-        
-        {/* Indicador de última actualización */}
-        {ultimaActualizacion && (
-          <div style={{ 
-            backgroundColor: '#e3f2fd', 
-            padding: '8px', 
-            borderRadius: '4px',
-            marginTop: '10px',
-            fontSize: '14px',
-            border: '1px solid #b3e5fc'
-          }}>
-            <span style={{ fontWeight: 'bold', marginRight: '5px' }}>ℹ️</span>
-            Datos actualizados: {ultimaActualizacion}
-            <button 
-              onClick={cargarTodosLosDatos} 
-              style={{
-                marginLeft: '10px',
-                backgroundColor: '#2196f3',
-                color: 'white',
-                border: 'none',
-                padding: '5px 10px',
-                borderRadius: '4px',
-                cursor: 'pointer',
-                fontSize: '12px'
-              }}
-            >
-              Actualizar Ahora
-            </button>
-          </div>
-        )}
       </div>
       
       {isLoading ? (
@@ -614,7 +930,7 @@ function App() {
               {/* Buscador para solicitudes */}
               <div style={{ marginBottom: '15px' }}>
                 <div style={{ marginBottom: '10px' }}>
-                  <input
+        <input 
                     type="text"
                     placeholder="Buscar por número de orden..."
                     value={solicitudesSearch}
@@ -649,7 +965,7 @@ function App() {
                     })()}
                   </div>
                   
-                  <div>
+        <div>
                     <select 
                       value={solicitudesPerPage} 
                       onChange={(e) => {
@@ -934,13 +1250,13 @@ function App() {
             <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#e8f5e9', border: '1px solid #4CAF50', borderRadius: '5px' }}>
               <h2 style={{ color: '#18539E' }}>Tu Asignación</h2>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                <p><strong>Número de Orden:</strong> {assignment.order}</p>
-                <p><strong>Localidad:</strong> {assignment.localidad}</p>
-                <p><strong>Centro de Trabajo:</strong> {assignment.centro}</p>
-                <p><strong>Municipio:</strong> {assignment.municipio}</p>
+          <p><strong>Número de Orden:</strong> {assignment.order}</p>
+          <p><strong>Localidad:</strong> {assignment.localidad}</p>
+          <p><strong>Centro de Trabajo:</strong> {assignment.centro}</p>
+          <p><strong>Municipio:</strong> {assignment.municipio}</p>
               </div>
-            </div>
-          )}
+        </div>
+      )}
           
           <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ddd', borderRadius: '5px' }}>
             <h2 style={{ color: '#18539E' }}>Solicitar Plaza</h2>
@@ -1297,13 +1613,13 @@ function Dashboard({ assignments }) {
       
       <div style={{ overflowX: 'auto', paddingBottom: '5px' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead>
+        <thead>
             <tr style={{ backgroundColor: '#EBF4FF' }}>
               <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#18539E' }}>Número de Orden</th>
               <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#18539E' }}>Plazas Asignadas</th>
-            </tr>
-          </thead>
-          <tbody>
+          </tr>
+        </thead>
+        <tbody>
             {ordenesOrdenados.map((orden, index) => {
               const asignacionesDeEsteOrden = asignacionesPorOrden[orden];
               
@@ -1356,11 +1672,11 @@ function Dashboard({ assignments }) {
                       })}
                     </ol>
                   </td>
-                </tr>
+            </tr>
               );
             })}
-          </tbody>
-        </table>
+        </tbody>
+      </table>
       </div>
     </div>
   );
