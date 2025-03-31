@@ -276,134 +276,111 @@ function App() {
   };
 
   return (
-    <div style={{ maxWidth: '1000px', margin: '0 auto', padding: '20px' }}>
-      <h1>Sistema de Asignación de Plazas</h1>
-      
-      <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ddd', borderRadius: '5px' }}>
-        <h2>Información General</h2>
-        {isLoading ? (
-          <p>Cargando datos...</p>
-        ) : (
-          <div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
-              <div style={{ padding: '10px', backgroundColor: '#e3f2fd', borderRadius: '5px' }}>
-                <h3 style={{ margin: '0 0 10px 0', fontSize: '16px' }}>Centros</h3>
-                <p style={{ margin: '0', fontSize: '24px', fontWeight: 'bold' }}>{availablePlazas.length}</p>
-              </div>
+    <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '20px', fontFamily: 'Arial, sans-serif' }}>
+      <h1 style={{ textAlign: 'center', marginBottom: '30px', color: '#333' }}>Asignación de Plazas</h1>
+      {isLoading ? (
+        <div style={{ textAlign: 'center', padding: '50px' }}>
+          <h2>Cargando datos...</h2>
+          <p>Por favor espere mientras se cargan los centros de trabajo.</p>
+        </div>
+      ) : (
+        <>
+          <div style={{ 
+            backgroundColor: '#f8f9fa', 
+            borderRadius: '5px', 
+            padding: '15px', 
+            marginBottom: '20px',
+            border: '1px solid #ddd'
+          }}>
+            <p style={{ margin: '0', fontSize: '16px' }}>
+              <strong>Total de plazas disponibles:</strong> {totalPlazas} en {availablePlazas.length} centros de trabajo
+            </p>
+          </div>
+          
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+            <div>
+              <form onSubmit={handleOrderSubmit} style={{ marginBottom: '25px' }}>
+                <h2>Seleccionar número de orden y centro</h2>
+                <div style={{ marginBottom: '15px' }}>
+                  <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
+                    Número de orden:
+                  </label>
+                  <input
+                    type="number"
+                    value={orderNumber}
+                    onChange={(e) => setOrderNumber(e.target.value)}
+                    required
+                    min="1"
+                    style={{ 
+                      width: '100%', 
+                      padding: '8px', 
+                      borderRadius: '4px', 
+                      border: '1px solid #ddd',
+                      boxSizing: 'border-box'
+                    }}
+                  />
+                </div>
+                
+                <div style={{ marginBottom: '15px' }}>
+                  <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
+                    Centro de trabajo:
+                  </label>
+                  <select
+                    value={centroSeleccionado}
+                    onChange={(e) => setCentroSeleccionado(e.target.value)}
+                    required
+                    style={{ 
+                      width: '100%', 
+                      padding: '8px', 
+                      borderRadius: '4px', 
+                      border: '1px solid #ddd',
+                      boxSizing: 'border-box'
+                    }}
+                  >
+                    <option value="">Seleccione un centro</option>
+                    {availablePlazas
+                      .filter(plaza => (plaza.plazas - plaza.asignadas) > 0)
+                      .map(plaza => (
+                        <option key={plaza.id} value={plaza.id}>
+                          {plaza.centro} - {plaza.municipio} ({plaza.plazas - plaza.asignadas} plazas disp.)
+                        </option>
+                      ))}
+                  </select>
+                </div>
+                
+                <button 
+                  type="submit" 
+                  style={{ 
+                    backgroundColor: '#28a745', 
+                    color: 'white', 
+                    border: 'none', 
+                    borderRadius: '4px', 
+                    padding: '10px 15px', 
+                    cursor: 'pointer', 
+                    fontSize: '16px',
+                    width: '100%'
+                  }}
+                >
+                  Añadir solicitud
+                </button>
+              </form>
               
-              <div style={{ padding: '10px', backgroundColor: '#e8f5e9', borderRadius: '5px' }}>
-                <h3 style={{ margin: '0 0 10px 0', fontSize: '16px' }}>Plazas Totales</h3>
-                <p style={{ margin: '0', fontSize: '24px', fontWeight: 'bold' }}>{totalPlazas}</p>
-              </div>
-              
-              <div style={{ padding: '10px', backgroundColor: '#fff3e0', borderRadius: '5px' }}>
-                <h3 style={{ margin: '0 0 10px 0', fontSize: '16px' }}>Plazas Asignadas</h3>
-                <p style={{ margin: '0', fontSize: '24px', fontWeight: 'bold' }}>{assignments.length}</p>
-              </div>
-              
-              <div style={{ padding: '10px', backgroundColor: '#f3e5f5', borderRadius: '5px' }}>
-                <h3 style={{ margin: '0 0 10px 0', fontSize: '16px' }}>Plazas Disponibles</h3>
-                <p style={{ margin: '0', fontSize: '24px', fontWeight: 'bold' }}>{totalPlazas - assignments.length}</p>
-              </div>
-              
-              <div style={{ padding: '10px', backgroundColor: '#e0f7fa', borderRadius: '5px' }}>
-                <h3 style={{ margin: '0 0 10px 0', fontSize: '16px' }}>Solicitudes Pendientes</h3>
-                <p style={{ margin: '0', fontSize: '24px', fontWeight: 'bold' }}>{solicitudes.length}</p>
-              </div>
+              <SolicitudesPendientes 
+                solicitudes={solicitudes} 
+                centros={availablePlazas} 
+                procesarSolicitudes={procesarSolicitudes} 
+              />
+            </div>
+            
+            <div>
+              <PlazasDisponibles availablePlazas={availablePlazas} />
             </div>
           </div>
-        )}
-      </div>
-
-      <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ddd', borderRadius: '5px' }}>
-        <h2>Solicitar Plaza</h2>
-        <form onSubmit={handleOrderSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-          <div>
-            <label htmlFor="orderInput" style={{ display: 'block', marginBottom: '5px' }}>Número de Orden:</label>
-            <input 
-              id="orderInput"
-              type="number" 
-              value={orderNumber} 
-              onChange={e => setOrderNumber(e.target.value)} 
-              placeholder="Introduce tu número de orden" 
-              style={{ width: '100%', padding: '8px' }}
-              disabled={isLoading}
-            />
-          </div>
           
-          <div>
-            <label htmlFor="centroSelect" style={{ display: 'block', marginBottom: '5px' }}>Centro de Trabajo:</label>
-            <select
-              id="centroSelect"
-              value={centroSeleccionado}
-              onChange={e => setCentroSeleccionado(e.target.value)}
-              style={{ width: '100%', padding: '8px' }}
-              disabled={isLoading}
-            >
-              <option value="">Selecciona un centro</option>
-              {availablePlazas
-                .sort((a, b) => a.id - b.id) // Ordenar por ID
-                .map((plaza) => {
-                  const disponibles = plaza.plazas - plaza.asignadas;
-                  const estaLleno = disponibles === 0;
-                  return (
-                    <option 
-                      key={plaza.id} 
-                      value={plaza.id}
-                      disabled={estaLleno}
-                      style={{ color: estaLleno ? '#999' : 'black' }}
-                    >
-                      {plaza.centro} - {plaza.localidad} ({disponibles} de {plaza.plazas} plazas disponibles)
-                      {estaLleno ? ' - COMPLETO' : ''}
-                    </option>
-                  );
-                })}
-            </select>
-          </div>
-          
-          <button 
-            type="submit" 
-            style={{ 
-              padding: '10px 16px', 
-              backgroundColor: '#4CAF50', 
-              color: 'white', 
-              border: 'none', 
-              borderRadius: '4px', 
-              cursor: 'pointer',
-              alignSelf: 'flex-start'
-            }}
-            disabled={isLoading || totalPlazas - assignments.length <= 0 || !orderNumber || !centroSeleccionado}
-          >
-            Solicitar Plaza
-          </button>
-        </form>
-      </div>
-
-      {isLoading && (
-        <div style={{ textAlign: 'center', padding: '20px' }}>
-          <p>Cargando datos...</p>
-        </div>
+          <Dashboard assignments={assignments} />
+          <Footer />
+        </>
       )}
-
-      {assignment && !isLoading && (
-        <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#f9f9f9', border: '1px solid #ddd', borderRadius: '5px' }}>
-          <h2>Tu Asignación</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-            <p><strong>Número de Orden:</strong> {assignment.order}</p>
-            <p><strong>Localidad:</strong> {assignment.localidad}</p>
-            <p><strong>Centro de Trabajo:</strong> {assignment.centro}</p>
-            <p><strong>Municipio:</strong> {assignment.municipio}</p>
-          </div>
-        </div>
-      )}
-      
-      <SolicitudesPendientes 
-        solicitudes={solicitudes} 
-        centros={availablePlazas} 
-        procesarSolicitudes={procesarSolicitudes} 
-      />
-      <PlazasDisponibles availablePlazas={availablePlazas} />
-      <Dashboard assignments={assignments} />
     </div>
   );
 }
@@ -605,6 +582,35 @@ function Dashboard({ assignments }) {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+// Componente Footer
+function Footer() {
+  return (
+    <div style={{ 
+      marginTop: '40px',
+      borderTop: '1px solid #ddd',
+      padding: '15px 0',
+      textAlign: 'center',
+      fontSize: '14px',
+      color: '#666'
+    }}>
+      <p>
+        Hecho por <a 
+          href="https://ag-marketing.es" 
+          target="_blank" 
+          rel="noopener noreferrer"
+          style={{ 
+            color: '#007BFF', 
+            textDecoration: 'none', 
+            fontWeight: 'bold'
+          }}
+        >
+          AG Marketing
+        </a>
+      </p>
     </div>
   );
 }
