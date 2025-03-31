@@ -233,6 +233,8 @@ function App() {
               texto = await respuesta.text();
               rutaCargada = ruta;
               console.log(`Archivo CSV cargado correctamente desde: ${ruta}`);
+              console.log(`Tamaño del archivo: ${texto.length} caracteres`);
+              console.log(`Primeras 100 caracteres: ${texto.substring(0, 100)}`);
               break;
             }
           } catch (e) {
@@ -241,32 +243,123 @@ function App() {
         }
         
         if (!texto) {
-          throw new Error('No se pudo cargar el archivo CSV desde ninguna ruta');
+          console.error('No se pudo cargar el archivo CSV desde ninguna ruta');
+          usarDatosSimulados();
+          return;
         }
         
-        // Parsear el CSV con PapaParse
+        // Detectar el delimitador automáticamente examinando las primeras líneas
+        let delimitador = ';'; // Por defecto usamos punto y coma
+        
+        // Verificar si hay más comas que punto y coma en las primeras líneas
+        const primerasLineas = texto.split('\n').slice(0, 10).join('\n');
+        const numComas = (primerasLineas.match(/,/g) || []).length;
+        const numPuntoComa = (primerasLineas.match(/;/g) || []).length;
+        
+        if (numComas > numPuntoComa) {
+          delimitador = ',';
+          console.log('Delimitador detectado automáticamente: COMA');
+        } else {
+          console.log('Delimitador detectado automáticamente: PUNTO Y COMA');
+        }
+        
+        // Parsear el CSV con PapaParse usando el delimitador detectado
         Papa.parse(texto, {
-          delimiter: ';', // Especificar punto y coma como delimitador
+          delimiter: delimitador,
           skipEmptyLines: true,
           complete: (resultado) => {
             console.log('CSV cargado. Total de filas:', resultado.data.length);
+            console.log('Primeras 3 filas para análisis:', resultado.data.slice(0, 3));
             
-            // Saltamos las primeras 3 filas (encabezados y títulos del documento)
-            const datosSinEncabezados = resultado.data.slice(3);
-            
-            if (datosSinEncabezados.length === 0) {
-              throw new Error('El archivo CSV no contiene datos después de saltar encabezados');
+            // Determinar automáticamente dónde empiezan los datos
+            let inicioFilas = 0;
+            // Buscar la primera fila que tenga datos que parezcan encabezados o valores significativos
+            for (let i = 0; i < Math.min(10, resultado.data.length); i++) {
+              const fila = resultado.data[i];
+              
+              // Si la fila tiene al menos 5 columnas no vacías, podría ser una fila de datos o encabezados
+              const columnasSinVacios = fila.filter(celda => celda && celda.trim().length > 0);
+              if (columnasSinVacios.length >= 5) {
+                console.log(`Posible fila de encabezados o datos encontrada en línea ${i+1}:`, fila);
+                inicioFilas = i;
+                break;
+              }
             }
             
-            // Usar la cuarta fila como nombres de columna
-            const nombresColumnas = resultado.data[3];
+            console.log(`Usando fila ${inicioFilas+1} como referencia para encabezados/datos`);
+            
+            // Intentar determinar qué filas son encabezados y cuáles datos
+            // Típicamente, los encabezados tienen textos cortos y los datos tienen valores más diversos
+            let filaEncabezados = inicioFilas;
+            
+            // Ver si hay una fila que parezca contener encabezados (textos cortos descriptivos)
+            for (let i = inicioFilas; i < Math.min(inicioFilas + 5, resultado.data.length); i++) {
+              const fila = resultado.data[i];
+              const pareceEncabezado = fila.every(celda => 
+                typeof celda === 'string' && 
+                celda.trim().length > 0 && 
+                celda.trim().length < 30 &&
+                !celda.match(/^\d+$/) // No son solo números
+              );
+              
+              if (pareceEncabezado) {
+                filaEncabezados = i;
+                console.log(`Fila ${i+1} parece contener encabezados:`, fila);
+                break;
+              }
+            }
+            
+            // Los datos deberían comenzar en la siguiente fila después de los encabezados
+            const inicioDatos = filaEncabezados + 1;
+            console.log(`Usando fila ${inicioDatos+1} como inicio de datos`);
+            
+            // Extraer encabezados
+            const nombresColumnas = resultado.data[filaEncabezados].map(col => col.trim());
             console.log('Nombres de columnas detectados:', nombresColumnas);
             
-            // Procesar datos a partir de la quinta fila
-            const datosCentros = resultado.data.slice(4);
+            // Procesar datos a partir de la fila identificada
+            const datosCentros = resultado.data.slice(inicioDatos);
             console.log('Total de centros en CSV (sin procesar):', datosCentros.length);
             
-            // Función para examinar las filas con problemas
+            // Identificar índices de columnas importantes basados en nombres o contenido
+            let idxLocalidad = nombresColumnas.findIndex(col => 
+              col.toLowerCase().includes('localidad') || col.toLowerCase().includes('a.s.i') || col.toLowerCase().includes('asi')
+            );
+            let idxDepartamento = nombresColumnas.findIndex(col => 
+              col.toLowerCase().includes('departamento') || col.toLowerCase().includes('depart') || col.toLowerCase().includes('dep.')
+            );
+            let idxCodigo = nombresColumnas.findIndex(col => 
+              col.toLowerCase().includes('código') || col.toLowerCase().includes('codigo') || col.toLowerCase().includes('code')
+            );
+            let idxCentro = nombresColumnas.findIndex(col => 
+              col.toLowerCase().includes('centro') || col.toLowerCase().includes('work') || col.toLowerCase().includes('trabajo')
+            );
+            let idxMunicipio = nombresColumnas.findIndex(col => 
+              col.toLowerCase().includes('municipio') || col.toLowerCase().includes('munic') || col.toLowerCase().includes('city')
+            );
+            let idxPlazas = nombresColumnas.findIndex(col => 
+              col.toLowerCase().includes('plazas') || col.toLowerCase().includes('plaza') || col.toLowerCase().includes('spots') || 
+              col.toLowerCase().includes('vacantes') || col.toLowerCase().includes('número') || col.toLowerCase().includes('numero')
+            );
+            
+            // Si no se encontraron automáticamente, usar índices predeterminados (basados en estructura típica)
+            if (idxLocalidad === -1) idxLocalidad = 0;
+            if (idxDepartamento === -1) idxDepartamento = 1;
+            if (idxCodigo === -1) idxCodigo = 2;
+            if (idxCentro === -1) idxCentro = 3;
+            if (idxMunicipio === -1) idxMunicipio = 4;
+            if (idxPlazas === -1) idxPlazas = 5;
+            
+            console.log(`Índices de columnas identificados:
+              Localidad: ${idxLocalidad}
+              Departamento: ${idxDepartamento}
+              Código: ${idxCodigo}
+              Centro: ${idxCentro}
+              Municipio: ${idxMunicipio}
+              Plazas: ${idxPlazas}
+            `);
+            
+            // Función para diagnosticar los datos
             const diagnosticarDatos = (filas) => {
               // Conteo de filas con diferentes longitudes
               const conteoLongitud = {};
@@ -278,7 +371,7 @@ function App() {
                 // Guardar solo las primeras 5 filas de cada longitud para no sobrecargar el log
                 if (conteoLongitud[longitud].length < 5) {
                   conteoLongitud[longitud].push({
-                    indice: idx + 4, // Ajustar el índice al archivo original
+                    indice: idx + inicioDatos, // Ajustar el índice al archivo original
                     contenido: fila
                   });
                 }
@@ -290,30 +383,36 @@ function App() {
               
               // Examinar algunas filas de cada longitud
               Object.keys(conteoLongitud).forEach(longitud => {
-                if (longitud < 6) { // Solo mostrar filas potencialmente problemáticas
+                if (longitud < 6 || parseInt(longitud, 10) !== nombresColumnas.length) { 
+                  // Mostrar filas potencialmente problemáticas
                   console.log(`Ejemplos de filas con ${longitud} columnas:`, conteoLongitud[longitud]);
                 }
               });
               
               // Verificar valores de plazas
               const valoresPlazas = filas
-                .filter(fila => fila.length >= 6 && fila[5])
+                .filter(fila => fila.length > idxPlazas && fila[idxPlazas] !== undefined)
                 .map(fila => {
                   // Guardar el valor original para diagnóstico
-                  const valorOriginal = fila[5].toString().trim();
+                  const valorOriginal = fila[idxPlazas].toString().trim();
                   
                   // Intentar varias formas de parseo
-                  const valorInt = parseInt(valorOriginal.replace(',', '.'), 10);
-                  const valorFloat = parseFloat(valorOriginal.replace(',', '.'));
+                  const valorLimpio = valorOriginal.replace(/[^\d.,]/g, '').replace(/\./g, '').replace(',', '.');
+                  const valorInt = parseInt(valorLimpio, 10);
+                  const valorFloat = parseFloat(valorLimpio);
                   
                   return {
                     original: valorOriginal,
-                    comoCadena: valorOriginal,
+                    limpio: valorLimpio,
                     comoEntero: valorInt,
                     comoDecimal: valorFloat,
-                    esNaN: isNaN(valorInt)
+                    esNaN: isNaN(valorInt),
+                    fila: fila.slice(0, 6) // Solo las primeras 6 columnas para diagnóstico
                   };
                 });
+              
+              console.log(`Análisis de valores de plazas: ${valoresPlazas.length} valores encontrados`);
+              console.log('Primeros 10 ejemplos de valores de plazas:', valoresPlazas.slice(0, 10));
               
               // Filtrar por valores problemáticos
               const valoresProblematicos = valoresPlazas.filter(v => 
@@ -324,38 +423,25 @@ function App() {
                 console.log(`Encontrados ${valoresProblematicos.length} valores de plazas problemáticos.`);
                 console.log('Primeros 10 ejemplos:', valoresProblematicos.slice(0, 10));
               }
-              
-              // Verificar valores extremos
-              const valoresExtremos = valoresPlazas
-                .filter(v => !isNaN(v.comoEntero) && v.comoEntero > 100)
-                .sort((a, b) => b.comoEntero - a.comoEntero);
-                
-              if (valoresExtremos.length > 0) {
-                console.log(`Encontrados ${valoresExtremos.length} valores de plazas inusualmente altos (>100).`);
-                console.log('Primeros 5 ejemplos:', valoresExtremos.slice(0, 5));
-              }
             };
             
             // Ejecutar diagnóstico sobre los datos
             diagnosticarDatos(datosCentros);
             
-            // Procesar cada fila en el formato específico de este CSV
+            // Procesar cada fila para extraer los centros
             const centrosProcesados = datosCentros
-              .filter(fila => fila.length >= 6) // Asegurar que la fila tiene suficientes columnas
               .map((fila, index) => {
-                // En este CSV específico:
-                // fila[0] = A.S.I. (Localidad)
-                // fila[1] = Departamento
-                // fila[2] = Código Centro Trabajo
-                // fila[3] = Centro de Trabajo
-                // fila[4] = Municipio
-                // fila[5] = Número de plazas
+                // Verificar si la fila tiene suficientes columnas
+                if (fila.length <= Math.max(idxLocalidad, idxDepartamento, idxCodigo, idxCentro, idxMunicipio, idxPlazas)) {
+                  console.warn(`Fila ${index + inicioDatos + 1} tiene menos columnas de las requeridas:`, fila);
+                  return null;
+                }
                 
                 // Procesar el número de plazas correctamente
                 let plazas = 0;
-                if (fila[5]) {
+                if (fila[idxPlazas] !== undefined) {
                   // Limpiar el valor y asegurar que sea un número
-                  let plazasStr = fila[5].toString().trim();
+                  let plazasStr = fila[idxPlazas].toString().trim();
                   
                   // Formatos especiales conocidos - ajustar manualmente casos problemáticos
                   if (plazasStr === "1 - (0'5 JS)") plazasStr = "1";
@@ -374,82 +460,60 @@ function App() {
                     }
                   }
                   
-                  // Para diagnóstico, verificar casos específicos
-                  if (plazas > 100) {
-                    console.log(`Valor inusualmente alto de plazas: ${plazas} (original: "${fila[5]}") en centro: ${fila[3] || 'sin nombre'}`);
+                  // Si plazas sigue siendo NaN o menor a 1, intentar extraer números mediante regex
+                  if (isNaN(plazas) || plazas < 1) {
+                    const numerosEncontrados = plazasStr.match(/\d+/);
+                    if (numerosEncontrados && numerosEncontrados.length > 0) {
+                      plazas = parseInt(numerosEncontrados[0], 10);
+                    }
+                  }
+                  
+                  // Asegurar que sea al menos 1 si hay algún texto que indique plazas
+                  if ((isNaN(plazas) || plazas < 1) && plazasStr.length > 0) {
+                    plazas = 1; // Asumimos al menos 1 plaza si hay algún valor pero no pudimos parsearlo
+                    console.warn(`Valor no numérico para plazas: "${plazasStr}" en fila ${index + inicioDatos + 1}. Asumiendo 1 plaza.`);
                   }
                   
                   // Asegurar que sea al menos 0
-                  plazas = plazas || 0;
+                  plazas = isNaN(plazas) ? 0 : Math.max(0, plazas);
                 }
                 
+                // Crear objeto con los datos del centro
                 return {
                   id: index + 1,
-                  codigo: fila[2] ? fila[2].toString().trim() : '',
-                  localidad: fila[0] ? fila[0].toString().trim() : '',
-                  departamento: fila[1] ? fila[1].toString().trim() : '',
-                  centro: fila[3] ? fila[3].toString().trim() : '',
-                  municipio: fila[4] ? fila[4].toString().trim() : '',
+                  codigo: fila[idxCodigo] ? fila[idxCodigo].toString().trim() : '',
+                  localidad: fila[idxLocalidad] ? fila[idxLocalidad].toString().trim() : '',
+                  departamento: fila[idxDepartamento] ? fila[idxDepartamento].toString().trim() : '',
+                  centro: fila[idxCentro] ? fila[idxCentro].toString().trim() : '',
+                  municipio: fila[idxMunicipio] ? fila[idxMunicipio].toString().trim() : '',
                   plazas: plazas
                 };
               })
               .filter(centro => {
-                // Filtrar solo los que tienen datos válidos y plazas > 0
-                const esValido = centro.centro && centro.plazas > 0;
-                if (!esValido) {
-                  console.warn(`Centro inválido descartado: ${JSON.stringify(centro)}`);
+                // Filtrar nulos (filas inválidas)
+                if (centro === null) return false;
+                
+                // Filtrar solo los que tienen datos válidos
+                const tieneNombre = centro.centro && centro.centro.trim().length > 0;
+                const tienePlazas = centro.plazas > 0;
+                
+                // Registrar centros descartados para diagnóstico
+                if (!tieneNombre || !tienePlazas) {
+                  console.warn(`Centro descartado:`, centro);
                 }
-                return esValido;
+                
+                return tieneNombre && tienePlazas;
               });
             
             console.log('Centros procesados del CSV:', centrosProcesados.length);
             console.log('Primeros 5 centros procesados:', centrosProcesados.slice(0, 5));
             console.log('Últimos 5 centros procesados:', centrosProcesados.slice(-5));
             
-            // Verificar si el total de plazas es el esperado
+            // Verificar si el total de plazas parece razonable
             const totalPlazas = centrosProcesados.reduce((suma, centro) => suma + centro.plazas, 0);
             console.log(`Total de plazas calculado: ${totalPlazas}`);
             
-            // Si el total no coincide con el esperado, ajustar para corregir la discrepancia
-            const totalEsperado = 7066; // Total exacto del PDF
-            if (totalPlazas !== totalEsperado && centrosProcesados.length > 0) {
-              console.warn(`Ajustando manualmente para que coincida con las ${totalEsperado} plazas del PDF`);
-              
-              // Calcular la diferencia que hay que distribuir
-              const diferencia = totalEsperado - totalPlazas;
-              
-              if (diferencia > 0) {
-                console.log(`Faltan ${diferencia} plazas. Añadiendo al centro más grande...`);
-                // Encontrar el centro con más plazas para añadir las faltantes
-                const indiceMayor = centrosProcesados.reduce((iMax, x, i, arr) => 
-                  x.plazas > arr[iMax].plazas ? i : iMax, 0);
-                centrosProcesados[indiceMayor].plazas += diferencia;
-                console.log(`Añadidas ${diferencia} plazas al centro: ${centrosProcesados[indiceMayor].centro}`);
-              } else if (diferencia < 0) {
-                console.log(`Sobran ${-diferencia} plazas. Reduciendo de los centros más pequeños...`);
-                // Si sobran, ir reduciendo de los centros más pequeños que tengan al menos 2 plazas
-                let restantes = -diferencia;
-                const centrosOrdenados = [...centrosProcesados]
-                  .sort((a, b) => a.plazas - b.plazas)
-                  .filter(c => c.plazas >= 2);
-                
-                for (let i = 0; i < centrosOrdenados.length && restantes > 0; i++) {
-                  const idCentro = centrosOrdenados[i].id;
-                  const idx = centrosProcesados.findIndex(c => c.id === idCentro);
-                  if (idx >= 0) {
-                    const reducir = Math.min(restantes, centrosProcesados[idx].plazas - 1);
-                    centrosProcesados[idx].plazas -= reducir;
-                    restantes -= reducir;
-                    console.log(`Reducidas ${reducir} plazas del centro: ${centrosProcesados[idx].centro}`);
-                  }
-                }
-              }
-              
-              // Recalcular el total después del ajuste
-              const totalAjustado = centrosProcesados.reduce((suma, centro) => suma + centro.plazas, 0);
-              console.log(`Total de plazas después del ajuste: ${totalAjustado}`);
-            }
-            
+            // Si no hay centros procesados, usar datos simulados
             if (centrosProcesados.length === 0) {
               console.error('No se pudieron extraer centros con plazas > 0');
               usarDatosSimulados();
@@ -480,7 +544,6 @@ function App() {
         });
       } catch (error) {
         console.error('Error al cargar el CSV:', error);
-        // Usar datos simulados como respaldo en caso de error
         usarDatosSimulados();
       }
     };
