@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
+import { db } from './firebase';
+import { collection, addDoc, getDocs, doc, updateDoc, onSnapshot, query, orderBy, deleteDoc } from 'firebase/firestore';
 
 function App() {
   const [excelData, setExcelData] = useState([]);
   const [orderNumber, setOrderNumber] = useState('');
-  const [centroSeleccionado, setCentroSeleccionado] = useState('');
+  const [centrosSeleccionados, setCentrosSeleccionados] = useState([]);
   const [assignment, setAssignment] = useState(null);
   const [assignments, setAssignments] = useState([]);
   const [solicitudes, setSolicitudes] = useState([]);
@@ -13,7 +15,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [availablePlazas, setAvailablePlazas] = useState([]);
 
-  // Cargar datos del CSV al iniciar
+  // Cargar datos del CSV al iniciar y configurar la escucha de Firebase
   useEffect(() => {
     // Función para usar datos simulados (solo como respaldo)
     const usarDatosSimulados = () => {
@@ -44,6 +46,98 @@ function App() {
       setTotalPlazas(total);
       setIsLoading(false);
       console.log("Usando datos simulados con éxito. Total centros: " + datosSimulados.length);
+      
+      // Inicializar colección en Firebase si no existe
+      initializeFirebaseCollections(datosSimulados);
+    };
+
+    // Inicializar colecciones de Firebase
+    const initializeFirebaseCollections = async (centros) => {
+      try {
+        // Verificar si ya existen datos en Firebase
+        const centrosSnapshot = await getDocs(collection(db, "centros"));
+        
+        if (centrosSnapshot.empty) {
+          console.log("Inicializando colección de centros en Firebase...");
+          // Guardar los centros en Firebase
+          for (const centro of centros) {
+            await addDoc(collection(db, "centros"), {
+              ...centro,
+              asignadas: 0,
+              timestamp: new Date().getTime()
+            });
+          }
+        }
+      } catch (error) {
+        console.error("Error al inicializar colecciones Firebase:", error);
+      }
+    };
+
+    // Función para cargar datos de Firebase
+    const cargarDatosFirebase = async () => {
+      try {
+        // Configurar escuchas en tiempo real para ambas colecciones
+        // 1. Escuchar cambios en los centros
+        const q1 = query(collection(db, "centros"), orderBy("id"));
+        const unsubscribeCentros = onSnapshot(q1, (snapshot) => {
+          const centrosData = snapshot.docs.map(doc => ({
+            id: doc.data().id,
+            docId: doc.id, // Guardamos la referencia al documento
+            localidad: doc.data().localidad,
+            departamento: doc.data().departamento,
+            centro: doc.data().centro,
+            municipio: doc.data().municipio,
+            plazas: doc.data().plazas,
+            asignadas: doc.data().asignadas || 0
+          }));
+          
+          setAvailablePlazas(centrosData);
+          setExcelData(centrosData);
+          
+          // Calcular el total de plazas
+          const total = centrosData.reduce((sum, item) => sum + item.plazas, 0);
+          setTotalPlazas(total);
+        });
+        
+        // 2. Escuchar cambios en las asignaciones
+        const q2 = query(collection(db, "asignaciones"), orderBy("order"));
+        const unsubscribeAsignaciones = onSnapshot(q2, (snapshot) => {
+          const asignacionesData = snapshot.docs.map(doc => ({
+            docId: doc.id,
+            order: doc.data().order,
+            id: doc.data().id,
+            localidad: doc.data().localidad,
+            centro: doc.data().centro,
+            municipio: doc.data().municipio,
+            timestamp: doc.data().timestamp
+          }));
+          
+          setAssignments(asignacionesData);
+        });
+        
+        // 3. Escuchar cambios en las solicitudes pendientes
+        const q3 = query(collection(db, "solicitudesPendientes"), orderBy("orden"));
+        const unsubscribeSolicitudes = onSnapshot(q3, (snapshot) => {
+          const solicitudesData = snapshot.docs.map(doc => ({
+            docId: doc.id,
+            orden: doc.data().orden,
+            centrosIds: doc.data().centrosIds || [],
+            timestamp: doc.data().timestamp
+          }));
+          
+          setSolicitudes(solicitudesData);
+        });
+        
+        // Devolver funciones para cancelar las escuchas cuando se desmonte el componente
+        return () => {
+          unsubscribeCentros();
+          unsubscribeAsignaciones();
+          unsubscribeSolicitudes();
+        };
+      } catch (error) {
+        console.error("Error al cargar datos de Firebase:", error);
+        return null;
+      }
     };
 
     // Intentaremos primero cargar el CSV
@@ -154,6 +248,9 @@ function App() {
             setTotalPlazas(totalPlazas);
             console.log(`CSV procesado. Total de centros: ${centrosProcesados.length}, Total plazas: ${totalPlazas}`);
             setIsLoading(false);
+            
+            // Inicializar datos en Firebase
+            initializeFirebaseCollections(plazasIniciales);
           },
           error: (error) => {
             console.error('Error al parsear el CSV:', error);
@@ -167,12 +264,20 @@ function App() {
       }
     };
     
-    // Intentamos cargar el CSV primero
-    cargarCSV();
+    // Cargamos primero el CSV para obtener los datos iniciales
+    cargarCSV().then(() => {
+      // Después configuramos Firebase para escuchar actualizaciones en tiempo real
+      const unsubscribe = cargarDatosFirebase();
+      
+      // Limpieza al desmontar
+      return () => {
+        if (unsubscribe) unsubscribe();
+      };
+    });
   }, []);
 
   // Función para procesar todas las solicitudes pendientes
-  const procesarSolicitudes = () => {
+  const procesarSolicitudes = async () => {
     // Ordenar solicitudes por número de orden (prioridad)
     const solicitudesOrdenadas = [...solicitudes].sort((a, b) => a.orden - b.orden);
     
@@ -180,57 +285,87 @@ function App() {
     const nuevasAsignaciones = [];
     const plazasActualizadas = [...availablePlazas];
     
+    // Conjunto para almacenar los IDs de orden ya asignados
+    const ordenesAsignados = new Set();
+    
     // Procesar cada solicitud en orden de prioridad
     for (const solicitud of solicitudesOrdenadas) {
       // Verificar si este número de orden ya tiene asignación
       const asignacionExistente = assignments.find(a => a.order === solicitud.orden);
-      if (asignacionExistente) continue;
+      if (asignacionExistente || ordenesAsignados.has(solicitud.orden)) continue;
       
-      // Buscar el centro solicitado
-      const centroBuscado = plazasActualizadas.find(p => p.id === solicitud.centroId);
-      
-      if (centroBuscado && centroBuscado.asignadas < centroBuscado.plazas) {
-        // Hay plaza disponible en el centro solicitado
-        // Actualizar plazas
-        const idx = plazasActualizadas.findIndex(p => p.id === solicitud.centroId);
-        plazasActualizadas[idx] = {
-          ...plazasActualizadas[idx],
-          asignadas: plazasActualizadas[idx].asignadas + 1
-        };
+      // Verificar cada centro solicitado en orden de preferencia
+      for (const centroId of solicitud.centrosIds) {
+        // Buscar el centro solicitado
+        const centroBuscado = plazasActualizadas.find(p => p.id === centroId);
         
-        // Crear nueva asignación
-        const nuevaAsignacion = {
-          order: solicitud.orden,
-          id: centroBuscado.id,
-          localidad: centroBuscado.localidad,
-          centro: centroBuscado.centro,
-          municipio: centroBuscado.municipio
-        };
-        
-        nuevasAsignaciones.push(nuevaAsignacion);
+        if (centroBuscado && centroBuscado.asignadas < centroBuscado.plazas) {
+          // Hay plaza disponible en el centro solicitado
+          // Actualizar plazas
+          const idx = plazasActualizadas.findIndex(p => p.id === centroId);
+          plazasActualizadas[idx] = {
+            ...plazasActualizadas[idx],
+            asignadas: plazasActualizadas[idx].asignadas + 1
+          };
+          
+          // Crear nueva asignación
+          const nuevaAsignacion = {
+            order: solicitud.orden,
+            id: centroBuscado.id,
+            localidad: centroBuscado.localidad,
+            centro: centroBuscado.centro,
+            municipio: centroBuscado.municipio,
+            timestamp: new Date().getTime()
+          };
+          
+          nuevasAsignaciones.push(nuevaAsignacion);
+          ordenesAsignados.add(solicitud.orden);
+          
+          // Una vez asignado, pasamos al siguiente número de orden
+          break;
+        }
       }
     }
     
-    // Actualizar estado con las nuevas asignaciones
+    // Actualizar Firebase con las nuevas asignaciones
     if (nuevasAsignaciones.length > 0) {
-      setAssignments(prev => [...prev, ...nuevasAsignaciones]);
-      setAvailablePlazas(plazasActualizadas);
-      
-      // Encontrar y establecer la asignación para el número de orden actual si existe
-      if (orderNumber) {
-        const miAsignacion = nuevasAsignaciones.find(a => a.order === parseInt(orderNumber, 10));
-        if (miAsignacion) {
-          setAssignment(miAsignacion);
+      try {
+        // 1. Guardar las nuevas asignaciones
+        for (const asignacion of nuevasAsignaciones) {
+          await addDoc(collection(db, "asignaciones"), asignacion);
         }
+        
+        // 2. Actualizar las plazas disponibles
+        for (const plaza of plazasActualizadas) {
+          if (plaza.docId) { // Solo si tiene ID de documento
+            const centroRef = doc(db, "centros", plaza.docId);
+            await updateDoc(centroRef, { asignadas: plaza.asignadas });
+          }
+        }
+        
+        // 3. Eliminar las solicitudes procesadas
+        for (const solicitud of solicitudesOrdenadas) {
+          if (ordenesAsignados.has(solicitud.orden) && solicitud.docId) {
+            const solicitudRef = doc(db, "solicitudesPendientes", solicitud.docId);
+            await deleteDoc(solicitudRef);
+          }
+        }
+        
+        // Encontrar y establecer la asignación para el número de orden actual si existe
+        if (orderNumber) {
+          const miAsignacion = nuevasAsignaciones.find(a => a.order === parseInt(orderNumber, 10));
+          if (miAsignacion) {
+            setAssignment(miAsignacion);
+          }
+        }
+      } catch (error) {
+        console.error("Error al actualizar Firebase:", error);
+        alert("Error al procesar solicitudes. Inténtelo de nuevo.");
       }
-      
-      // Eliminar solicitudes procesadas
-      const ordenesAsignados = nuevasAsignaciones.map(a => a.order);
-      setSolicitudes(prev => prev.filter(s => !ordenesAsignados.includes(s.orden)));
     }
   };
 
-  const handleOrderSubmit = (e) => {
+  const handleOrderSubmit = async (e) => {
     e.preventDefault();
     const numOrden = parseInt(orderNumber, 10);
     if (isNaN(numOrden) || numOrden <= 0) {
@@ -238,8 +373,8 @@ function App() {
       return;
     }
     
-    if (!centroSeleccionado) {
-      alert('Por favor, selecciona un centro de trabajo');
+    if (centrosSeleccionados.length === 0) {
+      alert('Por favor, selecciona al menos un centro de trabajo');
       return;
     }
 
@@ -250,29 +385,49 @@ function App() {
       return;
     }
     
-    // Verificar si ya existe una solicitud para este número de orden
-    const solicitudExistente = solicitudes.find(s => s.orden === numOrden);
-    if (solicitudExistente) {
-      // Actualizar la solicitud existente con el nuevo centro seleccionado
-      setSolicitudes(prev => 
-        prev.map(s => s.orden === numOrden ? { ...s, centroId: parseInt(centroSeleccionado, 10) } : s)
-      );
-    } else {
-      // Crear nueva solicitud
-      const nuevaSolicitud = {
-        orden: numOrden,
-        centroId: parseInt(centroSeleccionado, 10)
-      };
+    try {
+      // Verificar si ya existe una solicitud para este número de orden
+      const solicitudExistente = solicitudes.find(s => s.orden === numOrden);
       
-      // Añadir a la lista de solicitudes
-      setSolicitudes(prev => [...prev, nuevaSolicitud]);
+      if (solicitudExistente) {
+        // Actualizar la solicitud existente con los nuevos centros seleccionados
+        const solicitudRef = doc(db, "solicitudesPendientes", solicitudExistente.docId);
+        await updateDoc(solicitudRef, { 
+          centrosIds: centrosSeleccionados.map(id => parseInt(id, 10)),
+          timestamp: new Date().getTime()
+        });
+      } else {
+        // Crear nueva solicitud en Firebase
+        await addDoc(collection(db, "solicitudesPendientes"), {
+          orden: numOrden,
+          centrosIds: centrosSeleccionados.map(id => parseInt(id, 10)),
+          timestamp: new Date().getTime()
+        });
+      }
+      
+      // Limpiar formulario
+      setCentrosSeleccionados([]);
+      
+      // Procesar solicitudes
+      setTimeout(procesarSolicitudes, 500);
+    } catch (error) {
+      console.error("Error al guardar solicitud:", error);
+      alert("Error al guardar la solicitud. Inténtelo de nuevo.");
+    }
+  };
+
+  // Función para manejar la selección de múltiples centros
+  const handleCentroChange = (e) => {
+    const options = e.target.options;
+    const selectedValues = [];
+    
+    for (let i = 0; i < options.length; i++) {
+      if (options[i].selected) {
+        selectedValues.push(options[i].value);
+      }
     }
     
-    // Procesar solicitudes para asignar plazas según prioridad
-    setTimeout(procesarSolicitudes, 100);
-    
-    // Limpiar formulario
-    setCentroSeleccionado('');
+    setCentrosSeleccionados(selectedValues);
   };
 
   return (
@@ -285,83 +440,109 @@ function App() {
         </div>
       ) : (
         <>
-          <div style={{ 
-            backgroundColor: '#f8f9fa', 
-            borderRadius: '5px', 
-            padding: '15px', 
-            marginBottom: '20px',
-            border: '1px solid #ddd'
-          }}>
-            <p style={{ margin: '0', fontSize: '16px' }}>
-              <strong>Total de plazas disponibles:</strong> {totalPlazas} en {availablePlazas.length} centros de trabajo
-            </p>
+          <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ddd', borderRadius: '5px' }}>
+            <h2>Información General</h2>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
+              <div style={{ padding: '10px', backgroundColor: '#e3f2fd', borderRadius: '5px' }}>
+                <h3 style={{ margin: '0 0 10px 0', fontSize: '16px' }}>Centros</h3>
+                <p style={{ margin: '0', fontSize: '24px', fontWeight: 'bold' }}>{availablePlazas.length}</p>
+              </div>
+               
+              <div style={{ padding: '10px', backgroundColor: '#e8f5e9', borderRadius: '5px' }}>
+                <h3 style={{ margin: '0 0 10px 0', fontSize: '16px' }}>Plazas Totales</h3>
+                <p style={{ margin: '0', fontSize: '24px', fontWeight: 'bold' }}>{totalPlazas}</p>
+              </div>
+               
+              <div style={{ padding: '10px', backgroundColor: '#fff3e0', borderRadius: '5px' }}>
+                <h3 style={{ margin: '0 0 10px 0', fontSize: '16px' }}>Plazas Asignadas</h3>
+                <p style={{ margin: '0', fontSize: '24px', fontWeight: 'bold' }}>{assignments.length}</p>
+              </div>
+               
+              <div style={{ padding: '10px', backgroundColor: '#f3e5f5', borderRadius: '5px' }}>
+                <h3 style={{ margin: '0 0 10px 0', fontSize: '16px' }}>Plazas Disponibles</h3>
+                <p style={{ margin: '0', fontSize: '24px', fontWeight: 'bold' }}>{totalPlazas - assignments.length}</p>
+              </div>
+               
+              <div style={{ padding: '10px', backgroundColor: '#e0f7fa', borderRadius: '5px' }}>
+                <h3 style={{ margin: '0 0 10px 0', fontSize: '16px' }}>Solicitudes Pendientes</h3>
+                <p style={{ margin: '0', fontSize: '24px', fontWeight: 'bold' }}>{solicitudes.length}</p>
+              </div>
+            </div>
           </div>
           
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
-            <div>
-              <form onSubmit={handleOrderSubmit} style={{ marginBottom: '25px' }}>
-                <h2>Seleccionar número de orden y centro</h2>
-                <div style={{ marginBottom: '15px' }}>
-                  <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
-                    Número de orden:
-                  </label>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(350px, 1fr))', gap: '20px' }}>
+            <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ddd', borderRadius: '5px' }}>
+              <h2>Solicitar Plaza</h2>
+              <form onSubmit={handleOrderSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+                <div>
+                  <label htmlFor="orderInput" style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Número de Orden:</label>
                   <input
+                    id="orderInput"
                     type="number"
                     value={orderNumber}
-                    onChange={(e) => setOrderNumber(e.target.value)}
+                    onChange={e => setOrderNumber(e.target.value)} 
+                    placeholder="Introduce tu número de orden" 
+                    style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
                     required
                     min="1"
-                    style={{ 
-                      width: '100%', 
-                      padding: '8px', 
-                      borderRadius: '4px', 
-                      border: '1px solid #ddd',
-                      boxSizing: 'border-box'
-                    }}
                   />
                 </div>
                 
-                <div style={{ marginBottom: '15px' }}>
-                  <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
-                    Centro de trabajo:
+                <div>
+                  <label htmlFor="centrosSelect" style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
+                    Centros de Trabajo (selecciona múltiples en orden de preferencia):
                   </label>
                   <select
-                    value={centroSeleccionado}
-                    onChange={(e) => setCentroSeleccionado(e.target.value)}
-                    required
+                    id="centrosSelect"
+                    multiple
+                    value={centrosSeleccionados}
+                    onChange={handleCentroChange}
                     style={{ 
                       width: '100%', 
                       padding: '8px', 
                       borderRadius: '4px', 
                       border: '1px solid #ddd',
-                      boxSizing: 'border-box'
+                      height: '150px'
                     }}
+                    required
                   >
-                    <option value="">Seleccione un centro</option>
                     {availablePlazas
                       .filter(plaza => (plaza.plazas - plaza.asignadas) > 0)
-                      .map(plaza => (
-                        <option key={plaza.id} value={plaza.id}>
-                          {plaza.centro} - {plaza.municipio} ({plaza.plazas - plaza.asignadas} plazas disp.)
-                        </option>
-                      ))}
+                      .sort((a, b) => a.id - b.id)
+                      .map((plaza) => {
+                        const disponibles = plaza.plazas - plaza.asignadas;
+                        const estaLleno = disponibles === 0;
+                        return (
+                          <option 
+                            key={plaza.id} 
+                            value={plaza.id}
+                            disabled={estaLleno}
+                            style={{ padding: '4px 0' }}
+                          >
+                            {plaza.centro} - {plaza.localidad} ({disponibles} de {plaza.plazas} plazas disponibles)
+                          </option>
+                        );
+                      })}
                   </select>
+                  <p style={{ margin: '5px 0 0 0', fontSize: '14px', color: '#666' }}>
+                    Mantén presionada la tecla Ctrl (o Cmd en Mac) para seleccionar múltiples centros.
+                    El orden de selección determina la prioridad.
+                  </p>
                 </div>
                 
                 <button 
                   type="submit" 
                   style={{ 
-                    backgroundColor: '#28a745', 
+                    padding: '10px 16px', 
+                    backgroundColor: '#4CAF50', 
                     color: 'white', 
                     border: 'none', 
                     borderRadius: '4px', 
-                    padding: '10px 15px', 
-                    cursor: 'pointer', 
-                    fontSize: '16px',
-                    width: '100%'
+                    cursor: 'pointer',
+                    marginTop: '10px'
                   }}
                 >
-                  Añadir solicitud
+                  Solicitar Plaza
                 </button>
               </form>
               
@@ -376,6 +557,18 @@ function App() {
               <PlazasDisponibles availablePlazas={availablePlazas} />
             </div>
           </div>
+          
+          {assignment && (
+            <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#f9f9f9', border: '1px solid #ddd', borderRadius: '5px' }}>
+              <h2>Tu Asignación</h2>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                <p><strong>Número de Orden:</strong> {assignment.order}</p>
+                <p><strong>Localidad:</strong> {assignment.localidad}</p>
+                <p><strong>Centro de Trabajo:</strong> {assignment.centro}</p>
+                <p><strong>Municipio:</strong> {assignment.municipio}</p>
+              </div>
+            </div>
+          )}
           
           <Dashboard assignments={assignments} />
           <Footer />
@@ -415,17 +608,31 @@ function SolicitudesPendientes({ solicitudes, centros, procesarSolicitudes }) {
           <thead>
             <tr style={{ backgroundColor: '#f2f2f2' }}>
               <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left' }}>Número de Orden</th>
-              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left' }}>Centro Solicitado</th>
+              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left' }}>Centros Solicitados (por orden de preferencia)</th>
             </tr>
           </thead>
           <tbody>
             {solicitudesOrdenadas.map((solicitud, index) => {
-              const centro = centros.find(c => c.id === solicitud.centroId);
+              // Mapear cada ID de centro a su objeto completo
+              const centrosSolicitados = solicitud.centrosIds
+                .map(id => centros.find(c => c.id === id))
+                .filter(c => c); // Filtrar indefinidos
+              
               return (
                 <tr key={index} style={{ backgroundColor: index % 2 === 0 ? 'white' : '#f9f9f9' }}>
                   <td style={{ border: '1px solid #ddd', padding: '10px' }}>{solicitud.orden}</td>
                   <td style={{ border: '1px solid #ddd', padding: '10px' }}>
-                    {centro ? centro.centro : 'Centro no encontrado'}
+                    {centrosSolicitados.length > 0 ? (
+                      <ol style={{ margin: 0, paddingLeft: '20px' }}>
+                        {centrosSolicitados.map((centro, idx) => (
+                          <li key={idx}>
+                            <strong>{centro.centro}</strong> - {centro.localidad} ({centro.municipio})
+                          </li>
+                        ))}
+                      </ol>
+                    ) : (
+                      <span>No hay centros válidos seleccionados</span>
+                    )}
                   </td>
                 </tr>
               );
@@ -597,20 +804,32 @@ function Footer() {
       fontSize: '14px',
       color: '#666'
     }}>
-      <p>
-        Hecho por <a 
-          href="https://ag-marketing.es" 
-          target="_blank" 
-          rel="noopener noreferrer"
-          style={{ 
-            color: '#007BFF', 
-            textDecoration: 'none', 
-            fontWeight: 'bold'
-          }}
-        >
-          AG Marketing
-        </a>
-      </p>
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '10px'
+      }}>
+        <p style={{ margin: 0 }}>
+          Hecho por <a 
+            href="https://ag-marketing.es" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            style={{ 
+              color: '#007BFF', 
+              textDecoration: 'none', 
+              fontWeight: 'bold'
+            }}
+          >
+            AG Marketing
+          </a>
+        </p>
+        <img 
+          src="/AG_LOGO.png" 
+          alt="AG Marketing Logo" 
+          style={{ height: '30px', width: 'auto' }} 
+        />
+      </div>
     </div>
   );
 }
