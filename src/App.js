@@ -1095,7 +1095,7 @@ function App() {
                           marginBottom: '8px', 
                           display: 'flex', 
                           alignItems: 'center',
-                          opacity: sinPlazasDisponibles ? 0.6 : 1
+                          opacity: sinPlazasDisponibles ? 0.85 : 1
                         }}>
                           <input
                             type="checkbox"
@@ -1104,21 +1104,44 @@ function App() {
                             checked={centrosSeleccionados.includes(plaza.id)}
                             onChange={handleCentroChange}
                             style={{ marginRight: '8px' }}
-                            disabled={isProcessing || sinPlazasDisponibles}
+                            disabled={isProcessing}
                           />
                           <label 
                             htmlFor={`centro-${plaza.id}`} 
                             style={{ 
                               fontSize: '14px', 
-                              cursor: (isProcessing || sinPlazasDisponibles) ? 'default' : 'pointer',
-                              textDecoration: sinPlazasDisponibles ? 'line-through' : 'none'
+                              cursor: isProcessing ? 'default' : 'pointer',
+                              textDecoration: sinPlazasDisponibles ? 'none' : 'none'
                             }}
                           >
                             {plaza.id}. <strong className="centro-nombre">{plaza.centro}</strong> - {plaza.localidad} ({plaza.municipio}) 
                             {plaza.plazas > 1 ? 
                               ` - ${Math.max(0, plaza.plazas - plaza.asignadas)} plaza${(plaza.plazas - plaza.asignadas) !== 1 ? 's' : ''} disponible${(plaza.plazas - plaza.asignadas) !== 1 ? 's' : ''}` : 
-                              ` - ${sinPlazasDisponibles ? 'COMPLETO' : '1 plaza disponible'}`
+                              ` - ${sinPlazasDisponibles ? '0 plazas disponibles' : '1 plaza disponible'}`
                             }
+                            {sinPlazasDisponibles && (
+                              <span style={{ 
+                                backgroundColor: '#f8d7da', 
+                                color: '#721c24', 
+                                padding: '2px 6px', 
+                                borderRadius: '4px', 
+                                fontSize: '12px',
+                                marginLeft: '5px',
+                                fontWeight: 'bold'
+                              }}>
+                                COMPLETO
+                              </span>
+                            )}
+                            {sinPlazasDisponibles && (
+                              <span style={{ 
+                                color: '#666', 
+                                fontSize: '12px',
+                                marginLeft: '5px',
+                                fontStyle: 'italic'
+                              }}>
+                                (puedes seleccionarlo, se asignará por orden prioritario)
+                              </span>
+                            )}
                           </label>
                         </div>
                       );
@@ -1176,7 +1199,100 @@ function App() {
           
           <PlazasDisponibles availablePlazas={availablePlazas} />
           
-          <Footer />
+          {/* Estado de las plazas */ }
+          
+
+          {/* Sección de solicitudes pendientes con todas las preferencias */}
+          {solicitudes.length > 0 && (
+            <div style={{ marginTop: '30px' }}>
+              <h2 style={{ color: '#18539E' }}>Solicitudes Pendientes</h2>
+              <div style={{ marginBottom: '15px', fontSize: '14px' }}>
+                A continuación se muestran todas las solicitudes pendientes con sus preferencias de centros en orden.
+              </div>
+              
+              <div style={{ overflowX: 'auto' }}>
+                <table className="responsive-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ backgroundColor: '#fdf2e9' }}>
+                      <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#d35400' }}>Nº Orden</th>
+                      <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#d35400' }}>Fecha/Hora</th>
+                      <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#d35400' }}>Centros Seleccionados (en orden de preferencia)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {solicitudes
+                      .sort((a, b) => b.timestamp - a.timestamp)
+                      .map((solicitud, index) => {
+                        // Convertir timestamp a fecha legible
+                        const fecha = new Date(solicitud.timestamp);
+                        const fechaFormateada = `${fecha.toLocaleDateString()} ${fecha.toLocaleTimeString()}`;
+                        
+                        return (
+                          <tr key={index} style={{ backgroundColor: index % 2 === 0 ? 'white' : '#fdf2e9' }}>
+                            <td style={{ border: '1px solid #ddd', padding: '10px', fontWeight: 'bold' }}>{solicitud.orden}</td>
+                            <td style={{ border: '1px solid #ddd', padding: '10px' }}>{fechaFormateada}</td>
+                            <td style={{ border: '1px solid #ddd', padding: '10px' }}>
+                              <ol style={{ margin: '0', paddingLeft: '20px' }}>
+                                {solicitud.centrosIds.map((centroId, idx) => {
+                                  // Buscar detalles del centro
+                                  const centro = availablePlazas.find(p => p.id === centroId);
+                                  return (
+                                    <li key={idx} style={{ marginBottom: '5px' }}>
+                                      {centro ? (
+                                        <>
+                                          <strong>{centro.centro}</strong> - {centro.localidad} ({centro.municipio})
+                                          {(centro.plazas - centro.asignadas) <= 0 && (
+                                            <span style={{ color: 'red', marginLeft: '10px', fontSize: '12px', fontWeight: 'bold' }}>
+                                              COMPLETO
+                                            </span>
+                                          )}
+                                        </>
+                                      ) : (
+                                        `Centro ID: ${centroId} (no encontrado)`
+                                      )}
+                                    </li>
+                                  );
+                                })}
+                              </ol>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Componente de Footer */}
+          <div style={{ marginTop: '40px', padding: '20px 0', borderTop: '1px solid #ddd', textAlign: 'center', fontSize: '12px', color: '#888' }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '10px'
+            }}>
+              <p style={{ margin: 0 }}>
+                Hecho por <a 
+                  href="https://ag-marketing.es" 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  style={{ 
+                    color: '#007BFF', 
+                    textDecoration: 'none', 
+                    fontWeight: 'bold'
+                  }}
+                >
+                  AG Marketing
+                </a>
+              </p>
+              <img 
+                src={`${process.env.PUBLIC_URL}/AG_LOGO.png`}
+                alt="AG Marketing Logo" 
+                style={{ height: '30px', width: 'auto' }} 
+              />
+            </div>
+          </div>
         </>
       )}
     </div>
