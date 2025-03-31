@@ -4,65 +4,6 @@ import Papa from 'papaparse';
 import { db } from './firebase';
 import { collection, addDoc, getDocs, doc, updateDoc, onSnapshot, query, orderBy, deleteDoc, setDoc, limit, where, writeBatch } from 'firebase/firestore';
 
-// Utilidades de caché local
-const localCache = {
-  // Guardar datos en localStorage con tiempo de expiración
-  setWithExpiry: (key, value, ttl = 3600000) => { // 1 hora por defecto
-    const now = new Date();
-    const item = {
-      value: value,
-      expiry: now.getTime() + ttl,
-    };
-    try {
-      localStorage.setItem(key, JSON.stringify(item));
-      return true;
-    } catch (error) {
-      console.warn("Error al guardar en localStorage:", error);
-      return false;
-    }
-  },
-  
-  // Obtener datos del caché local
-  getWithExpiry: (key) => {
-    try {
-      const itemStr = localStorage.getItem(key);
-      if (!itemStr) return null;
-      
-      const item = JSON.parse(itemStr);
-      const now = new Date();
-      
-      // Verificar si el caché ha expirado
-      if (now.getTime() > item.expiry) {
-        localStorage.removeItem(key);
-        return null;
-      }
-      
-      return item.value;
-    } catch (error) {
-      console.warn("Error al leer localStorage:", error);
-      return null;
-    }
-  },
-  
-  // Borrar un elemento del caché
-  remove: (key) => {
-    try {
-      localStorage.removeItem(key);
-    } catch (error) {
-      console.warn("Error al eliminar de localStorage:", error);
-    }
-  },
-  
-  // Borrar todo el caché
-  clear: () => {
-    try {
-      localStorage.clear();
-    } catch (error) {
-      console.warn("Error al limpiar localStorage:", error);
-    }
-  }
-};
-
 // Definir el estilo para la animación del spinner
 const spinnerAnimation = `
   @keyframes spin {
@@ -115,7 +56,7 @@ const nursingDecoration = (
 );
 
 // Variable para almacenar las funciones de cancelación de escuchas
-let unsubscribeFunc = () => {}; // Inicializar como función vacía
+let unsubscribeFunc = null;
 
 function App() {
   const [excelData, setExcelData] = useState([]);
@@ -135,15 +76,13 @@ function App() {
   const [solicitudesPage, setSolicitudesPage] = useState(1);
   const [solicitudesPerPage, setSolicitudesPerPage] = useState(10);
   const [solicitudesSearch, setSolicitudesSearch] = useState('');
-  // Estado para controlar si estamos en modo de ahorro de cuota
-  const [ahorroActivo, setAhorroActivo] = useState(false);
   // Última actualización (timestamp)
   const [ultimaActualizacion, setUltimaActualizacion] = useState(null);
 
-  // Cargar datos del CSV al iniciar y configurar la escucha de Firebase
+  // Cargar datos al iniciar y configurar la escucha de Firebase
   useEffect(() => {
-    // Cargar datos iniciales
-    cargarDatosOptimizados();
+    // Configurar escuchas en tiempo real para Firebase
+    configureRealtimeListeners();
     
     // Limpiar las escuchas al desmontar
     return () => {
@@ -153,80 +92,81 @@ function App() {
     };
   }, []);
 
-  // Función optimizada para cargar datos con menor consumo de Firebase
-  const cargarDatosOptimizados = async () => {
+  // Configurar escuchas en tiempo real para Firebase
+  const configureRealtimeListeners = () => {
     setIsLoading(true);
-    console.log("Iniciando carga de datos optimizada...");
+    console.log("Configurando escuchas en tiempo real para Firebase...");
     
     try {
-      // 1. Cargar centros
-      console.log("Cargando centros...");
-      const centrosQuery = query(collection(db, "centros"), limit(500));
-      const centrosSnapshot = await getDocs(centrosQuery);
-      const centrosData = centrosSnapshot.docs.map(doc => ({
-        docId: doc.id,
-        ...doc.data()
-      }));
+      // 1. Escucha para centros
+      console.log("Configurando escucha para centros...");
+      const centrosQuery = query(collection(db, "centros"));
+      const unsubCentros = onSnapshot(centrosQuery, (snapshot) => {
+        const centrosData = snapshot.docs.map(doc => ({
+          docId: doc.id,
+          ...doc.data()
+        }));
+        
+        setAvailablePlazas(centrosData);
+        
+        // Calcular total de plazas
+        const total = centrosData.reduce((acc, centro) => {
+          const plazas = parseInt(centro.plazas, 10);
+          return acc + (isNaN(plazas) ? 0 : plazas);
+        }, 0);
+        
+        setTotalPlazas(total);
+        
+        // Registrar actualización
+        setUltimaActualizacion(new Date().toLocaleString());
+      });
       
-      setAvailablePlazas(centrosData);
+      // 2. Escucha para asignaciones
+      console.log("Configurando escucha para asignaciones...");
+      const asignacionesQuery = query(collection(db, "asignaciones"), orderBy("timestamp", "desc"));
+      const unsubAsignaciones = onSnapshot(asignacionesQuery, (snapshot) => {
+        const asignacionesData = snapshot.docs.map(doc => ({
+          docId: doc.id,
+          ...doc.data()
+        }));
+        
+        setAssignments(asignacionesData);
+        
+        // Verificar asignación del usuario actual si hay un número de orden
+        if (orderNumber) {
+          const numOrden = parseInt(orderNumber, 10);
+          const asignacionUsuario = asignacionesData.find(a => a.order === numOrden);
+          
+          if (asignacionUsuario) {
+            setAssignment(asignacionUsuario);
+          }
+        }
+      });
       
-      // Calcular total de plazas
-      const total = centrosData.reduce((acc, centro) => {
-        // Convertir a número y asegurarse de que sea válido
-        const plazas = parseInt(centro.plazas, 10);
-        return acc + (isNaN(plazas) ? 0 : plazas);
-      }, 0);
+      // 3. Escucha para solicitudes pendientes
+      console.log("Configurando escucha para solicitudes pendientes...");
+      const solicitudesQuery = query(collection(db, "solicitudesPendientes"), orderBy("timestamp", "desc"));
+      const unsubSolicitudes = onSnapshot(solicitudesQuery, (snapshot) => {
+        const solicitudesData = snapshot.docs.map(doc => ({
+          docId: doc.id,
+          ...doc.data()
+        }));
+        
+        setSolicitudes(solicitudesData);
+      });
       
-      setTotalPlazas(total);
-      
-      // 2. Cargar asignaciones (con límite)
-      console.log("Cargando asignaciones...");
-      const asignacionesQuery = query(collection(db, "asignaciones"), limit(500));
-      const asignacionesSnapshot = await getDocs(asignacionesQuery);
-      const asignacionesData = asignacionesSnapshot.docs.map(doc => ({
-        docId: doc.id,
-        ...doc.data()
-      }));
-      
-      setAssignments(asignacionesData);
-      
-      // 3. Cargar solicitudes pendientes (con límite)
-      console.log("Cargando solicitudes pendientes...");
-      const solicitudesQuery = query(collection(db, "solicitudesPendientes"), limit(500));
-      const solicitudesSnapshot = await getDocs(solicitudesQuery);
-      const solicitudesData = solicitudesSnapshot.docs.map(doc => ({
-        docId: doc.id,
-        ...doc.data()
-      }));
-      
-      setSolicitudes(solicitudesData);
-      
-      // Registrar fecha de última actualización
-      const ahora = new Date();
-      setUltimaActualizacion(ahora.toLocaleString());
-      
-      // Configurar actualizaciones periódicas (cada 5 minutos)
-      const interval = setInterval(() => {
-        cargarDatosOptimizados();
-        console.log("Actualizando datos periódicamente...");
-      }, 300000); // 5 minutos
-      
-      // Limpiar intervalo cuando se desmonte el componente
+      // Guardar las funciones para cancelar las escuchas
       unsubscribeFunc = () => {
-        clearInterval(interval);
+        console.log("Cancelando escuchas en tiempo real...");
+        unsubCentros();
+        unsubAsignaciones();
+        unsubSolicitudes();
       };
       
       setIsLoading(false);
     } catch (error) {
-      console.error("Error al cargar datos:", error);
-      
-      if (error.code === 'resource-exhausted') {
-        setAhorroActivo(true);
-        alert("Se ha excedido la cuota de Firebase. Activando modo de ahorro de recursos.");
-      } else {
-        alert(`Error al cargar datos: ${error.message}`);
-      }
-      
+      console.error("Error al configurar escuchas en tiempo real:", error);
+      alert(`Error al conectar con Firebase: ${error.message}`);
       setIsLoading(false);
     }
   };
@@ -242,8 +182,6 @@ function App() {
       setTimeout(() => {
         // Ocultar el indicador de carga
         setIsProcessing(false);
-        // Recargar para asegurar que los datos estén actualizados
-        window.location.reload();
       }, 2000);
     } catch (error) {
       console.error("Error al procesar automáticamente:", error);
@@ -252,45 +190,35 @@ function App() {
     }
   };
 
-  // Procesar solicitudes (con optimización para reducir operaciones)
+  // Procesar solicitudes
   const procesarSolicitudes = useCallback(async () => {
     setIsProcessing(true);
-    console.log("Iniciando procesamiento de solicitudes (optimizado)...");
+    console.log("Iniciando procesamiento de solicitudes...");
     
     try {
-      // 1. Usar los datos ya cargados en memoria si están disponibles
-      // Esto reduce las lecturas a Firebase
-      let todasLasSolicitudes = [...solicitudes];
-      let centros = [...availablePlazas];
-      let asignacionesExistentes = [...assignments];
+      // Obtener datos frescos directamente desde Firebase
+      console.log("Obteniendo datos frescos para el procesamiento...");
       
-      // Si los datos son antiguos o el usuario fuerza la recarga, obtener datos frescos
-      const solicitarDatosFrescos = window.confirm("¿Desea obtener los datos más recientes de Firebase para asegurar que las asignaciones sean precisas? (Recomendado)");
+      // Obtener solicitudes
+      const solicitudesSnapshot = await getDocs(query(collection(db, "solicitudesPendientes")));
+      const todasLasSolicitudes = solicitudesSnapshot.docs.map(doc => ({
+        docId: doc.id,
+        ...doc.data()
+      }));
       
-      if (solicitarDatosFrescos) {
-        console.log("Obteniendo datos frescos para el procesamiento...");
-        
-        // Obtener solicitudes
-        const solicitudesSnapshot = await getDocs(query(collection(db, "solicitudesPendientes"), limit(500)));
-        todasLasSolicitudes = solicitudesSnapshot.docs.map(doc => ({
-          docId: doc.id,
-          ...doc.data()
-        }));
-        
-        // Obtener centros
-        const centrosSnapshot = await getDocs(query(collection(db, "centros"), limit(500)));
-        centros = centrosSnapshot.docs.map(doc => ({
-          docId: doc.id,
-          ...doc.data()
-        }));
-        
-        // Obtener asignaciones existentes
-        const asignacionesSnapshot = await getDocs(query(collection(db, "asignaciones"), limit(500)));
-        asignacionesExistentes = asignacionesSnapshot.docs.map(doc => ({
-          docId: doc.id,
-          ...doc.data()
-        }));
-      }
+      // Obtener centros
+      const centrosSnapshot = await getDocs(query(collection(db, "centros")));
+      const centros = centrosSnapshot.docs.map(doc => ({
+        docId: doc.id,
+        ...doc.data()
+      }));
+      
+      // Obtener asignaciones existentes
+      const asignacionesSnapshot = await getDocs(query(collection(db, "asignaciones")));
+      const asignacionesExistentes = asignacionesSnapshot.docs.map(doc => ({
+        docId: doc.id,
+        ...doc.data()
+      }));
       
       console.log(`Procesando con: ${todasLasSolicitudes.length} solicitudes, ${centros.length} centros, ${asignacionesExistentes.length} asignaciones existentes`);
       
@@ -399,65 +327,41 @@ function App() {
         }
       }
       
-      // Guardar asignaciones en Firebase usando batch (reduce operaciones)
+      // Guardar asignaciones en Firebase usando batch
       console.log(`Guardando ${nuevasAsignaciones.length} nuevas asignaciones en Firebase...`);
       
       if (nuevasAsignaciones.length > 0) {
         try {
-          // Usar batch para reducir operaciones (máximo 500 por batch)
-          const MAX_BATCH_SIZE = 450; // Límite seguro para evitar errores
+          // Usar batch para operaciones múltiples
+          const batch = writeBatch(db);
           
-          // Dividir operaciones en lotes si hay muchas
-          for (let i = 0; i < nuevasAsignaciones.length; i += MAX_BATCH_SIZE) {
-            const loteActual = nuevasAsignaciones.slice(i, i + MAX_BATCH_SIZE);
-            const batch = writeBatch(db);
+          // Procesar cada asignación
+          for (const asignacion of nuevasAsignaciones) {
+            // 1. Crear referencia para la nueva asignación
+            const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
+            batch.set(nuevaAsignacionRef, asignacion.datos);
             
-            // Procesar cada asignación en el lote
-            for (const asignacion of loteActual) {
-              // 1. Crear referencia para la nueva asignación
-              const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
-              batch.set(nuevaAsignacionRef, asignacion.datos);
-              
-              // 2. Actualizar el centro correspondiente
-              if (asignacion.centroRef) {
-                const centroRef = doc(db, "centros", asignacion.centroRef);
-                const centroId = asignacion.datos.id;
-                batch.update(centroRef, {
-                  asignadas: centrosMap[centroId].asignadas
-                });
-              }
+            // 2. Actualizar el centro correspondiente
+            if (asignacion.centroRef) {
+              const centroRef = doc(db, "centros", asignacion.centroRef);
+              const centroId = asignacion.datos.id;
+              batch.update(centroRef, {
+                asignadas: centrosMap[centroId].asignadas
+              });
             }
-            
-            // Ejecutar el batch
-            await batch.commit();
-            console.log(`Procesado lote ${i/MAX_BATCH_SIZE + 1} de ${Math.ceil(nuevasAsignaciones.length/MAX_BATCH_SIZE)}`);
           }
+          
+          // Ejecutar el batch
+          await batch.commit();
           
           alert(`Procesamiento completado. Se han asignado ${nuevasAsignaciones.length} plazas según prioridad por orden.`);
           
-          // Actualizar datos locales para reflejar cambios sin recargar
-          setAssignments(prev => [...prev, ...nuevasAsignaciones.map(a => a.datos)]);
-          setAvailablePlazas(Object.values(centrosMap));
+          // No necesitamos actualizar los estados manualmente ya que las escuchas en tiempo real lo harán
           
-          // Registrar última actualización
-          const ahora = new Date();
-          setUltimaActualizacion(ahora.toLocaleString());
-          
-          // Sugerir recargar para ver todos los cambios
-          if (window.confirm("Procesamiento completado. ¿Desea recargar la página para ver todos los cambios?")) {
-            window.location.reload();
-          } else {
-            setIsProcessing(false);
-          }
+          setIsProcessing(false);
         } catch (error) {
           console.error("Error al guardar asignaciones:", error);
-          
-          if (error.code === 'resource-exhausted') {
-            alert("Se ha excedido la cuota de Firebase. Intente más tarde cuando se restablezca el límite diario.");
-          } else {
-            alert(`Error al guardar asignaciones: ${error.message}`);
-          }
-          
+          alert(`Error al guardar asignaciones: ${error.message}`);
           setIsProcessing(false);
         }
       } else {
@@ -466,16 +370,10 @@ function App() {
       }
     } catch (error) {
       console.error("Error en procesamiento:", error);
-      
-      if (error.code === 'resource-exhausted') {
-        alert("Se ha excedido la cuota de Firebase. Intente más tarde cuando se restablezca el límite diario.");
-      } else {
-        alert(`Error al procesar solicitudes: ${error.message}`);
-      }
-      
+      alert(`Error al procesar solicitudes: ${error.message}`);
       setIsProcessing(false);
     }
-  }, [solicitudes, availablePlazas, assignments]);
+  }, []);
 
   const handleOrderSubmit = async (e) => {
     e.preventDefault();
@@ -514,48 +412,38 @@ function App() {
       const datosParaGuardar = {
         orden: numOrden,
         centrosIds: centrosIdsNumericos,
-        timestamp: Date.now() // Usar Date.now() es más simple y funciona igual
+        timestamp: Date.now()
       };
       
-      // Guardar la solicitud en un solo paso, sin múltiples operaciones
+      // Guardar la solicitud
       if (solicitudExistente) {
         // Actualizar la solicitud existente con los nuevos centros seleccionados
         console.log("Actualizando solicitud existente:", solicitudExistente.docId);
-        try {
-          const solicitudRef = doc(db, "solicitudesPendientes", solicitudExistente.docId);
-          await updateDoc(solicitudRef, datosParaGuardar);
-          console.log("Solicitud actualizada correctamente");
-        } catch (error) {
-          console.error("Error al actualizar solicitud:", error);
-          setIsProcessing(false);
-          alert(`Error al actualizar solicitud: ${error.message}. Posiblemente has excedido la cuota de Firebase.`);
-          return;
-        }
+        const solicitudRef = doc(db, "solicitudesPendientes", solicitudExistente.docId);
+        await updateDoc(solicitudRef, datosParaGuardar);
+        console.log("Solicitud actualizada correctamente");
       } else {
         // Crear nueva solicitud en Firebase
         console.log("Creando nueva solicitud");
-        try {
-          const docRef = await addDoc(collection(db, "solicitudesPendientes"), datosParaGuardar);
-          console.log("Nueva solicitud creada con ID:", docRef.id);
-        } catch (error) {
-          console.error("Error al crear solicitud:", error);
-          setIsProcessing(false);
-          alert(`Error al crear solicitud: ${error.message}. Posiblemente has excedido la cuota de Firebase.`);
-          return;
-        }
+        const docRef = await addDoc(collection(db, "solicitudesPendientes"), datosParaGuardar);
+        console.log("Nueva solicitud creada con ID:", docRef.id);
       }
       
-      // Añadir un tiempo de espera para asegurar que la solicitud se ha guardado
-      setTimeout(() => {
-        alert(`Tu solicitud ha sido registrada correctamente. Ahora tienes que hacer clic en "Actualizar Asignaciones por Número de Orden" para procesar todas las solicitudes pendientes.`);
-        setIsProcessing(false);
-        window.location.reload();
-      }, 1500);
+      // Procesar solicitudes automáticamente después de guardar
+      setTimeout(async () => {
+        try {
+          await procesarSolicitudes();
+          alert('Tu solicitud ha sido procesada. Las plazas se asignan por orden de prioridad (menor número de orden).');
+        } catch (processingError) {
+          console.error("Error al procesar solicitudes:", processingError);
+          alert('Tu solicitud ha sido guardada, pero hubo un error al procesar las asignaciones: ' + processingError.message);
+        } finally {
+          setIsProcessing(false);
+        }
+      }, 1000);
     } catch (error) {
       console.error("Error al guardar solicitud:", error);
-      // Mostrar error pero mantener el formulario para permitir intentar de nuevo
-      alert(`Error al guardar la solicitud: ${error.message}. Posiblemente has excedido la cuota de Firebase.`);
-      // Ocultar indicador de carga
+      alert(`Error al guardar la solicitud: ${error.message}`);
       setIsProcessing(false);
     }
   };
@@ -585,26 +473,24 @@ function App() {
         </h1>
         {nursingDecoration}
         
-        {/* Indicador de última actualización y modo ahorro */}
+        {/* Indicador de última actualización */}
         {ultimaActualizacion && (
           <div style={{ 
-            backgroundColor: ahorroActivo ? '#fff3cd' : '#e3f2fd', 
+            backgroundColor: '#e3f2fd', 
             padding: '8px', 
             borderRadius: '4px',
             marginTop: '10px',
             fontSize: '14px',
-            border: ahorroActivo ? '1px solid #ffeeba' : '1px solid #b3e5fc'
+            border: '1px solid #b3e5fc'
           }}>
-            <span style={{ fontWeight: 'bold', marginRight: '5px' }}>
-              {ahorroActivo ? '⚠️' : 'ℹ️'}
-            </span>
-            {ahorroActivo ? 'Modo ahorro activado para evitar exceder cuota.' : 'Datos actualizados:'} {ultimaActualizacion}
+            <span style={{ fontWeight: 'bold', marginRight: '5px' }}>ℹ️</span>
+            Datos actualizados: {ultimaActualizacion}
             <button 
-              onClick={() => cargarDatosOptimizados()} 
+              onClick={configureRealtimeListeners} 
               style={{
                 marginLeft: '10px',
-                backgroundColor: ahorroActivo ? '#ffc107' : '#2196f3',
-                color: ahorroActivo ? 'black' : 'white',
+                backgroundColor: '#2196f3',
+                color: 'white',
                 border: 'none',
                 padding: '5px 10px',
                 borderRadius: '4px',
