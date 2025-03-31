@@ -767,7 +767,7 @@ function App() {
             timestamp: new Date().getTime()
           };
           
-          // Actualizar plazas asignadas
+          // Actualizar plazas asignadas en la copia local
           plazasActualizadas[idx] = {
             ...plazasActualizadas[idx],
             asignadas: plazasActualizadas[idx].asignadas + 1
@@ -779,35 +779,51 @@ function App() {
       }
       
       if (asignacionExitosa && centroAsignado) {
-        // Guardar la asignación en Firebase
-        const asignacionRef = await addDoc(collection(db, "asignaciones"), centroAsignado);
-        console.log("Asignación creada con ID:", asignacionRef.id);
-        
-        // Actualizar el centro en Firebase
-        if (centroAsignado.id) {
-          const centroRef = plazasActualizadas.find(p => p.id === centroAsignado.id);
-          if (centroRef && centroRef.docId) {
-            await updateDoc(doc(db, "centros", centroRef.docId), { 
-              asignadas: centroRef.asignadas + 1 
-            });
+        try {
+          // Guardar la asignación en Firebase
+          const asignacionRef = await addDoc(collection(db, "asignaciones"), centroAsignado);
+          console.log("Asignación creada con ID:", asignacionRef.id);
+          
+          // Actualizar el centro en Firebase
+          if (centroAsignado.id) {
+            const centroDocIndex = plazasActualizadas.findIndex(p => p.id === centroAsignado.id);
+            if (centroDocIndex >= 0 && plazasActualizadas[centroDocIndex].docId) {
+              const centroDocId = plazasActualizadas[centroDocIndex].docId;
+              const nuevasAsignaciones = plazasActualizadas[centroDocIndex].asignadas;
+              
+              console.log(`Actualizando centro ${centroAsignado.id} en Firebase. Plazas asignadas: ${nuevasAsignaciones}`);
+              
+              await updateDoc(doc(db, "centros", centroDocId), { 
+                asignadas: nuevasAsignaciones 
+              });
+              
+              // Actualizar el estado local de las plazas
+              setAvailablePlazas(plazasActualizadas);
+            } else {
+              console.error("No se pudo encontrar el docId del centro para actualizar:", centroAsignado.id);
+            }
           }
+          
+          // Eliminar la solicitud pendiente ya que ha sido procesada
+          if (solicitudExistente && solicitudExistente.docId) {
+            await deleteDoc(doc(db, "solicitudesPendientes", solicitudExistente.docId));
+          }
+          
+          // Actualizar la asignación en la vista
+          setAssignment(centroAsignado);
+          
+          // Esperar un momento para que se completen las actualizaciones
+          setTimeout(() => {
+            // Mostrar mensaje de éxito
+            alert(`Plaza asignada correctamente en: ${centroAsignado.centro}`);
+            // Reiniciar la página para refrescar todos los datos
+            window.location.reload();
+          }, 1500);
+        } catch (error) {
+          console.error("Error al guardar la asignación en Firebase:", error);
+          alert("Error al guardar la asignación: " + error.message);
+          setIsProcessing(false);
         }
-        
-        // Eliminar la solicitud pendiente ya que ha sido procesada
-        if (solicitudExistente && solicitudExistente.docId) {
-          await deleteDoc(doc(db, "solicitudesPendientes", solicitudExistente.docId));
-        }
-        
-        // Actualizar la asignación en la vista
-        setAssignment(centroAsignado);
-        
-        // Esperar un momento para que se completen las actualizaciones
-        setTimeout(() => {
-          // Mostrar mensaje de éxito
-          alert(`Plaza asignada correctamente en: ${centroAsignado.centro}`);
-          // Reiniciar la página para refrescar todos los datos
-          window.location.reload();
-        }, 1500);
       } else {
         // No se pudo asignar
         alert("No se ha podido realizar la asignación. Todos los centros seleccionados están completos.");
@@ -1452,6 +1468,16 @@ function PlazasDisponibles({ availablePlazas }) {
                 cursor: pointer;
                 text-align: center;
                 margin-top: 4px;
+              }
+            }
+            
+            /* Ocultar elementos de información en desktop */
+            @media (min-width: 769px) {
+              .info-icon, 
+              .info-tooltip, 
+              .mas-info-btn, 
+              .mobile-only-column {
+                display: none !important;
               }
             }
           `}
