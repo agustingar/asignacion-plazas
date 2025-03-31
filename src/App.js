@@ -12,22 +12,7 @@ const spinnerAnimation = `
   }
 `;
 
-/*
- * IMPORTANTE: Reglas de seguridad para Firestore
- * Para que la aplicación funcione correctamente, configura las siguientes reglas en Firebase Console:
- * 
- * rules_version = '2';
- * service cloud.firestore {
- *   match /databases/{database}/documents {
- *     match /{document=**} {
- *       allow read, write;
- *     }
- *   }
- * }
- * 
- * Esto permite lectura y escritura públicas. Para producción, deberías implementar autenticación
- * y reglas más restrictivas.
- */
+
 
 function App() {
   const [excelData, setExcelData] = useState([]);
@@ -232,7 +217,7 @@ function App() {
           delimiter: ';', // Especificar punto y coma como delimitador
           skipEmptyLines: true,
           complete: (resultado) => {
-            console.log('CSV cargado. Contenido completo:', resultado);
+            console.log('CSV cargado. Total de filas:', resultado.data.length);
             
             // Saltamos las primeras 3 filas (encabezados y títulos del documento)
             const datosSinEncabezados = resultado.data.slice(3);
@@ -247,7 +232,7 @@ function App() {
             
             // Procesar datos a partir de la quinta fila
             const datosCentros = resultado.data.slice(4);
-            console.log('Primeras filas de datos:', datosCentros.slice(0, 3));
+            console.log('Total de centros en CSV (sin procesar):', datosCentros.length);
             
             // Procesar cada fila en el formato específico de este CSV
             const centrosProcesados = datosCentros
@@ -261,22 +246,35 @@ function App() {
                 // fila[4] = Municipio
                 // fila[5] = Número de plazas
                 
-                const plazasStr = fila[5] ? fila[5].trim() : '0';
-                const plazas = parseInt(plazasStr, 10) || 0;
+                // Procesar el número de plazas correctamente
+                let plazas = 0;
+                if (fila[5]) {
+                  // Limpiar el valor y asegurar que sea un número
+                  const plazasStr = fila[5].toString().trim().replace(',', '.');
+                  plazas = parseInt(plazasStr, 10) || 0;
+                }
                 
                 return {
                   id: index + 1,
-                  localidad: fila[0] ? fila[0].trim() : '',
-                  departamento: fila[1] ? fila[1].trim() : '',
-                  centro: fila[3] ? fila[3].trim() : '',
-                  municipio: fila[4] ? fila[4].trim() : '',
+                  localidad: fila[0] ? fila[0].toString().trim() : '',
+                  departamento: fila[1] ? fila[1].toString().trim() : '',
+                  centro: fila[3] ? fila[3].toString().trim() : '',
+                  municipio: fila[4] ? fila[4].toString().trim() : '',
                   plazas: plazas
                 };
               })
-              .filter(centro => centro.plazas > 0); // Filtrar solo los que tienen plazas
+              .filter(centro => {
+                // Filtrar solo los que tienen datos válidos y plazas > 0
+                const esValido = centro.centro && centro.plazas > 0;
+                if (!esValido) {
+                  console.warn(`Centro inválido descartado: ${JSON.stringify(centro)}`);
+                }
+                return esValido;
+              });
             
             console.log('Centros procesados del CSV:', centrosProcesados.length);
-            console.log('Ejemplos de centros procesados:', centrosProcesados.slice(0, 3));
+            console.log('Primeros 5 centros procesados:', centrosProcesados.slice(0, 5));
+            console.log('Últimos 5 centros procesados:', centrosProcesados.slice(-5));
             
             if (centrosProcesados.length === 0) {
               console.error('No se pudieron extraer centros con plazas > 0');
@@ -290,17 +288,19 @@ function App() {
               asignadas: 0
             }));
             
-            setExcelData(centrosProcesados);
-            setAvailablePlazas(plazasIniciales);
-            
             // Calcular el total de plazas
             const totalPlazas = plazasIniciales.reduce((suma, centro) => suma + centro.plazas, 0);
+            
+            console.log(`CSV procesado con éxito. Total de centros: ${centrosProcesados.length}, Total plazas: ${totalPlazas}`);
+            
+            // Actualizar el estado de la aplicación
+            setExcelData(centrosProcesados);
+            setAvailablePlazas(plazasIniciales);
             setTotalPlazas(totalPlazas);
-            console.log(`CSV procesado. Total de centros: ${centrosProcesados.length}, Total plazas: ${totalPlazas}`);
             setIsLoading(false);
             
             // Inicializar datos en Firebase
-            initializeFirebaseCollections(plazasIniciales);
+            limpiarYActualizarFirebase(plazasIniciales);
           },
           error: (error) => {
             console.error('Error al parsear el CSV:', error);
@@ -314,6 +314,49 @@ function App() {
       }
     };
     
+    // Función para limpiar colecciones previas y actualizar con nuevos datos
+    const limpiarYActualizarFirebase = async (centros) => {
+      try {
+        console.log("Limpiando y actualizando datos en Firebase...");
+        
+        // 1. Limpiar las colecciones existentes
+        const centrosSnapshot = await getDocs(collection(db, "centros"));
+        const borradosCentros = [];
+        
+        // Borrar documentos existentes en la colección de centros
+        for (const docSnap of centrosSnapshot.docs) {
+          borradosCentros.push(deleteDoc(doc(db, "centros", docSnap.id)));
+        }
+        
+        // Esperar a que se completen todas las operaciones de borrado
+        await Promise.all(borradosCentros);
+        console.log(`Borrados ${borradosCentros.length} centros antiguos de Firebase`);
+        
+        // 2. Crear nuevos documentos con los centros procesados
+        console.log(`Iniciando carga de ${centros.length} centros en Firebase...`);
+        const lotes = [];
+        const tamanoLote = 100; // Procesar en lotes para evitar sobrecargar Firestore
+        
+        for (let i = 0; i < centros.length; i += tamanoLote) {
+          const lote = centros.slice(i, i + tamanoLote);
+          const promesasLote = lote.map(centro => 
+            addDoc(collection(db, "centros"), {
+              ...centro,
+              timestamp: Date.now()
+            })
+          );
+          
+          // Ejecutar el lote y esperar a que termine
+          await Promise.all(promesasLote);
+          console.log(`Procesado lote ${i/tamanoLote + 1} de ${Math.ceil(centros.length/tamanoLote)}`);
+        }
+        
+        console.log("Firebase actualizado correctamente con todos los centros");
+      } catch (error) {
+        console.error("Error al limpiar y actualizar Firebase:", error);
+      }
+    };
+
     // Intentaremos primero cargar de Firebase
     const cargarDatos = async () => {
       // Primero intentamos cargar desde Firebase
@@ -351,24 +394,60 @@ function App() {
       
       // Lista de nuevas asignaciones realizadas
       const nuevasAsignaciones = [];
+      
+      // Copia de las plazas disponibles para trabajar
       const plazasActualizadas = [...availablePlazas];
       
-      // Conjunto para almacenar los IDs de orden ya asignados
-      const ordenesAsignados = new Set();
+      // Registro de centros ya ocupados para evitar asignar el mismo centro más de una vez
+      const centrosOcupados = new Set();
       
-      // Procesar cada solicitud en orden de prioridad
+      // Conjunto para almacenar los IDs de orden ya procesados (no necesariamente asignados)
+      const ordenesProcesados = new Set();
+      
+      // Mapa para almacenar todas las asignaciones por orden
+      const asignacionesPorOrden = new Map();
+      
+      console.log("Procesando solicitudes en orden de prioridad...");
+      console.log(`Total de solicitudes a procesar: ${solicitudesOrdenadas.length}`);
+      
+      // Primera pasada: Procesar cada solicitud en orden de prioridad (menor a mayor)
       for (const solicitud of solicitudesOrdenadas) {
+        const numOrden = solicitud.orden;
+        
         // Verificar si este número de orden ya tiene asignación
-        const asignacionExistente = assignments.find(a => a.order === solicitud.orden);
-        if (asignacionExistente || ordenesAsignados.has(solicitud.orden)) continue;
+        const asignacionExistente = assignments.find(a => a.order === numOrden);
+        if (asignacionExistente || ordenesProcesados.has(numOrden)) {
+          console.log(`Orden ${numOrden} ya tiene asignación o fue procesado. Se omite.`);
+          continue;
+        }
+        
+        console.log(`Procesando solicitud para orden ${numOrden} con ${solicitud.centrosIds?.length || 0} centros seleccionados`);
+        
+        // Verificar si hay centros seleccionados válidos
+        if (!solicitud.centrosIds || solicitud.centrosIds.length === 0) {
+          console.log(`Orden ${numOrden} no tiene centros seleccionados válidos.`);
+          ordenesProcesados.add(numOrden);
+          continue;
+        }
+        
+        // Crear un array para almacenar las asignaciones para este orden
+        const asignacionesParaEsteOrden = [];
         
         // Verificar cada centro solicitado en orden de preferencia
         for (const centroId of solicitud.centrosIds) {
+          // Si el centro ya está ocupado, continuar con el siguiente
+          if (centrosOcupados.has(centroId)) {
+            console.log(`Centro ${centroId} ya está ocupado. Verificando siguiente preferencia.`);
+            continue;
+          }
+          
           // Buscar el centro solicitado
           const centroBuscado = plazasActualizadas.find(p => p.id === centroId);
           
           if (centroBuscado && centroBuscado.asignadas < centroBuscado.plazas) {
             // Hay plaza disponible en el centro solicitado
+            console.log(`Asignando centro ${centroId} (${centroBuscado.centro}) a orden ${numOrden}`);
+            
             // Actualizar plazas
             const idx = plazasActualizadas.findIndex(p => p.id === centroId);
             plazasActualizadas[idx] = {
@@ -378,7 +457,7 @@ function App() {
             
             // Crear nueva asignación
             const nuevaAsignacion = {
-              order: solicitud.orden,
+              order: numOrden,
               id: centroBuscado.id,
               localidad: centroBuscado.localidad,
               centro: centroBuscado.centro,
@@ -386,14 +465,33 @@ function App() {
               timestamp: new Date().getTime()
             };
             
-            nuevasAsignaciones.push(nuevaAsignacion);
-            ordenesAsignados.add(solicitud.orden);
+            // Guardar la asignación
+            asignacionesParaEsteOrden.push(nuevaAsignacion);
+            centrosOcupados.add(centroId);
             
-            // Una vez asignado, pasamos al siguiente número de orden
-            break;
+            // Si ya no hay más plazas disponibles en este centro, marcarlo como ocupado
+            if (plazasActualizadas[idx].asignadas >= plazasActualizadas[idx].plazas) {
+              console.log(`Centro ${centroId} ahora está completamente ocupado.`);
+            }
+          } else {
+            console.log(`No hay plazas disponibles en centro ${centroId} o no existe.`);
           }
         }
+        
+        // Guardar las asignaciones para este orden
+        if (asignacionesParaEsteOrden.length > 0) {
+          asignacionesPorOrden.set(numOrden, asignacionesParaEsteOrden);
+          nuevasAsignaciones.push(...asignacionesParaEsteOrden);
+        } else {
+          console.log(`No se pudieron asignar centros para el orden ${numOrden}`);
+        }
+        
+        // Marcar este orden como procesado
+        ordenesProcesados.add(numOrden);
       }
+      
+      console.log(`Total de nuevas asignaciones: ${nuevasAsignaciones.length}`);
+      console.log(`Órdenes procesados: ${ordenesProcesados.size}`);
       
       // Actualizar Firebase con las nuevas asignaciones
       if (nuevasAsignaciones.length > 0) {
@@ -413,7 +511,7 @@ function App() {
           
           // 3. Eliminar las solicitudes procesadas
           for (const solicitud of solicitudesOrdenadas) {
-            if (ordenesAsignados.has(solicitud.orden) && solicitud.docId) {
+            if (ordenesProcesados.has(solicitud.orden) && solicitud.docId) {
               const solicitudRef = doc(db, "solicitudesPendientes", solicitud.docId);
               await deleteDoc(solicitudRef);
             }
@@ -421,15 +519,21 @@ function App() {
           
           // Encontrar y establecer la asignación para el número de orden actual si existe
           if (orderNumber) {
-            const miAsignacion = nuevasAsignaciones.find(a => a.order === parseInt(orderNumber, 10));
-            if (miAsignacion) {
-              setAssignment(miAsignacion);
+            const ordenActual = parseInt(orderNumber, 10);
+            const misAsignaciones = asignacionesPorOrden.get(ordenActual) || [];
+            if (misAsignaciones.length > 0) {
+              // Mostrar la primera asignación (generalmente la de mayor preferencia)
+              setAssignment(misAsignaciones[0]);
             }
           }
+          
+          alert(`Procesamiento completado. Se han asignado ${nuevasAsignaciones.length} plazas para ${ordenesProcesados.size} solicitudes.`);
         } catch (error) {
           console.error("Error al actualizar Firebase:", error);
           alert("Error al procesar solicitudes. Inténtelo de nuevo.");
         }
+      } else {
+        alert("No se han podido realizar nuevas asignaciones. Todas las plazas solicitadas ya están ocupadas o no hay solicitudes pendientes.");
       }
     } finally {
       // Asegurarse de ocultar el loader incluso si hay error
@@ -795,6 +899,10 @@ function SolicitudesPendientes({ solicitudes, centros, procesarSolicitudes }) {
 }
 
 function PlazasDisponibles({ availablePlazas }) {
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(25);
+  const [searchTerm, setSearchTerm] = useState('');
+  
   // Verificar si hay datos para mostrar
   if (!availablePlazas || availablePlazas.length === 0) {
     return (
@@ -808,9 +916,88 @@ function PlazasDisponibles({ availablePlazas }) {
   // Ordenar por ID para mantener consistencia
   const plazasOrdenadas = [...availablePlazas].sort((a, b) => a.id - b.id);
   
+  // Filtrar las plazas según la búsqueda
+  const filteredPlazas = plazasOrdenadas.filter(plaza => 
+    plaza.centro.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    plaza.localidad.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    plaza.municipio.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+  
+  // Calcular total de páginas
+  const totalPages = Math.ceil(filteredPlazas.length / itemsPerPage);
+  
+  // Obtener plazas para la página actual
+  const indexOfLastItem = currentPage * itemsPerPage;
+  const indexOfFirstItem = indexOfLastItem - itemsPerPage;
+  const currentItems = filteredPlazas.slice(indexOfFirstItem, indexOfLastItem);
+  
+  // Cambiar de página
+  const paginate = (pageNumber) => setCurrentPage(pageNumber);
+  
+  // Ir a la página anterior
+  const prevPage = () => {
+    if (currentPage > 1) {
+      setCurrentPage(currentPage - 1);
+    }
+  };
+  
+  // Ir a la página siguiente
+  const nextPage = () => {
+    if (currentPage < totalPages) {
+      setCurrentPage(currentPage + 1);
+    }
+  };
+  
   return (
     <div style={{ marginTop: '30px' }}>
       <h2>Estado de las Plazas</h2>
+      
+      <div style={{ marginBottom: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <input
+            type="text"
+            placeholder="Buscar por centro, localidad o municipio..."
+            value={searchTerm}
+            onChange={(e) => {
+              setSearchTerm(e.target.value);
+              setCurrentPage(1); // Resetear a página 1 al buscar
+            }}
+            style={{
+              padding: '8px',
+              border: '1px solid #ddd',
+              borderRadius: '4px',
+              width: '300px'
+            }}
+          />
+        </div>
+        
+        <div>
+          <select 
+            value={itemsPerPage} 
+            onChange={(e) => {
+              setItemsPerPage(Number(e.target.value));
+              setCurrentPage(1); // Resetear a página 1 al cambiar items por página
+            }}
+            style={{
+              padding: '8px',
+              border: '1px solid #ddd',
+              borderRadius: '4px',
+              marginLeft: '10px'
+            }}
+          >
+            <option value={25}>25 por página</option>
+            <option value={50}>50 por página</option>
+            <option value={100}>100 por página</option>
+            <option value={filteredPlazas.length}>Ver todos</option>
+          </select>
+        </div>
+      </div>
+      
+      <div style={{ marginBottom: '10px', fontSize: '14px' }}>
+        Mostrando {indexOfFirstItem + 1}-{Math.min(indexOfLastItem, filteredPlazas.length)} de {filteredPlazas.length} centros
+        {searchTerm && ` (filtrados de ${plazasOrdenadas.length})`}
+      </div>
+      
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
@@ -826,7 +1013,7 @@ function PlazasDisponibles({ availablePlazas }) {
             </tr>
           </thead>
           <tbody>
-            {plazasOrdenadas.map((plaza, index) => {
+            {currentItems.map((plaza, index) => {
               const disponibles = plaza.plazas - plaza.asignadas;
               const estaLleno = disponibles === 0;
               
@@ -860,14 +1047,119 @@ function PlazasDisponibles({ availablePlazas }) {
             })}
             <tr style={{ backgroundColor: '#f5f5f5', fontWeight: 'bold' }}>
               <td colSpan="4" style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'right' }}>TOTAL:</td>
-              <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }}>{plazasOrdenadas.reduce((sum, p) => sum + p.plazas, 0)}</td>
-              <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }}>{plazasOrdenadas.reduce((sum, p) => sum + p.asignadas, 0)}</td>
-              <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }}>{plazasOrdenadas.reduce((sum, p) => sum + (p.plazas - p.asignadas), 0)}</td>
+              <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }}>{filteredPlazas.reduce((sum, p) => sum + p.plazas, 0)}</td>
+              <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }}>{filteredPlazas.reduce((sum, p) => sum + p.asignadas, 0)}</td>
+              <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }}>{filteredPlazas.reduce((sum, p) => sum + (p.plazas - p.asignadas), 0)}</td>
               <td style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center' }}></td>
             </tr>
           </tbody>
         </table>
       </div>
+      
+      {/* Controles de paginación */}
+      {totalPages > 1 && (
+        <div style={{ 
+          marginTop: '20px', 
+          display: 'flex', 
+          justifyContent: 'center',
+          alignItems: 'center',
+          gap: '10px'
+        }}>
+          <button 
+            onClick={prevPage} 
+            disabled={currentPage === 1}
+            style={{
+              padding: '5px 10px',
+              border: '1px solid #ddd',
+              borderRadius: '4px',
+              backgroundColor: currentPage === 1 ? '#f2f2f2' : 'white',
+              cursor: currentPage === 1 ? 'not-allowed' : 'pointer'
+            }}
+          >
+            &laquo; Anterior
+          </button>
+          
+          <div style={{ display: 'flex', gap: '5px' }}>
+            {/* Primera página */}
+            {currentPage > 3 && (
+              <button 
+                onClick={() => paginate(1)}
+                style={{
+                  padding: '5px 10px',
+                  border: '1px solid #ddd',
+                  borderRadius: '4px',
+                  backgroundColor: 'white'
+                }}
+              >
+                1
+              </button>
+            )}
+            
+            {/* Elipsis izquierdo */}
+            {currentPage > 4 && <span style={{ padding: '5px' }}>...</span>}
+            
+            {/* Páginas cercanas a la actual */}
+            {[...Array(totalPages).keys()].map(number => {
+              const pageNumber = number + 1;
+              // Mostrar solo la página actual y una página antes y después
+              if (
+                pageNumber === 1 ||
+                pageNumber === totalPages ||
+                (pageNumber >= currentPage - 1 && pageNumber <= currentPage + 1)
+              ) {
+                return (
+                  <button
+                    key={number}
+                    onClick={() => paginate(pageNumber)}
+                    style={{
+                      padding: '5px 10px',
+                      border: '1px solid #ddd',
+                      borderRadius: '4px',
+                      backgroundColor: currentPage === pageNumber ? '#007BFF' : 'white',
+                      color: currentPage === pageNumber ? 'white' : 'black'
+                    }}
+                  >
+                    {pageNumber}
+                  </button>
+                );
+              }
+              return null;
+            })}
+            
+            {/* Elipsis derecho */}
+            {currentPage < totalPages - 3 && <span style={{ padding: '5px' }}>...</span>}
+            
+            {/* Última página */}
+            {currentPage < totalPages - 2 && (
+              <button 
+                onClick={() => paginate(totalPages)}
+                style={{
+                  padding: '5px 10px',
+                  border: '1px solid #ddd',
+                  borderRadius: '4px',
+                  backgroundColor: 'white'
+                }}
+              >
+                {totalPages}
+              </button>
+            )}
+          </div>
+          
+          <button 
+            onClick={nextPage} 
+            disabled={currentPage === totalPages}
+            style={{
+              padding: '5px 10px',
+              border: '1px solid #ddd',
+              borderRadius: '4px',
+              backgroundColor: currentPage === totalPages ? '#f2f2f2' : 'white',
+              cursor: currentPage === totalPages ? 'not-allowed' : 'pointer'
+            }}
+          >
+            Siguiente &raquo;
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -875,8 +1167,19 @@ function PlazasDisponibles({ availablePlazas }) {
 function Dashboard({ assignments }) {
   if (!assignments.length) return null;
   
-  // Ordenar las asignaciones por número de orden
-  const sortedAssignments = [...assignments].sort((a, b) => a.order - b.order);
+  // Agrupar asignaciones por número de orden
+  const asignacionesPorOrden = assignments.reduce((acc, asignacion) => {
+    if (!acc[asignacion.order]) {
+      acc[asignacion.order] = [];
+    }
+    acc[asignacion.order].push(asignacion);
+    return acc;
+  }, {});
+  
+  // Ordenar los números de orden
+  const ordenesOrdenados = Object.keys(asignacionesPorOrden)
+    .map(Number)
+    .sort((a, b) => a - b);
   
   // Función para exportar a Excel
   const exportToExcel = () => {
@@ -884,12 +1187,23 @@ function Dashboard({ assignments }) {
     const workbook = XLSX.utils.book_new();
     
     // Convertir los datos a formato de hoja de cálculo
-    const worksheet = XLSX.utils.json_to_sheet(sortedAssignments.map(a => ({
-      'Número de Orden': a.order,
-      'Localidad': a.localidad,
-      'Centro de Trabajo': a.centro,
-      'Municipio': a.municipio
-    })));
+    const dataParaExcel = [];
+    
+    // Preparar datos para Excel (formato plano para la tabla)
+    ordenesOrdenados.forEach(orden => {
+      const asignacionesDeEsteOrden = asignacionesPorOrden[orden];
+      asignacionesDeEsteOrden.forEach(asignacion => {
+        dataParaExcel.push({
+          'Número de Orden': asignacion.order,
+          'Localidad': asignacion.localidad,
+          'Centro de Trabajo': asignacion.centro,
+          'Municipio': asignacion.municipio
+        });
+      });
+    });
+    
+    // Crear hoja de cálculo
+    const worksheet = XLSX.utils.json_to_sheet(dataParaExcel);
     
     // Añadir la hoja al libro
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Asignaciones');
@@ -919,25 +1233,39 @@ function Dashboard({ assignments }) {
       
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead>
+          <thead>
             <tr style={{ backgroundColor: '#f2f2f2' }}>
               <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left' }}>Número de Orden</th>
-              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left' }}>Localidad</th>
-              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left' }}>Centro de Trabajo</th>
-              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left' }}>Municipio</th>
-          </tr>
-        </thead>
-        <tbody>
-            {sortedAssignments.map((a, index) => (
-              <tr key={index} style={{ backgroundColor: index % 2 === 0 ? 'white' : '#f9f9f9' }}>
-                <td style={{ border: '1px solid #ddd', padding: '10px' }}>{a.order}</td>
-                <td style={{ border: '1px solid #ddd', padding: '10px' }}>{a.localidad}</td>
-                <td style={{ border: '1px solid #ddd', padding: '10px' }}>{a.centro}</td>
-                <td style={{ border: '1px solid #ddd', padding: '10px' }}>{a.municipio}</td>
+              <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left' }}>Plazas Asignadas</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {ordenesOrdenados.map((orden, index) => {
+              const asignacionesDeEsteOrden = asignacionesPorOrden[orden];
+              
+              return (
+                <tr key={index} style={{ backgroundColor: index % 2 === 0 ? 'white' : '#f9f9f9' }}>
+                  <td style={{ border: '1px solid #ddd', padding: '10px', fontWeight: 'bold' }}>
+                    {orden}
+                  </td>
+                  <td style={{ border: '1px solid #ddd', padding: '10px' }}>
+                    <ol style={{ margin: 0, paddingLeft: '20px' }}>
+                      {asignacionesDeEsteOrden.map((asignacion, idx) => (
+                        <li key={idx} style={{ marginBottom: '5px' }}>
+                          <strong>{asignacion.centro}</strong> - {asignacion.localidad} ({asignacion.municipio})
+                        </li>
+                      ))}
+                    </ol>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      
+      <div style={{ marginTop: '20px', fontSize: '14px', color: '#666', fontStyle: 'italic', textAlign: 'center' }}>
+        Resumen: {assignments.length} plazas asignadas para {ordenesOrdenados.length} solicitantes
       </div>
     </div>
   );

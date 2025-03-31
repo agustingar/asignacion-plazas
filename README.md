@@ -1,70 +1,68 @@
-# Getting Started with Create React App
+# 🏥 Aplicación de Asignación de Plazas
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+![Logo](public/AG_LOGO.png)
 
-## Available Scripts
+## ✨ Descripción
 
-In the project directory, you can run:
+Esta aplicación web fue diseñada para facilitar el proceso de asignación de plazas para profesionales de enfermería. Permite a los usuarios solicitar plazas disponibles en diferentes centros de trabajo según su orden de prelación, automatizando el proceso de asignación y proporcionando información en tiempo real.
 
-### `npm start`
+## 🚀 Características
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+- **Visualización en tiempo real**: Todos los datos se actualizan automáticamente entre todos los usuarios conectados.
+- **Selección múltiple de centros**: Puedes seleccionar varios centros por orden de preferencia.
+- **Asignación automática por orden de prelación**: Las plazas se asignan según el número de orden y las preferencias.
+- **Panel de control informativo**: Muestra estadísticas clave como plazas disponibles, asignadas y pendientes.
+- **Diseño responsive**: Funciona en dispositivos móviles, tablets y ordenadores.
+- **Exportación a Excel**: Permite exportar la lista de asignaciones a formato Excel.
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+## 📋 Guía de Uso para Profesionales de Enfermería
 
-### `npm test`
+### 1️⃣ Consulta la disponibilidad de plazas
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+Al acceder a la aplicación, podrás ver de inmediato:
+- El total de centros disponibles
+- El número total de plazas ofertadas
+- Las plazas ya asignadas
+- Las plazas aún disponibles
+- Las solicitudes pendientes de procesar
 
-### `npm run build`
+La tabla de "Estado de las Plazas" te muestra en detalle cada centro, incluyendo su localidad, municipio, plazas totales y disponibles.
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+### 2️⃣ Introduce tu solicitud
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+Para solicitar una plaza:
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+1. Introduce tu **número de orden** (obtenido en el proceso selectivo)
+2. Selecciona los **centros que te interesan por orden de preferencia**:
+   - Mantén presionada la tecla Ctrl (o Cmd en Mac) para seleccionar varios centros
+   - El orden en que los seleccionas determina la prioridad
+3. Haz clic en "Solicitar Plaza"
 
-### `npm run eject`
+### 3️⃣ Comprueba el estado de tu solicitud
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+Tras enviar tu solicitud, aparecerá en la sección "Solicitudes Pendientes", mostrando:
+- Tu número de orden
+- Los centros solicitados en tu orden de preferencia
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+### 4️⃣ Proceso de asignación
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+Las asignaciones se realizan automáticamente según estos criterios:
+- Los números de orden más bajos tienen prioridad
+- Se asigna el primer centro disponible según las preferencias del solicitante
+- Una vez asignada una plaza, el resto de preferencias no se consideran
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+Cuando se te asigne una plaza, aparecerá en la sección "Tu Asignación" y en la tabla de "Historial de Asignaciones".
 
-## Learn More
+## 💡 Consejos
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+- **Selecciona múltiples centros**: Aumenta tus opciones añadiendo varios centros por orden de preferencia.
+- **Revisa frecuentemente**: La aplicación se actualiza en tiempo real cuando otros usuarios realizan solicitudes.
+- **Comprueba el historial**: Consulta la sección "Historial de Asignaciones" para ver todas las asignaciones realizadas.
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+## 🛠️ Soporte Técnico
 
-### Code Splitting
+Si encuentras algún problema al utilizar la aplicación, contacta con el departamento de Recursos Humanos o con el equipo técnico.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+---
 
-### Analyzing the Bundle Size
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
-
-### Making a Progressive Web App
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
-
-### Advanced Configuration
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
-
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+Desarrollado por [AG Marketing](https://ag-marketing.es)
