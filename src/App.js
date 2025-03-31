@@ -69,6 +69,10 @@ function App() {
   const [busquedaCentros, setBusquedaCentros] = useState('');
   const [loadingProcess, setLoadingProcess] = useState(false);
   const [processingMessage, setProcessingMessage] = useState('');
+  // Estados para paginación y búsqueda de solicitudes pendientes
+  const [solicitudesPage, setSolicitudesPage] = useState(1);
+  const [solicitudesPerPage, setSolicitudesPerPage] = useState(10);
+  const [solicitudesSearch, setSolicitudesSearch] = useState('');
 
   // Cargar datos del CSV al iniciar y configurar la escucha de Firebase
   useEffect(() => {
@@ -701,12 +705,6 @@ function App() {
         const solicitudRef = doc(db, "solicitudesPendientes", solicitudExistente.docId);
         await updateDoc(solicitudRef, datosParaGuardar);
         console.log("Solicitud actualizada correctamente");
-        
-        // Mostramos confirmación y terminamos, sin procesar asignación automática
-        // si ya existe una solicitud previa
-        setIsProcessing(false);
-        alert(`Tu solicitud ha sido actualizada. Se procesará según orden de preferencia.`);
-        return;
       } else {
         // Crear nueva solicitud en Firebase
         console.log("Creando nueva solicitud");
@@ -714,94 +712,29 @@ function App() {
         console.log("Nueva solicitud creada con ID:", docRef.id);
       }
       
-      // Solo intentamos asignar automáticamente si no hay una asignación existente
-      if (!existingAssignment) {
-        // Procesar asignación inmediatamente
-        let asignacionExitosa = false;
-        // Copia de las plazas disponibles
-        const plazasActualizadas = [...availablePlazas];
-        let centroAsignado = null;
-        
-        // Intentar asignar según los centros seleccionados en orden de preferencia
-        for (const centroId of centrosIdsNumericos) {
-          // Buscar el centro
-          const idx = plazasActualizadas.findIndex(p => p.id === centroId);
-          if (idx >= 0 && plazasActualizadas[idx].asignadas < plazasActualizadas[idx].plazas) {
-            // Hay plaza disponible en este centro
-            const centro = plazasActualizadas[idx];
-            centroAsignado = {
-              order: numOrden,
-              id: centro.id,
-              localidad: centro.localidad,
-              centro: centro.centro,
-              municipio: centro.municipio,
-              timestamp: new Date().getTime()
-            };
-            
-            // Actualizar plazas asignadas en la copia local
-            plazasActualizadas[idx] = {
-              ...plazasActualizadas[idx],
-              asignadas: plazasActualizadas[idx].asignadas + 1
-            };
-            
-            asignacionExitosa = true;
-        break;
-      }
-    }
-        
-        if (asignacionExitosa && centroAsignado) {
-          try {
-            // Guardar la asignación en Firebase
-            const asignacionRef = await addDoc(collection(db, "asignaciones"), centroAsignado);
-            console.log("Asignación creada con ID:", asignacionRef.id);
-            
-            // Actualizar el centro en Firebase
-            if (centroAsignado.id) {
-              const centroDocIndex = plazasActualizadas.findIndex(p => p.id === centroAsignado.id);
-              if (centroDocIndex >= 0 && plazasActualizadas[centroDocIndex].docId) {
-                const centroDocId = plazasActualizadas[centroDocIndex].docId;
-                const nuevasAsignaciones = plazasActualizadas[centroDocIndex].asignadas;
-                
-                console.log(`Actualizando centro ${centroAsignado.id} en Firebase. Plazas asignadas: ${nuevasAsignaciones}`);
-                
-                await updateDoc(doc(db, "centros", centroDocId), { 
-                  asignadas: nuevasAsignaciones 
-                });
-                
-                // Actualizar el estado local de las plazas
-                setAvailablePlazas(plazasActualizadas);
-              } else {
-                console.error("No se pudo encontrar el docId del centro para actualizar:", centroAsignado.id);
-              }
-            }
-            
-            // Ya no eliminamos la solicitud, la mantenemos en el sistema
-            // para permitir futuras asignaciones si cambian las condiciones
-            
-            // Actualizar la asignación en la vista
-            setAssignment(centroAsignado);
-            
-            // Esperar un momento para que se completen las actualizaciones
-            setTimeout(() => {
-              // Mostrar mensaje de éxito
-              alert(`Plaza asignada correctamente en: ${centroAsignado.centro}`);
-              // Reiniciar la página para refrescar todos los datos
-              window.location.reload();
-            }, 1500);
-          } catch (error) {
-            console.error("Error al guardar la asignación en Firebase:", error);
-            alert("Error al guardar la asignación: " + error.message);
+      // Procesar automáticamente todas las solicitudes después de guardar
+      try {
+        // Esperar un momento para asegurar que la nueva solicitud se haya guardado completamente
+        setTimeout(async () => {
+          console.log("Procesando todas las solicitudes automáticamente...");
+          await procesarSolicitudes();
+          
+          // Esperar un momento para que se completen las actualizaciones
+          setTimeout(() => {
+            // Mostrar mensaje de éxito y ocultar el loader
             setIsProcessing(false);
-          }
-        } else {
-          // No se pudo asignar
-          setIsProcessing(false);
-          alert("Tu solicitud ha sido registrada pero todos los centros seleccionados están llenos actualmente. Si se liberan plazas, se te asignará una de acuerdo a tu número de orden y preferencias.");
-        }
-      } else {
-        // Si ya hay una asignación existente, simplemente confirmamos que se guardó la solicitud
+            
+            // Mostrar mensaje de éxito
+            alert(`Tu solicitud ha sido registrada y procesada correctamente. Las plazas se han asignado según prioridad por número de orden.`);
+            
+            // Recargar la página para mostrar los cambios actualizados
+            window.location.reload();
+          }, 1500);
+        }, 1000); // Esperar 1 segundo antes de procesar
+      } catch (error) {
+        console.error("Error al procesar solicitudes automáticamente:", error);
         setIsProcessing(false);
-        alert("Tu solicitud ha sido registrada. Ya tienes una plaza asignada, pero si prefieres alguna de las nuevas opciones y hay disponibilidad, se te podría reasignar en un futuro.");
+        alert("Se ha guardado tu solicitud, pero ha ocurrido un error al procesar las asignaciones: " + error.message);
       }
     } catch (error) {
       console.error("Error al guardar solicitud:", error);
@@ -823,6 +756,27 @@ function App() {
     } else {
       // Quitar de la selección
       setCentrosSeleccionados(prev => prev.filter(id => id !== centroId));
+    }
+  };
+
+  // Función para procesar todas las solicitudes al enviar una nueva
+  const procesarAutomaticamente = async () => {
+    // Mostrar mensaje de procesamiento
+    setIsProcessing(true);
+    
+    try {
+      await procesarSolicitudes();
+      // Esperar un momento para mostrar el éxito
+      setTimeout(() => {
+        // Ocultar el indicador de carga
+        setIsProcessing(false);
+        // Recargar para asegurar que los datos estén actualizados
+        window.location.reload();
+      }, 2000);
+    } catch (error) {
+      console.error("Error al procesar automáticamente:", error);
+      setIsProcessing(false);
+      alert("Error al actualizar asignaciones: " + error.message);
     }
   };
 
@@ -917,7 +871,380 @@ function App() {
               `}
             </style>
             <Dashboard assignments={assignments} />
+            
+            {/* Botón para actualizar asignaciones */}
+            <div style={{ 
+              marginTop: '20px', 
+              textAlign: 'center',
+              display: solicitudes.length > 0 ? 'block' : 'none'
+            }}>
+              <button 
+                onClick={procesarAutomaticamente} 
+                disabled={isProcessing || solicitudes.length === 0}
+                style={{ 
+                  padding: '10px 20px', 
+                  backgroundColor: isProcessing ? '#cccccc' : '#18539E', 
+                  color: 'white', 
+                  border: 'none', 
+                  borderRadius: '4px', 
+                  cursor: isProcessing || solicitudes.length === 0 ? 'not-allowed' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  margin: '0 auto'
+                }}
+              >
+                {isProcessing && (
+                  <span 
+                    style={{ 
+                      display: 'inline-block', 
+                      width: '20px', 
+                      height: '20px', 
+                      border: '3px solid rgba(255,255,255,0.3)', 
+                      borderRadius: '50%', 
+                      borderTopColor: 'white', 
+                      animation: 'spin 1s ease-in-out infinite',
+                      marginRight: '10px'
+                    }} 
+                  />
+                )}
+                {isProcessing ? 'Actualizando asignaciones...' : 'Actualizar Asignaciones por Número de Orden'}
+              </button>
+              <p style={{ fontSize: '12px', color: '#666', marginTop: '5px' }}>
+                Este botón procesa todas las solicitudes pendientes y asigna plazas según prioridad por número de orden
+              </p>
+            </div>
           </div>
+          
+          {/* Solicitudes pendientes justo después de las asignaciones */}
+          {solicitudes.length > 0 && (
+            <div style={{ marginTop: '30px', marginBottom: '30px' }}>
+              <h2 style={{ color: '#18539E' }}>Solicitudes Pendientes</h2>
+              <div style={{ marginBottom: '15px', fontSize: '14px' }}>
+                A continuación se muestran todas las solicitudes pendientes con sus preferencias de centros en orden.
+                <p style={{ color: '#d35400', fontWeight: 'bold', marginTop: '5px' }}>
+                  Las solicitudes se procesan por orden de prioridad (número de orden menor = mayor prioridad)
+                </p>
+              </div>
+              
+              {/* Buscador para solicitudes */}
+              <div style={{ marginBottom: '15px' }}>
+                <div style={{ marginBottom: '10px' }}>
+                  <input
+                    type="text"
+                    placeholder="Buscar por número de orden..."
+                    value={solicitudesSearch}
+                    onChange={(e) => {
+                      setSolicitudesSearch(e.target.value);
+                      setSolicitudesPage(1); // Resetear a página 1 al buscar
+                    }}
+                    style={{
+                      padding: '8px',
+                      border: '1px solid #ddd',
+                      borderRadius: '4px',
+                      width: '100%'
+                    }}
+                  />
+                </div>
+                
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ fontSize: '14px' }}>
+                    {(() => {
+                      // Filtrar solicitudes según la búsqueda
+                      const filteredSolicitudes = solicitudes.filter(sol => 
+                        solicitudesSearch === '' || 
+                        String(sol.orden).includes(solicitudesSearch)
+                      ).sort((a, b) => a.orden - b.orden);
+                      
+                      // Calcular índices para paginación
+                      const indexOfLastItem = solicitudesPage * solicitudesPerPage;
+                      const indexOfFirstItem = indexOfLastItem - solicitudesPerPage;
+                      const currentSolicitudes = filteredSolicitudes.slice(indexOfFirstItem, indexOfLastItem);
+                      
+                      return `Mostrando ${filteredSolicitudes.length > 0 ? indexOfFirstItem + 1 : 0}-${Math.min(indexOfLastItem, filteredSolicitudes.length)} de ${filteredSolicitudes.length} solicitudes`;
+                    })()}
+                  </div>
+                  
+                  <div>
+                    <select 
+                      value={solicitudesPerPage} 
+                      onChange={(e) => {
+                        setSolicitudesPerPage(Number(e.target.value));
+                        setSolicitudesPage(1); // Resetear a página 1 al cambiar items por página
+                      }}
+                      style={{
+                        padding: '8px',
+                        border: '1px solid #ddd',
+                        borderRadius: '4px'
+                      }}
+                    >
+                      <option value={10}>10 por página</option>
+                      <option value={25}>25 por página</option>
+                      <option value={50}>50 por página</option>
+                      <option value={100}>100 por página</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+              
+              <div style={{ overflowX: 'auto' }}>
+                <table className="responsive-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ backgroundColor: '#fdf2e9' }}>
+                      <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#d35400' }}>Nº Orden</th>
+                      <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#d35400' }}>Fecha/Hora</th>
+                      <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#d35400' }}>Centros Seleccionados (en orden de preferencia)</th>
+                      <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', color: '#d35400' }}>Estado</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(() => {
+                      // Filtrar solicitudes según la búsqueda
+                      const filteredSolicitudes = solicitudes.filter(sol => 
+                        solicitudesSearch === '' || 
+                        String(sol.orden).includes(solicitudesSearch)
+                      ).sort((a, b) => a.orden - b.orden);
+                      
+                      // Aplicar paginación
+                      const indexOfLastItem = solicitudesPage * solicitudesPerPage;
+                      const indexOfFirstItem = indexOfLastItem - solicitudesPerPage;
+                      const currentSolicitudes = filteredSolicitudes.slice(indexOfFirstItem, indexOfLastItem);
+                      
+                      // Renderizar las solicitudes filtradas y paginadas
+                      return currentSolicitudes.map((solicitud, index) => {
+                        // Convertir timestamp a fecha legible
+                        const fecha = new Date(solicitud.timestamp);
+                        const fechaFormateada = `${fecha.toLocaleDateString()} ${fecha.toLocaleTimeString()}`;
+                        
+                        // Verificar si tiene asignación
+                        const tieneAsignacion = assignments.some(a => a.order === solicitud.orden);
+                        
+                        return (
+                          <tr key={index} style={{ 
+                            backgroundColor: tieneAsignacion ? '#e8f5e9' : (index % 2 === 0 ? 'white' : '#fdf2e9'),
+                            opacity: tieneAsignacion ? 0.8 : 1
+                          }}>
+                            <td style={{ 
+                              border: '1px solid #ddd', 
+                              padding: '10px', 
+                              fontWeight: 'bold',
+                              backgroundColor: solicitud.orden <= 50 ? '#fff3cd' : 'inherit' // Destacar órdenes bajos
+                            }}>
+                              {solicitud.orden}
+                              {solicitud.orden <= 50 && (
+                                <span style={{ 
+                                  display: 'inline-block', 
+                                  marginLeft: '5px', 
+                                  fontSize: '12px', 
+                                  color: '#856404',
+                                  backgroundColor: '#fff3cd',
+                                  padding: '2px 5px',
+                                  borderRadius: '3px'
+                                }}>
+                                  Alta prioridad
+                                </span>
+                              )}
+                            </td>
+                            <td style={{ border: '1px solid #ddd', padding: '10px' }}>{fechaFormateada}</td>
+                            <td style={{ border: '1px solid #ddd', padding: '10px' }}>
+                              <ol style={{ margin: '0', paddingLeft: '20px' }}>
+                                {solicitud.centrosIds.map((centroId, idx) => {
+                                  // Buscar detalles del centro
+                                  const centro = availablePlazas.find(p => p.id === centroId);
+                                  
+                                  // Buscar si este centro concreto tiene asignación para este orden
+                                  const asignadoAEsteCentro = assignments.some(a => 
+                                    a.order === solicitud.orden && a.id === centroId);
+                                    
+                                  return (
+                                    <li key={idx} style={{ 
+                                      marginBottom: '5px',
+                                      backgroundColor: asignadoAEsteCentro ? '#e8f5e9' : 'inherit',
+                                      padding: asignadoAEsteCentro ? '3px 5px' : '0',
+                                      borderRadius: asignadoAEsteCentro ? '3px' : '0'
+                                    }}>
+                                      {centro ? (
+                                        <>
+                                          <strong>{centro.centro}</strong> - {centro.localidad} ({centro.municipio})
+                                          {(centro.plazas - centro.asignadas) <= 0 && !asignadoAEsteCentro && (
+                                            <span style={{ 
+                                              color: 'red', 
+                                              marginLeft: '10px', 
+                                              fontSize: '12px', 
+                                              fontWeight: 'bold' 
+                                            }}>
+                                              COMPLETO
+                                            </span>
+                                          )}
+                                          {asignadoAEsteCentro && (
+                                            <span style={{ 
+                                              color: 'green', 
+                                              marginLeft: '10px', 
+                                              fontSize: '12px', 
+                                              fontWeight: 'bold',
+                                              border: '1px solid green',
+                                              padding: '1px 4px',
+                                              borderRadius: '3px'
+                                            }}>
+                                              ✓ ASIGNADO
+                                            </span>
+                                          )}
+                                        </>
+                                      ) : (
+                                        `Centro ID: ${centroId} (no encontrado)`
+                                      )}
+                                    </li>
+                                  );
+                                })}
+                              </ol>
+                            </td>
+                            <td style={{ 
+                              border: '1px solid #ddd', 
+                              padding: '10px', 
+                              textAlign: 'center',
+                              fontWeight: 'bold'
+                            }}>
+                              {tieneAsignacion ? (
+                                <span style={{ color: 'green' }}>
+                                  ASIGNADO
+                                </span>
+                              ) : (
+                                <span style={{ color: '#d35400' }}>
+                                  EN ESPERA
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      });
+                    })()}
+                  </tbody>
+                </table>
+              </div>
+              
+              {/* Paginación para solicitudes */}
+              {(() => {
+                // Filtrar solicitudes según la búsqueda
+                const filteredSolicitudes = solicitudes.filter(sol => 
+                  solicitudesSearch === '' || 
+                  String(sol.orden).includes(solicitudesSearch)
+                );
+                
+                // Calcular total de páginas
+                const totalPages = Math.ceil(filteredSolicitudes.length / solicitudesPerPage);
+                
+                if (totalPages <= 1) return null;
+                
+                // Funciones para navegar entre páginas
+                const paginate = (pageNumber) => setSolicitudesPage(pageNumber);
+                const prevPage = () => solicitudesPage > 1 && setSolicitudesPage(solicitudesPage - 1);
+                const nextPage = () => solicitudesPage < totalPages && setSolicitudesPage(solicitudesPage + 1);
+                
+                return (
+                  <div style={{ 
+                    marginTop: '20px', 
+                    display: 'flex', 
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    gap: '10px'
+                  }}>
+                    <button 
+                      onClick={prevPage} 
+                      disabled={solicitudesPage === 1}
+                      style={{
+                        padding: '5px 10px',
+                        border: '1px solid #ddd',
+                        borderRadius: '4px',
+                        backgroundColor: solicitudesPage === 1 ? '#f2f2f2' : 'white',
+                        cursor: solicitudesPage === 1 ? 'not-allowed' : 'pointer'
+                      }}
+                    >
+                      &laquo; Anterior
+                    </button>
+                    
+                    <div style={{ display: 'flex', gap: '5px' }}>
+                      {/* Primera página */}
+                      {solicitudesPage > 3 && (
+                        <button 
+                          onClick={() => paginate(1)}
+                          style={{
+                            padding: '5px 10px',
+                            border: '1px solid #ddd',
+                            borderRadius: '4px',
+                            backgroundColor: 'white'
+                          }}
+                        >
+                          1
+                        </button>
+                      )}
+                      
+                      {/* Elipsis izquierdo */}
+                      {solicitudesPage > 4 && <span style={{ padding: '5px' }}>...</span>}
+                      
+                      {/* Páginas cercanas a la actual */}
+                      {[...Array(totalPages).keys()].map(number => {
+                        const pageNumber = number + 1;
+                        if (
+                          pageNumber === 1 ||
+                          pageNumber === totalPages ||
+                          (pageNumber >= solicitudesPage - 1 && pageNumber <= solicitudesPage + 1)
+                        ) {
+                          return (
+                            <button
+                              key={number}
+                              onClick={() => paginate(pageNumber)}
+                              style={{
+                                padding: '5px 10px',
+                                border: '1px solid #ddd',
+                                borderRadius: '4px',
+                                backgroundColor: solicitudesPage === pageNumber ? '#d35400' : 'white',
+                                color: solicitudesPage === pageNumber ? 'white' : 'black'
+                              }}
+                            >
+                              {pageNumber}
+                            </button>
+                          );
+                        }
+                        return null;
+                      })}
+                      
+                      {/* Elipsis derecho */}
+                      {solicitudesPage < totalPages - 3 && <span style={{ padding: '5px' }}>...</span>}
+                      
+                      {/* Última página */}
+                      {solicitudesPage < totalPages - 2 && (
+                        <button 
+                          onClick={() => paginate(totalPages)}
+                          style={{
+                            padding: '5px 10px',
+                            border: '1px solid #ddd',
+                            borderRadius: '4px',
+                            backgroundColor: 'white'
+                          }}
+                        >
+                          {totalPages}
+                        </button>
+                      )}
+                    </div>
+                    
+                    <button 
+                      onClick={nextPage} 
+                      disabled={solicitudesPage === totalPages}
+                      style={{
+                        padding: '5px 10px',
+                        border: '1px solid #ddd',
+                        borderRadius: '4px',
+                        backgroundColor: solicitudesPage === totalPages ? '#f2f2f2' : 'white',
+                        cursor: solicitudesPage === totalPages ? 'not-allowed' : 'pointer'
+                      }}
+                    >
+                      Siguiente &raquo;
+                    </button>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
           
           {assignment && (
             <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#e8f5e9', border: '1px solid #4CAF50', borderRadius: '5px' }}>
@@ -934,13 +1261,13 @@ function App() {
           <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ddd', borderRadius: '5px' }}>
             <h2 style={{ color: '#18539E' }}>Solicitar Plaza</h2>
             <form onSubmit={handleOrderSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-    <div>
+              <div>
                 <label htmlFor="orderInput" style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Número de Orden:</label>
-        <input 
+                <input 
                   id="orderInput"
-          type="number" 
-          value={orderNumber} 
-          onChange={e => setOrderNumber(e.target.value)} 
+                  type="number" 
+                  value={orderNumber} 
+                  onChange={e => setOrderNumber(e.target.value)} 
                   placeholder="Introduce tu número de orden" 
                   style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #ddd' }}
                   required
@@ -949,7 +1276,7 @@ function App() {
                 />
               </div>
               
-        <div>
+              <div>
                 <label htmlFor="centrosGroup" style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>
                   Centros de Trabajo (selecciona múltiples en orden de preferencia):
                 </label>
@@ -969,7 +1296,7 @@ function App() {
                     }}
                     disabled={isProcessing}
                   />
-        </div>
+                </div>
                 
                 <div className="mobile-scroll-hint" style={{
                   display: 'none',
@@ -1175,143 +1502,6 @@ function App() {
           
           {/* Estado de las plazas */ }
           
-
-          {/* Sección de solicitudes pendientes con todas las preferencias */}
-          {solicitudes.length > 0 && (
-            <div style={{ marginTop: '30px' }}>
-              <h2 style={{ color: '#18539E' }}>Solicitudes Pendientes</h2>
-              <div style={{ marginBottom: '15px', fontSize: '14px' }}>
-                A continuación se muestran todas las solicitudes pendientes con sus preferencias de centros en orden.
-                <p style={{ color: '#d35400', fontWeight: 'bold', marginTop: '5px' }}>
-                  Las solicitudes se procesan por orden de prioridad (número de orden menor = mayor prioridad)
-                </p>
-              </div>
-              
-              <div style={{ overflowX: 'auto' }}>
-                <table className="responsive-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
-                  <thead>
-                    <tr style={{ backgroundColor: '#fdf2e9' }}>
-                      <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#d35400' }}>Nº Orden</th>
-                      <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#d35400' }}>Fecha/Hora</th>
-                      <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'left', color: '#d35400' }}>Centros Seleccionados (en orden de preferencia)</th>
-                      <th style={{ border: '1px solid #ddd', padding: '10px', textAlign: 'center', color: '#d35400' }}>Estado</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {solicitudes
-                      .sort((a, b) => a.orden - b.orden) // Ordenar por número de orden (menor primero)
-                      .map((solicitud, index) => {
-                        // Convertir timestamp a fecha legible
-                        const fecha = new Date(solicitud.timestamp);
-                        const fechaFormateada = `${fecha.toLocaleDateString()} ${fecha.toLocaleTimeString()}`;
-                        
-                        // Verificar si tiene asignación
-                        const tieneAsignacion = assignments.some(a => a.order === solicitud.orden);
-                        
-                        return (
-                          <tr key={index} style={{ 
-                            backgroundColor: tieneAsignacion ? '#e8f5e9' : (index % 2 === 0 ? 'white' : '#fdf2e9'),
-                            opacity: tieneAsignacion ? 0.8 : 1
-                          }}>
-                            <td style={{ 
-                              border: '1px solid #ddd', 
-                              padding: '10px', 
-                              fontWeight: 'bold',
-                              backgroundColor: solicitud.orden <= 50 ? '#fff3cd' : 'inherit' // Destacar órdenes bajos
-                            }}>
-                              {solicitud.orden}
-                              {solicitud.orden <= 50 && (
-                                <span style={{ 
-                                  display: 'inline-block', 
-                                  marginLeft: '5px', 
-                                  fontSize: '12px', 
-                                  color: '#856404',
-                                  backgroundColor: '#fff3cd',
-                                  padding: '2px 5px',
-                                  borderRadius: '3px'
-                                }}>
-                                  Alta prioridad
-                                </span>
-                              )}
-                            </td>
-                            <td style={{ border: '1px solid #ddd', padding: '10px' }}>{fechaFormateada}</td>
-                            <td style={{ border: '1px solid #ddd', padding: '10px' }}>
-                              <ol style={{ margin: '0', paddingLeft: '20px' }}>
-                                {solicitud.centrosIds.map((centroId, idx) => {
-                                  // Buscar detalles del centro
-                                  const centro = availablePlazas.find(p => p.id === centroId);
-                                  
-                                  // Buscar si este centro concreto tiene asignación para este orden
-                                  const asignadoAEsteCentro = assignments.some(a => 
-                                    a.order === solicitud.orden && a.id === centroId);
-                                    
-                                  return (
-                                    <li key={idx} style={{ 
-                                      marginBottom: '5px',
-                                      backgroundColor: asignadoAEsteCentro ? '#e8f5e9' : 'inherit',
-                                      padding: asignadoAEsteCentro ? '3px 5px' : '0',
-                                      borderRadius: asignadoAEsteCentro ? '3px' : '0'
-                                    }}>
-                                      {centro ? (
-                                        <>
-                                          <strong>{centro.centro}</strong> - {centro.localidad} ({centro.municipio})
-                                          {(centro.plazas - centro.asignadas) <= 0 && !asignadoAEsteCentro && (
-                                            <span style={{ 
-                                              color: 'red', 
-                                              marginLeft: '10px', 
-                                              fontSize: '12px', 
-                                              fontWeight: 'bold' 
-                                            }}>
-                                              COMPLETO
-                                            </span>
-                                          )}
-                                          {asignadoAEsteCentro && (
-                                            <span style={{ 
-                                              color: 'green', 
-                                              marginLeft: '10px', 
-                                              fontSize: '12px', 
-                                              fontWeight: 'bold',
-                                              border: '1px solid green',
-                                              padding: '1px 4px',
-                                              borderRadius: '3px'
-                                            }}>
-                                              ✓ ASIGNADO
-                                            </span>
-                                          )}
-                                        </>
-                                      ) : (
-                                        `Centro ID: ${centroId} (no encontrado)`
-                                      )}
-                                    </li>
-                                  );
-                                })}
-                              </ol>
-                            </td>
-                            <td style={{ 
-                              border: '1px solid #ddd', 
-                              padding: '10px', 
-                              textAlign: 'center',
-                              fontWeight: 'bold'
-                            }}>
-                              {tieneAsignacion ? (
-                                <span style={{ color: 'green' }}>
-                                  ASIGNADO
-                                </span>
-                              ) : (
-                                <span style={{ color: '#d35400' }}>
-                                  EN ESPERA
-                                </span>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
           {/* Componente de Footer */}
           <div style={{ marginTop: '40px', padding: '20px 0', borderTop: '1px solid #ddd', textAlign: 'center', fontSize: '12px', color: '#888' }}>
             <div style={{
