@@ -1079,7 +1079,6 @@ function App() {
                     ↓
                   </div>
                   {availablePlazas
-                    .filter(plaza => (plaza.plazas - plaza.asignadas) > 0)
                     .filter(plaza => 
                       busquedaCentros === '' || 
                       plaza.centro.toLowerCase().includes(busquedaCentros.toLowerCase()) ||
@@ -1088,26 +1087,44 @@ function App() {
                       String(plaza.id).includes(busquedaCentros)
                     )
                     .sort((a, b) => a.id - b.id)
-                    .map((plaza, index) => (
-                      <div key={index} style={{ marginBottom: '8px', display: 'flex', alignItems: 'center' }}>
-                        <input
-                          type="checkbox"
-                          id={`centro-${plaza.id}`}
-                          value={plaza.id}
-                          checked={centrosSeleccionados.includes(plaza.id)}
-                          onChange={handleCentroChange}
-                          style={{ marginRight: '8px' }}
-                          disabled={isProcessing}
-                        />
-                        <label htmlFor={`centro-${plaza.id}`} style={{ fontSize: '14px', cursor: isProcessing ? 'default' : 'pointer' }}>
-                          {plaza.id}. <strong className="centro-nombre">{plaza.centro}</strong> - {plaza.localidad} ({plaza.municipio}) 
-                          {plaza.plazas > 1 && ` - ${plaza.plazas - plaza.asignadas} plaza${(plaza.plazas - plaza.asignadas) !== 1 ? 's' : ''} disponible${(plaza.plazas - plaza.asignadas) !== 1 ? 's' : ''}`}
-                        </label>
-                      </div>
-                    ))}
+                    .map((plaza, index) => {
+                      const sinPlazasDisponibles = (plaza.plazas - plaza.asignadas) <= 0;
+                      
+                      return (
+                        <div key={index} style={{ 
+                          marginBottom: '8px', 
+                          display: 'flex', 
+                          alignItems: 'center',
+                          opacity: sinPlazasDisponibles ? 0.6 : 1
+                        }}>
+                          <input
+                            type="checkbox"
+                            id={`centro-${plaza.id}`}
+                            value={plaza.id}
+                            checked={centrosSeleccionados.includes(plaza.id)}
+                            onChange={handleCentroChange}
+                            style={{ marginRight: '8px' }}
+                            disabled={isProcessing || sinPlazasDisponibles}
+                          />
+                          <label 
+                            htmlFor={`centro-${plaza.id}`} 
+                            style={{ 
+                              fontSize: '14px', 
+                              cursor: (isProcessing || sinPlazasDisponibles) ? 'default' : 'pointer',
+                              textDecoration: sinPlazasDisponibles ? 'line-through' : 'none'
+                            }}
+                          >
+                            {plaza.id}. <strong className="centro-nombre">{plaza.centro}</strong> - {plaza.localidad} ({plaza.municipio}) 
+                            {plaza.plazas > 1 ? 
+                              ` - ${Math.max(0, plaza.plazas - plaza.asignadas)} plaza${(plaza.plazas - plaza.asignadas) !== 1 ? 's' : ''} disponible${(plaza.plazas - plaza.asignadas) !== 1 ? 's' : ''}` : 
+                              ` - ${sinPlazasDisponibles ? 'COMPLETO' : '1 plaza disponible'}`
+                            }
+                          </label>
+                        </div>
+                      );
+                    })}
                     
                   {availablePlazas
-                    .filter(plaza => (plaza.plazas - plaza.asignadas) > 0)
                     .filter(plaza => 
                       busquedaCentros !== '' && (
                         plaza.centro.toLowerCase().includes(busquedaCentros.toLowerCase()) ||
