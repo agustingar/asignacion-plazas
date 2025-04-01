@@ -251,9 +251,9 @@ export const borrarAsignacion = async (asignacion, docId, availablePlazas) => {
  */
 export const procesarSolicitud = async (solicitud, availablePlazas, assignments, db) => {
   try {
-    const { orden, centrosIds } = solicitud;
+    const { orden, centrosIds, docId: solicitudDocId } = solicitud;
     
-    // Verificar si ya existe una asignación para este orden
+    // Comprobar si ya existe una asignación para este orden
     const asignacionExistente = assignments.find(a => a.order === orden);
     if (asignacionExistente) {
       console.log(`El orden ${orden} ya tiene una asignación en ${asignacionExistente.centro}`);
@@ -283,54 +283,100 @@ export const procesarSolicitud = async (solicitud, availablePlazas, assignments,
       
       // Verificar disponibilidad
       const disponibles = centro.plazas - (centro.asignadas || 0);
+      
       if (disponibles > 0) {
-        // Crear la asignación
-        const nuevaAsignacion = {
-          order: orden,
-          id: centroId,
-          localidad: centro.localidad || centro.municipio,
-          centro: centro.centro,
-          municipio: centro.municipio,
-          timestamp: Date.now()
-        };
-        
-        // Guardar en Firebase
-        const asignacionRef = await addDoc(collection(db, "asignaciones"), nuevaAsignacion);
-        
-        // Incrementar el contador de plazas asignadas
-        const nuevasAsignadas = (centro.asignadas || 0) + 1;
-        await updateDoc(doc(db, "centros", centro.docId), {
-          asignadas: nuevasAsignadas
-        });
-        
-        // Eliminar la solicitud procesada
-        if (solicitud.docId) {
-          await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
-        }
-        
-        console.log(`✅ Plaza asignada: Orden ${orden} → ${centro.centro} (preferencia ${centrosIds.indexOf(centroId) + 1})`);
-        
+        // Hay plazas disponibles, asignar directamente
+        await asignarPlaza(orden, centroId, centro, solicitudDocId);
         asignado = true;
         return {
           success: true,
           message: `Plaza asignada para orden ${orden} en ${centro.centro}`,
-          asignacionId: asignacionRef.id
+          desplazado: false
         };
+      } else {
+        // Verificar si podemos desplazar a alguien con mayor número de orden
+        // Buscar todas las asignaciones actuales para este centro
+        const asignacionesCentro = assignments.filter(a => a.id === centroId);
+        
+        // Buscar la asignación con el número de orden más alto (menor prioridad)
+        const asignacionMayorOrden = asignacionesCentro.sort((a, b) => b.order - a.order)[0];
+        
+        if (asignacionMayorOrden && asignacionMayorOrden.order > orden) {
+          // Encontramos a alguien con menor prioridad, podemos desplazarlo
+          console.log(`⚠️ Desplazando orden ${asignacionMayorOrden.order} (mayor) para asignar ${orden} (menor) en ${centro.centro}`);
+          
+          // Eliminar la asignación anterior
+          await deleteDoc(doc(db, "asignaciones", asignacionMayorOrden.docId));
+          
+          // Asignar la plaza a la nueva solicitud
+          await asignarPlaza(orden, centroId, centro, solicitudDocId);
+          
+          // Devolver la antigua solicitud al pool de pendientes si no está
+          // Verificar si la solicitud anterior sigue en pendientes
+          const solicitudAnterior = {
+            orden: asignacionMayorOrden.order,
+            centrosIds: [centroId], // Solo sabemos este centro, podría mejorarse buscando la solicitud original
+            timestamp: Date.now()
+          };
+          
+          // Crear una nueva solicitud pendiente para la persona desplazada
+          await addDoc(collection(db, "solicitudesPendientes"), solicitudAnterior);
+          
+          asignado = true;
+          return {
+            success: true,
+            message: `Plaza reasignada para orden ${orden} en ${centro.centro}, desplazando a orden ${asignacionMayorOrden.order}`,
+            desplazado: true,
+            ordenDesplazado: asignacionMayorOrden.order
+          };
+        }
       }
     }
     
     if (!asignado) {
-      console.log(`⚠️ No se pudo asignar plaza para orden ${orden}. Todos sus centros preferidos están completos.`);
+      console.log(`⚠️ No se pudo asignar plaza para orden ${orden}. Todos sus centros preferidos están completos con solicitantes de mayor prioridad.`);
       return {
         success: false,
-        message: `No se pudo asignar plaza para orden ${orden}. Todos sus centros preferidos están completos.`
+        message: `No se pudo asignar plaza para orden ${orden}. Todos sus centros preferidos están ocupados por solicitantes con mayor prioridad.`
       };
     }
   } catch (error) {
-    console.error(`Error al procesar solicitud para orden ${solicitud.orden}:`, error);
+    console.error("Error al procesar solicitud:", error);
     return {
       success: false,
-      message: `Error al procesar solicitud: ${error.message}`
+      error: error.message,
+      message: "Error al procesar solicitud: " + error.message
     };
+  }
+  
+  // Función interna para asignar plaza
+  async function asignarPlaza(orden, centroId, centro, solicitudDocId) {
+    // Crear la asignación
+    const nuevaAsignacion = {
+      order: orden,
+      id: centroId,
+      localidad: centro.localidad || centro.municipio,
+      centro: centro.centro,
+      municipio: centro.municipio,
+      timestamp: Date.now()
+    };
+    
+    // Guardar en Firebase
+    const asignacionRef = await addDoc(collection(db, "asignaciones"), nuevaAsignacion);
+    
+    // Incrementar el contador de plazas asignadas
+    const nuevasAsignadas = (centro.asignadas || 0) + 1;
+    await updateDoc(doc(db, "centros", centro.docId), {
+      asignadas: nuevasAsignadas
+    });
+    
+    // Eliminar la solicitud procesada
+    if (solicitudDocId) {
+      await deleteDoc(doc(db, "solicitudesPendientes", solicitudDocId));
+    }
+    
+    console.log(`✅ Plaza asignada: Orden ${orden} → ${centro.centro}`);
+    
+    return asignacionRef.id;
   }
 };
