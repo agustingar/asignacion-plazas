@@ -15,6 +15,8 @@ function App() {
   const [availablePlazas, setAvailablePlazas] = useState([]);
   const [assignments, setAssignments] = useState([]);
   const [solicitudes, setSolicitudes] = useState([]);
+  // Añadir estado para historial de solicitudes
+  const [historialSolicitudes, setHistorialSolicitudes] = useState([]);
   const [loadingProcess, setLoadingProcess] = useState(false);
   const [processingMessage, setProcessingMessage] = useState('');
   const [loadingCSV, setLoadingCSV] = useState(false);
@@ -49,6 +51,7 @@ function App() {
   const lastProcessedTimestampRef = useRef(0);
   const countdownTimerRef = useRef(null);
   const lastCounterResetRef = useRef(0);
+  const verificacionProgramadaRef = useRef(false);
 
   // Cerca del inicio del componente App
   const [isLoadingSubmit, setIsLoadingSubmit] = useState(false);
@@ -479,6 +482,11 @@ function App() {
       const solicitudesData = solicitudesSnapshot.docs.map(doc => ({ ...doc.data(), docId: doc.id }));
       setSolicitudes(solicitudesData);
       
+      // Cargar historial de solicitudes
+      const historialSnapshot = await getDocs(collection(db, "historialSolicitudes"));
+      const historialData = historialSnapshot.docs.map(doc => ({ ...doc.data(), docId: doc.id }));
+      setHistorialSolicitudes(historialData);
+      
       return true;
     } catch (error) {
       console.error("Error al cargar datos desde Firebase:", error);
@@ -520,11 +528,22 @@ function App() {
       setSolicitudes(solicitudesData);
     });
     
+    // Listener para historial de solicitudes
+    const unsubscribeHistorial = onSnapshot(collection(db, "historialSolicitudes"), (snapshot) => {
+      const historialData = [];
+      snapshot.forEach((doc) => {
+        historialData.push({ ...doc.data(), docId: doc.id });
+      });
+      
+      setHistorialSolicitudes(historialData);
+    });
+    
     // Devolver función para desuscribirse de todos los listeners
     return () => {
       unsubscribeCentros();
       unsubscribeAsignaciones();
       unsubscribeSolicitudes();
+      unsubscribeHistorial();
     };
   };
   
@@ -857,31 +876,87 @@ function App() {
         
         // Ejecutar una verificación inicial para eliminar duplicados
         console.log("Ejecutando limpieza inicial de duplicados");
-        await eliminarSolicitudesDuplicadas();
+        const resultadoLimpieza = await eliminarSolicitudesDuplicadas();
         
-        setMaintenanceMessage("Verificando y corrigiendo asignaciones...");
+        // Mostrar información de la limpieza
+        if (resultadoLimpieza.error) {
+          console.error("Error durante la limpieza inicial:", resultadoLimpieza.error);
+        } else {
+          const totalEliminados = resultadoLimpieza.eliminadosSolicitudes + 
+                                resultadoLimpieza.eliminadosAsignaciones + 
+                                resultadoLimpieza.eliminadosHistorial;
+          
+          console.log(`Limpieza inicial completada: ${totalEliminados} elementos duplicados eliminados`);
+        }
+        
+        // Volcar los datos de historialSolicitudes a solicitudesPendientes
+        setMaintenanceMessage("Moviendo solicitudes históricas a pendientes...");
+        setMaintenanceProgress(60);
+        
+        try {
+          const resultadoVolcado = await volcarHistorialASolicitudesPendientes();
+          if (resultadoVolcado.error) {
+            console.error("Error en el volcado de historial:", resultadoVolcado.error);
+          } else if (resultadoVolcado.volcados > 0) {
+            console.log(`Volcado inicial: ${resultadoVolcado.volcados} solicitudes recuperadas del historial`);
+            setMaintenanceMessage(`Recuperadas ${resultadoVolcado.volcados} solicitudes del historial`);
+          } else {
+            console.log("No hubo solicitudes para recuperar del historial");
+          }
+        } catch (errorVolcado) {
+          console.error("Error durante el volcado de historial:", errorVolcado);
+        }
+        
+        setMaintenanceMessage("Procesando solicitudes pendientes...");
         setMaintenanceProgress(70);
         
-        // Ejecutar verificación inicial completa
-        await verificarYCorregirAsignaciones();
+        // Procesar inmediatamente todas las solicitudes pendientes
+        try {
+          console.log("Procesando todas las solicitudes pendientes al inicio...");
+          const resultadoProceso = await procesarTodasLasSolicitudes(true);
+          
+          if (resultadoProceso && resultadoProceso.success) {
+            console.log(`Procesamiento inicial completado: ${resultadoProceso.procesadas} solicitudes procesadas`);
+            setMaintenanceMessage(`Se procesaron ${resultadoProceso.procesadas} solicitudes pendientes`);
+          } else {
+            console.log("No se procesaron solicitudes o hubo un error:", resultadoProceso);
+            setMaintenanceMessage("No había solicitudes pendientes para procesar");
+          }
+        } catch (errorProceso) {
+          console.error("Error al procesar solicitudes iniciales:", errorProceso);
+          setMaintenanceMessage(`Error al procesar solicitudes: ${errorProceso.message}`);
+        }
+        
+        setMaintenanceProgress(100);
+        setMaintenanceMessage("¡Sistema iniciado correctamente!");
+        
+        // Desactivar modo mantenimiento después de un breve retraso
+        setTimeout(() => {
+          setIsVerificationMaintenance(false);
+          showNotification("Sistema iniciado correctamente. La verificación diaria está programada para las 2:00 AM.", "success");
+        }, 2000);
         
         cargaCompletadaRef.current = true;
-        
       } catch (error) {
-        console.error("Error al inicializar app:", error);
-        showNotification(`Error al inicializar: ${error.message}`, 'error');
-        setMaintenanceMessage(`Error al inicializar: ${error.message}`);
+        console.error("Error durante la inicialización:", error);
+        setMaintenanceMessage(`Error: ${error.message}`);
+        
+        // Intentar desactivar modo mantenimiento después de un error
+        setTimeout(() => {
+          setIsVerificationMaintenance(false);
+          showNotification("Error durante la inicialización: " + error.message, "error");
+        }, 2000);
       } finally {
         cargandoRef.current = false;
-        // Mantener el modo mantenimiento activo hasta que verificarYCorregirAsignaciones lo desactive
       }
     };
     
     inicializarApp();
     
-    // Limpiar listeners al desmontar
     return () => {
-      if (unsubscribe) unsubscribe();
+      if (unsubscribe) {
+        unsubscribe();
+      }
     };
   }, []);
 
@@ -969,137 +1044,197 @@ function App() {
         };
       }
       
-      // Obtener la lista actualizada de solicitudes y ordenarla por número de orden (menor primero)
+      // Ordenar solicitudes SIEMPRE por número de orden (menor primero)
       const solicitudesOrdenadas = [...solicitudes].sort((a, b) => {
-        // Primero ordenar por timestamp (las más antiguas primero)
-        if (a.timestamp !== b.timestamp) {
-          return a.timestamp - b.timestamp;
-        }
-        // Si tienen el mismo timestamp, ordenar por número de orden
-        return a.orden - b.orden;
+        return a.orden - b.orden; // Ordenar por número de orden ascendente (prioridad absoluta)
       });
       
-      // SOLO PROCESAR LA PRIMERA SOLICITUD DE LA COLA
-      // Esto garantiza que incluso con múltiples usuarios, las solicitudes se procesan una a una
-      if (solicitudesOrdenadas.length > 0) {
-        const primeraSolicitud = solicitudesOrdenadas[0];
+      // OPTIMIZACIÓN: Aumentar significativamente el número de solicitudes por lote
+      const totalAProcesar = Math.min(
+        solicitudesOrdenadas.length,
+        solicitudesOrdenadas.length > 1000 ? 100 : 
+        solicitudesOrdenadas.length > 500 ? 50 : 
+        solicitudesOrdenadas.length > 200 ? 30 : 
+        solicitudesOrdenadas.length > 100 ? 20 : 10
+      );
+      
+      if (!silencioso) {
+        setProcessingMessage(`Procesando lote de ${totalAProcesar} solicitudes, comenzando con orden #${solicitudesOrdenadas[0].orden}...`);
+      }
+      
+      // OPTIMIZACIÓN: Dividir el procesamiento en lotes para evitar bloqueos
+      let procesadas = 0;
+      let errores = 0;
+      
+      // Crear un mapa de asignaciones existentes para consultas rápidas
+      const asignacionesMap = new Map();
+      assignments.forEach(a => {
+        if (a.order) {
+          asignacionesMap.set(a.order, a);
+        }
+      });
+      
+      // Procesar solicitudes en lotes más pequeños para mejor rendimiento
+      const tamañoSubLote = 5; // Reducir a 5 para evitar sobrecarga de transacciones
+      
+      for (let i = 0; i < totalAProcesar; i += tamañoSubLote) {
+        const subLote = solicitudesOrdenadas.slice(i, i + tamañoSubLote);
         
+        // Mostrar progreso
         if (!silencioso) {
-          setProcessingMessage(`Procesando solicitud #${primeraSolicitud.orden} (enviada a las ${new Date(primeraSolicitud.timestamp).toLocaleTimeString()})...`);
+          setProcessingMessage(`Procesando solicitudes ${i+1}-${Math.min(i+tamañoSubLote, totalAProcesar)} de ${totalAProcesar}...`);
         }
         
-        try {
-          // Verificar dentro de una transacción para asegurar consistencia
-          await runTransaction(db, async (transaction) => {
-            // Obtener la solicitud directamente de la base de datos (para garantizar que esté actualizada)
-            const solicitudRef = doc(db, "solicitudesPendientes", primeraSolicitud.docId);
-            const solicitudDoc = await transaction.get(solicitudRef);
-            
-            // Verificar si todavía existe
-            if (!solicitudDoc.exists()) {
-              return; // La solicitud ya no existe, salir de la transacción
+        // Procesar este sublote
+        const promesas = subLote.map(async (solicitud) => {
+          try {
+            // Verificación rápida usando el mapa en lugar de consulta
+            if (asignacionesMap.has(solicitud.orden)) {
+              // Ya existe asignación, eliminar solicitud
+              try {
+                await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
+              } catch (err) {
+                console.error(`Error al eliminar solicitud duplicada ${solicitud.orden}:`, err);
+              }
+              return { success: true, eliminada: true };
             }
             
-            // Verificar si ya existe una asignación para este orden
-            const asignacionesRef = collection(db, "asignaciones");
-            const asignacionesQuery = query(asignacionesRef);
-            const asignacionesDocs = await transaction.get(asignacionesQuery);
+            // Verificar en la base de datos (por si acaso, para confirmar)
+            let solicitudValida = true;
+            await runTransaction(db, async (transaction) => {
+              try {
+                // Verificar si la solicitud todavía existe
+                const solicitudRef = doc(db, "solicitudesPendientes", solicitud.docId);
+                const solicitudDoc = await transaction.get(solicitudRef);
+                
+                if (!solicitudDoc.exists()) {
+                  solicitudValida = false;
+                  return;
+                }
+                
+                // Verificar si ya existe asignación para este orden - consulta rápida
+                const existeAsignacion = asignacionesMap.has(solicitud.orden);
+                
+                if (existeAsignacion) {
+                  // Eliminar la solicitud pendiente si ya tiene asignación
+                  transaction.delete(solicitudRef);
+                  solicitudValida = false;
+                }
+              } catch (error) {
+                console.error(`Error verificando solicitud ${solicitud.orden}:`, error);
+                solicitudValida = false;
+              }
+            });
             
-            const yaExisteAsignacion = asignacionesDocs.docs.some(doc => 
-              doc.data().order === primeraSolicitud.orden
-            );
-            
-            if (yaExisteAsignacion) {
-              // Ya existe asignación, eliminar la solicitud
-              transaction.delete(solicitudRef);
-              return;
+            // Si la solicitud ya no es válida, continuar con la siguiente
+            if (!solicitudValida) {
+              return { success: true, eliminada: true };
             }
             
-            // Si no hay asignación y la solicitud existe, se procesará después de la transacción
-          });
-          
-          // Verificar nuevamente después de la transacción
-          const solicitudActualizada = solicitudes.find(s => s.docId === primeraSolicitud.docId);
-          if (!solicitudActualizada) {
-            setLoadingProcess(false);
-            setSecondsUntilNextUpdate(5); // Verificar rápidamente la siguiente en cola
-            return { success: true, message: "Solicitud ya no existe o ya fue procesada" };
-          }
-          
-          // Procesar esta única solicitud
-          const resultado = await procesarSolicitud(
-            primeraSolicitud, 
-            availablePlazas, 
-            assignments, 
-            db, 
-            solicitudesOrdenadas
-          );
-          
-          if (resultado.success) {
-            // La solicitud se procesó exitosamente
-          } else {
-            // Verificar si el mensaje indica que la plaza está reservada para un orden menor
-            if (resultado.message && (resultado.message.includes("plaza reservada para orden menor") || 
-                                   resultado.message.includes("Plazas reservadas para órdenes menores"))) {
-              if (!silencioso) {
-                showNotification(resultado.message, 'warning');
+            // Procesar la solicitud si todavía es válida
+            let resultado;
+            try {
+              resultado = await procesarSolicitud(
+                solicitud, 
+                availablePlazas, 
+                assignments, 
+                db, 
+                solicitudesOrdenadas
+              );
+            } catch (err) {
+              console.error(`Error al procesar solicitud ${solicitud.orden}:`, err);
+              return { success: false, error: err.message };
+            }
+            
+            // Verificar que resultado no sea undefined antes de acceder a sus propiedades
+            if (!resultado) {
+              console.error(`Resultado indefinido para solicitud ${solicitud.orden}`);
+              return { success: false, error: 'Resultado indefinido' };
+            }
+            
+            if (resultado.success) {
+              // Actualizar el mapa de asignaciones
+              if (resultado.asignacion) {
+                asignacionesMap.set(solicitud.orden, resultado.asignacion);
+              }
+              return { success: true, procesada: true };
+            } else {
+              // Verificar si el mensaje indica que la plaza está reservada para un orden menor
+              if (resultado.message && (resultado.message.includes("plaza reservada para orden menor") || 
+                                      resultado.message.includes("Plazas reservadas para órdenes menores"))) {
+                
+                // Incrementar intentos fallidos
+                try {
+                  await runTransaction(db, async (transaction) => {
+                    try {
+                      const solicitudRef = doc(db, "solicitudesPendientes", solicitud.docId);
+                      const solicitudDoc = await transaction.get(solicitudRef);
+                      
+                      if (solicitudDoc.exists()) {
+                        const datos = solicitudDoc.data();
+                        transaction.update(solicitudRef, {
+                          intentosFallidos: (datos.intentosFallidos || 0) + 1
+                        });
+                      }
+                    } catch (error) {
+                      console.error(`Error al incrementar intentos fallidos para ${solicitud.orden}:`, error);
+                    }
+                  });
+                } catch (err) {
+                  console.error(`Error en transacción para intentos fallidos ${solicitud.orden}:`, err);
+                }
+              } else if (solicitud.intentosFallidos >= 3) {
+                // Mover al final de la cola después de 3 intentos
+                try {
+                  await runTransaction(db, async (transaction) => {
+                    try {
+                      const solicitudRef = doc(db, "solicitudesPendientes", solicitud.docId);
+                      const solicitudDoc = await transaction.get(solicitudRef);
+                      
+                      if (solicitudDoc.exists()) {
+                        transaction.update(solicitudRef, {
+                          timestamp: Date.now(),
+                          intentosFallidos: 0
+                        });
+                      }
+                    } catch (error) {
+                      console.error(`Error al mover solicitud ${solicitud.orden} al final:`, error);
+                    }
+                  });
+                } catch (err) {
+                  console.error(`Error en transacción para mover solicitud ${solicitud.orden}:`, err);
+                }
               }
               
-              // Incrementar intentos fallidos para que eventualmente se mueva al final de la cola
-              try {
-                await runTransaction(db, async (transaction) => {
-                  const solicitudRef = doc(db, "solicitudesPendientes", primeraSolicitud.docId);
-                  const solicitudDoc = await transaction.get(solicitudRef);
-                  
-                  if (solicitudDoc.exists()) {
-                    const datos = solicitudDoc.data();
-                    transaction.update(solicitudRef, {
-                      intentosFallidos: (datos.intentosFallidos || 0) + 1
-                    });
-                  }
-                });
-              } catch (error) {
-                console.error(`Error al incrementar intentos fallidos para ${primeraSolicitud.orden}:`, error);
-              }
-            } else if (primeraSolicitud.intentosFallidos >= 3) {
-              // Si después de 3 intentos fallidos no se puede procesar, moverla al final de la cola
-              try {
-                // Actualizar el timestamp para moverla al final de la cola dentro de una transacción
-                await runTransaction(db, async (transaction) => {
-                  const solicitudRef = doc(db, "solicitudesPendientes", primeraSolicitud.docId);
-                  const solicitudDoc = await transaction.get(solicitudRef);
-                  
-                  if (solicitudDoc.exists()) {
-                    transaction.update(solicitudRef, {
-                      timestamp: Date.now(),
-                      intentosFallidos: 0 // Reiniciar contador de intentos
-                    });
-                  }
-                });
-              } catch (error) {
-                console.error(`Error al mover solicitud ${primeraSolicitud.orden} al final de la cola:`, error);
-              }
-            } else {
-              // Incrementar contador de intentos fallidos dentro de una transacción para otros casos
-              try {
-                await runTransaction(db, async (transaction) => {
-                  const solicitudRef = doc(db, "solicitudesPendientes", primeraSolicitud.docId);
-                  const solicitudDoc = await transaction.get(solicitudRef);
-                  
-                  if (solicitudDoc.exists()) {
-                    const datos = solicitudDoc.data();
-                    transaction.update(solicitudRef, {
-                      intentosFallidos: (datos.intentosFallidos || 0) + 1
-                    });
-                  }
-                });
-              } catch (error) {
-                console.error(`Error al incrementar intentos fallidos para ${primeraSolicitud.orden}:`, error);
-              }
+              return { success: false, error: resultado.message };
             }
+          } catch (error) {
+            console.error(`Error al procesar solicitud ${solicitud.orden}:`, error);
+            return { success: false, error: error.message };
           }
+        });
+        
+        // Usar try/catch para cada lote para que los errores no paren todo el proceso
+        try {
+          // Esperar a que todas las promesas del sublote se completen
+          const resultados = await Promise.all(promesas);
+          
+          // Contar resultados
+          resultados.forEach(resultado => {
+            if (resultado && resultado.success && resultado.procesada) {
+              procesadas++;
+            } else if (resultado && !resultado.success) {
+              errores++;
+            }
+          });
         } catch (error) {
-          console.error(`Error al procesar solicitud ${primeraSolicitud.orden} de la cola:`, error);
+          console.error("Error procesando lote de solicitudes:", error);
+          errores += subLote.length; // Contar todo el lote como error
+        }
+        
+        // Breve pausa entre lotes para evitar sobrecarga
+        if (i + tamañoSubLote < totalAProcesar) {
+          await new Promise(resolve => setTimeout(resolve, 250));
         }
       }
       
@@ -1110,17 +1245,24 @@ function App() {
       const ahora = new Date();
       setLastProcessed(ahora);
       
-      // Si quedan solicitudes pendientes, reducir el tiempo para el siguiente procesamiento
-      const nuevoTiempo = solicitudes.length > 0 ? 5 : 45;
+      // OPTIMIZACIÓN: Ajustar tiempo para siguiente actualización - mucho más rápido
+      // Mientras más solicitudes pendientes, menos tiempo de espera
+      const nuevoTiempo = solicitudes.length > 1000 ? 1 : 
+                         solicitudes.length > 500 ? 1 : 
+                         solicitudes.length > 200 ? 2 : 
+                         solicitudes.length > 100 ? 3 :
+                         solicitudes.length > 50 ? 5 : 10;
+      
       setSecondsUntilNextUpdate(nuevoTiempo);
       
       if (!silencioso) {
-        setProcessingMessage("Procesamiento de cola completado");
+        setProcessingMessage(`Procesamiento completado: ${procesadas} solicitudes procesadas (${errores} errores)`);
       }
       
       return {
         success: true,
-        procesadas: 1,
+        procesadas: procesadas,
+        errores: errores,
         pendientesRestantes: solicitudes.length
       };
     } catch (error) {
@@ -1484,30 +1626,267 @@ function App() {
     }
   };
 
-  // Función para verificar y corregir asignaciones existentes (reset completo a las 00:00)
-  const verificarYCorregirAsignaciones = useCallback(async () => {
+  // Modificado - Mover la función eliminarSolicitudesDuplicadas antes de verificarYCorregirAsignaciones
+  // para solucionar el error de referencia circular
+  const eliminarSolicitudesDuplicadas = async () => {
+    try {
+      console.log("Ejecutando eliminación de solicitudes y asignaciones duplicadas...");
+      
+      // PARTE 1: Eliminar solicitudes pendientes duplicadas
+      // Obtener todas las solicitudes pendientes
+      const solicitudesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
+      
+      // Crear un mapa para detectar duplicados por número de orden
+      const solicitudesPorOrden = {};
+      const solicitudesTotales = solicitudesSnapshot.docs.length;
+      
+      // Agrupar solicitudes por orden
+      solicitudesSnapshot.docs.forEach(doc => {
+        const solicitud = { ...doc.data(), docId: doc.id };
+        const orden = solicitud.orden;
+        
+        if (!orden) return;
+        
+        if (!solicitudesPorOrden[orden]) {
+          solicitudesPorOrden[orden] = [solicitud];
+        } else {
+          solicitudesPorOrden[orden].push(solicitud);
+        }
+      });
+      
+      // Contar solicitudes duplicadas
+      let totalDuplicadosSolicitudes = 0;
+      Object.keys(solicitudesPorOrden).forEach(orden => {
+        const solicitudes = solicitudesPorOrden[orden];
+        if (solicitudes.length > 1) {
+          totalDuplicadosSolicitudes += (solicitudes.length - 1);
+        }
+      });
+      
+      // PARTE 2: Eliminar asignaciones duplicadas
+      // Obtener todas las asignaciones
+      const asignacionesSnapshot = await getDocs(collection(db, "asignaciones"));
+      
+      // Crear un mapa para detectar duplicados por número de orden
+      const asignacionesPorOrden = {};
+      const asignacionesTotales = asignacionesSnapshot.docs.length;
+      
+      // Agrupar asignaciones por orden
+      asignacionesSnapshot.docs.forEach(doc => {
+        const asignacion = { ...doc.data(), docId: doc.id };
+        const orden = asignacion.order;
+        
+        if (!orden) return;
+        
+        if (!asignacionesPorOrden[orden]) {
+          asignacionesPorOrden[orden] = [asignacion];
+        } else {
+          asignacionesPorOrden[orden].push(asignacion);
+        }
+      });
+      
+      // Contar asignaciones duplicadas
+      let totalDuplicadosAsignaciones = 0;
+      Object.keys(asignacionesPorOrden).forEach(orden => {
+        const asignaciones = asignacionesPorOrden[orden];
+        if (asignaciones.length > 1) {
+          totalDuplicadosAsignaciones += (asignaciones.length - 1);
+        }
+      });
+      
+      // PARTE 3: Verificar si hay duplicados en historial
+      const historialSnapshot = await getDocs(collection(db, "historialSolicitudes"));
+      const historialPorOrden = {};
+      
+      // Agrupar historial por orden
+      historialSnapshot.docs.forEach(doc => {
+        const historial = { ...doc.data(), docId: doc.id };
+        const orden = historial.orden;
+        
+        if (!orden) return;
+        
+        if (!historialPorOrden[orden]) {
+          historialPorOrden[orden] = [historial];
+        } else {
+          historialPorOrden[orden].push(historial);
+        }
+      });
+      
+      // Contar duplicados en historial
+      let totalDuplicadosHistorial = 0;
+      Object.keys(historialPorOrden).forEach(orden => {
+        const historiales = historialPorOrden[orden];
+        if (historiales.length > 1) {
+          totalDuplicadosHistorial += (historiales.length - 1);
+        }
+      });
+      
+      // Si no hay duplicados, terminar
+      if (totalDuplicadosSolicitudes === 0 && totalDuplicadosAsignaciones === 0 && totalDuplicadosHistorial === 0) {
+        console.log("No se encontraron elementos duplicados");
+        return { 
+          eliminadosSolicitudes: 0, 
+          eliminadosAsignaciones: 0,
+          eliminadosHistorial: 0,
+          totalSolicitudes: solicitudesTotales,
+          totalAsignaciones: asignacionesTotales
+        };
+      }
+      
+      console.log(`Se encontraron ${totalDuplicadosSolicitudes} solicitudes duplicadas, ${totalDuplicadosAsignaciones} asignaciones duplicadas y ${totalDuplicadosHistorial} entradas duplicadas en historial`);
+      
+      const batch = writeBatch(db);
+      let eliminadosSolicitudes = 0;
+      let eliminadosAsignaciones = 0;
+      let eliminadosHistorial = 0;
+      
+      // Eliminar solicitudes duplicadas (mantener solo la más reciente)
+      for (const orden in solicitudesPorOrden) {
+        const solicitudes = solicitudesPorOrden[orden];
+        
+        if (solicitudes.length > 1) {
+          // Ordenar por timestamp descendente (más reciente primero)
+          solicitudes.sort((a, b) => {
+            const timestampA = a.timestamp || 0;
+            const timestampB = b.timestamp || 0;
+            return timestampB - timestampA;
+          });
+          
+          // Mantener la solicitud más reciente y eliminar el resto
+          const solicitudesAEliminar = solicitudes.slice(1);
+          
+          for (const solicitud of solicitudesAEliminar) {
+            batch.delete(doc(db, "solicitudesPendientes", solicitud.docId));
+            eliminadosSolicitudes++;
+          }
+        }
+      }
+      
+      // Eliminar asignaciones duplicadas (mantener solo la más reciente)
+      for (const orden in asignacionesPorOrden) {
+        const asignaciones = asignacionesPorOrden[orden];
+        
+        if (asignaciones.length > 1) {
+          // Ordenar por timestamp descendente (más reciente primero)
+          asignaciones.sort((a, b) => {
+            const timestampA = a.timestamp || 0;
+            const timestampB = b.timestamp || 0;
+            return timestampB - timestampA;
+          });
+          
+          // Mantener la asignación más reciente y eliminar el resto
+          const asignacionesAEliminar = asignaciones.slice(1);
+          
+          for (const asignacion of asignacionesAEliminar) {
+            batch.delete(doc(db, "asignaciones", asignacion.docId));
+            eliminadosAsignaciones++;
+          }
+        }
+      }
+      
+      // Eliminar historial duplicado (mantener solo el más reciente)
+      for (const orden in historialPorOrden) {
+        const historiales = historialPorOrden[orden];
+        
+        if (historiales.length > 1) {
+          // Ordenar por timestamp descendente (más reciente primero)
+          historiales.sort((a, b) => {
+            const timestampA = a.timestamp || 0;
+            const timestampB = b.timestamp || 0;
+            return timestampB - timestampA;
+          });
+          
+          // Mantener el historial más reciente y eliminar el resto
+          const historialesAEliminar = historiales.slice(1);
+          
+          for (const historial of historialesAEliminar) {
+            batch.delete(doc(db, "historialSolicitudes", historial.docId));
+            eliminadosHistorial++;
+          }
+        }
+      }
+      
+      // Ejecutar todas las eliminaciones como batch
+      if (eliminadosSolicitudes > 0 || eliminadosAsignaciones > 0 || eliminadosHistorial > 0) {
+        await batch.commit();
+      }
+      
+      console.log(`Se eliminaron ${eliminadosSolicitudes} solicitudes duplicadas, ${eliminadosAsignaciones} asignaciones duplicadas y ${eliminadosHistorial} entradas duplicadas en historial`);
+      return { 
+        eliminadosSolicitudes, 
+        eliminadosAsignaciones,
+        eliminadosHistorial,
+        totalSolicitudes: solicitudesTotales,
+        totalAsignaciones: asignacionesTotales
+      };
+    } catch (error) {
+      console.error("Error al eliminar duplicados:", error);
+      return { 
+        error: error.message, 
+        eliminadosSolicitudes: 0,
+        eliminadosAsignaciones: 0,
+        eliminadosHistorial: 0
+      };
+    }
+  };
+
+  // Función para verificar y corregir asignaciones existentes (no reset completo)
+  const verificarYCorregirAsignaciones = useCallback(async (volcadoInicial = false) => {
     if (isProcessing) return;
     
     try {
       // Activar modo mantenimiento durante verificación
       setIsVerificationMaintenance(true);
-      setMaintenanceMessage("Iniciando verificación y reset de asignaciones...");
+      setMaintenanceMessage("Iniciando verificación de asignaciones...");
       setMaintenanceProgress(10);
       setIsProcessing(true);
       
+      // Opcional: realizar volcado inicial de historial a solicitudes pendientes
+      if (volcadoInicial) {
+        setMaintenanceMessage("Volcando historial a solicitudes pendientes...");
+        setMaintenanceProgress(15);
+        const resultadoVolcado = await volcarHistorialASolicitudesPendientes();
+        
+        if (resultadoVolcado.error) {
+          console.error("Error durante el volcado inicial:", resultadoVolcado.error);
+        } else if (resultadoVolcado.volcados > 0) {
+          console.log(`Volcado inicial completado: ${resultadoVolcado.volcados} solicitudes creadas desde historial`);
+          setMaintenanceMessage(`Volcadas ${resultadoVolcado.volcados} solicitudes desde historial`);
+        }
+      }
+      
       // Eliminar solicitudes duplicadas
-      setMaintenanceMessage("Eliminando solicitudes duplicadas...");
+      setMaintenanceMessage("Eliminando elementos duplicados...");
       setMaintenanceProgress(20);
-      await eliminarSolicitudesDuplicadas();
+      const resultadoLimpieza = await eliminarSolicitudesDuplicadas();
+      
+      // Mostrar información detallada del proceso de limpieza
+      if (resultadoLimpieza.error) {
+        setMaintenanceMessage(`Error al eliminar duplicados: ${resultadoLimpieza.error}`);
+        console.error("Error durante la limpieza de duplicados:", resultadoLimpieza.error);
+      } else {
+        const totalEliminados = resultadoLimpieza.eliminadosSolicitudes + 
+                               resultadoLimpieza.eliminadosAsignaciones + 
+                               resultadoLimpieza.eliminadosHistorial;
+        
+        if (totalEliminados > 0) {
+          console.log(`Limpieza completada: ${resultadoLimpieza.eliminadosSolicitudes} solicitudes, ${resultadoLimpieza.eliminadosAsignaciones} asignaciones y ${resultadoLimpieza.eliminadosHistorial} entradas en historial eliminadas`);
+          setMaintenanceMessage(`Eliminados ${totalEliminados} elementos duplicados`);
+        } else {
+          console.log("No se encontraron elementos duplicados");
+          setMaintenanceMessage("No se encontraron elementos duplicados");
+        }
+      }
       
       // Obtener todas las asignaciones actuales de manera optimizada
       setMaintenanceMessage("Obteniendo asignaciones actuales...");
-      setMaintenanceProgress(30);
+      setMaintenanceProgress(40);
       
       // Obtener datos de manera paralela para mejorar velocidad
-      const [asignacionesSnapshot, centrosSnapshot] = await Promise.all([
+      const [asignacionesSnapshot, centrosSnapshot, solicitudesPendientesSnapshot] = await Promise.all([
         getDocs(query(collection(db, "asignaciones"), orderBy("timestamp", "asc"))),
-        getDocs(collection(db, "centros"))
+        getDocs(collection(db, "centros")),
+        getDocs(collection(db, "solicitudesPendientes"))
       ]);
       
       const asignacionesActuales = asignacionesSnapshot.docs.map(doc => ({
@@ -1520,175 +1899,123 @@ function App() {
         docId: doc.id
       }));
       
-      // Resetear contadores de asignaciones en centros usando lotes
-      setMaintenanceMessage("Reseteando contadores de centros...");
-      setMaintenanceProgress(40);
+      const todasSolicitudesPendientes = solicitudesPendientesSnapshot.docs.map(doc => ({
+        ...doc.data(),
+        docId: doc.id
+      }));
       
-      // Procesar en lotes para mejorar rendimiento
+      // Resetear contadores de asignaciones en centros y recalcular basado en asignaciones existentes
+      setMaintenanceMessage("Verificando contadores de centros...");
+      setMaintenanceProgress(60);
+      
+      // Crear un mapa de conteo por centro
+      const contadoresPorCentro = {};
+      
+      // Contar asignaciones actuales
+      for (const asignacion of asignacionesActuales) {
+        const centroId = asignacion.id;
+        if (centroId) {
+          if (!contadoresPorCentro[centroId]) {
+            contadoresPorCentro[centroId] = 1;
+          } else {
+            contadoresPorCentro[centroId]++;
+          }
+        }
+      }
+      
+      // Procesar actualizaciones en lotes para mejorar rendimiento
       const BATCH_SIZE = 100;
+      setMaintenanceMessage("Actualizando contadores de centros...");
+      setMaintenanceProgress(70);
       
       for (let i = 0; i < todosCentros.length; i += BATCH_SIZE) {
         const batch = writeBatch(db);
         const centroBatch = todosCentros.slice(i, i + BATCH_SIZE);
         
         for (const centro of centroBatch) {
-          const centroRef = doc(db, "centros", centro.docId);
-          batch.update(centroRef, { asignadas: 0 });
+          if (centro.docId) {
+            const centroRef = doc(db, "centros", centro.docId);
+            // Establecer el contador basado en la cantidad real de asignaciones
+            batch.update(centroRef, { 
+              asignadas: contadoresPorCentro[centro.id] || 0 
+            });
+          }
         }
         
         await batch.commit();
-        setMaintenanceProgress(40 + Math.floor((i / todosCentros.length) * 10));
+        setMaintenanceProgress(70 + Math.floor((i / todosCentros.length) * 10));
       }
       
-      console.log(`Realizando reset completo: ${asignacionesActuales.length} asignaciones se moverán a solicitudes pendientes`);
-      setMaintenanceMessage(`Procesando ${asignacionesActuales.length} asignaciones...`);
-      setMaintenanceProgress(50);
+      // Verificar si hay solicitudes pendientes con números de orden ya asignados
+      setMaintenanceMessage("Procesando solicitudes pendientes duplicadas...");
+      setMaintenanceProgress(80);
       
-      // Mover todas las asignaciones a solicitudes pendientes en lotes
-      const pendientesData = [];
-      const historialData = [];
-      const docIdsToDelete = [];
-      
-      // Preparar datos para lotes 
-      for (let i = 0; i < asignacionesActuales.length; i++) {
-        const asignacion = asignacionesActuales[i];
-        
-        // Comprobar que tenemos el orden y centrosIds válidos
-        if (asignacion.order && asignacion.id) {
-          // Datos para solicitud pendiente - filtramos valores undefined
-          const pendienteObj = {
-            orden: asignacion.order,
-            centrosIds: [asignacion.id],
-            timestamp: Date.now(),
-            intentosFallidos: 0
-          };
-          
-          // Verificar que no hay valores undefined
-          Object.keys(pendienteObj).forEach(key => {
-            if (pendienteObj[key] === undefined) {
-              console.warn(`Valor undefined encontrado en solicitud pendiente para clave ${key}, asignación ${asignacion.docId}`);
-              pendienteObj[key] = null; // Reemplazar undefined con null
-            }
-          });
-          
-          pendientesData.push(pendienteObj);
-          
-          // Datos para historial - filtramos valores undefined
-          const historialObj = {
-            orden: asignacion.order,
-            centrosIds: [asignacion.id],
-            estado: "REINICIADA_POR_SISTEMA",
-            centroAsignado: asignacion.centro || "Sin información",
-            centroId: asignacion.id,
-            fechaHistorico: new Date().toISOString(),
-            timestamp: asignacion.timestamp || Date.now()
-          };
-          
-          // Verificar que no hay valores undefined
-          Object.keys(historialObj).forEach(key => {
-            if (historialObj[key] === undefined) {
-              console.warn(`Valor undefined encontrado en historial para clave ${key}, asignación ${asignacion.docId}`);
-              historialObj[key] = null; // Reemplazar undefined con null
-            }
-          });
-          
-          historialData.push(historialObj);
-          
-          // ID de documento para eliminar
-          docIdsToDelete.push(asignacion.docId);
-        } else {
-          console.warn(`Asignación ${asignacion.docId} tiene datos incompletos: orden=${asignacion.order}, id=${asignacion.id}`);
-        }
-        
-        // Actualizar progreso
-        if (i % 10 === 0) {
-          setMaintenanceProgress(50 + Math.floor((i / asignacionesActuales.length) * 20));
-        }
-      }
-      
-      // Buscar órdenes que ya existen en solicitudes pendientes
-      setMaintenanceMessage("Verificando solicitudes existentes...");
-      setMaintenanceProgress(70);
-      
-      const solicitudesPendientesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
-      const ordenesExistentes = new Set();
-      
-      solicitudesPendientesSnapshot.docs.forEach(doc => {
-        const data = doc.data();
-        if (data && data.orden) {
-          ordenesExistentes.add(data.orden);
+      // Crear un conjunto de órdenes ya asignados para búsqueda rápida
+      const ordenesAsignados = new Set();
+      asignacionesActuales.forEach(asignacion => {
+        if (asignacion.order) {
+          ordenesAsignados.add(asignacion.order);
         }
       });
       
-      // Filtrar solicitudes que ya existen
-      const pendientesDataFiltrado = pendientesData.filter(item => !ordenesExistentes.has(item.orden));
+      // Eliminar solicitudes pendientes que ya tienen asignación
+      const solicitudesDuplicadas = todasSolicitudesPendientes.filter(
+        solicitud => ordenesAsignados.has(solicitud.orden)
+      );
       
-      // Procesar operaciones en lotes
-      setMaintenanceMessage("Guardando nuevas solicitudes pendientes...");
-      setMaintenanceProgress(80);
-      
-      // Agregar solicitudes pendientes en lotes
-      for (let i = 0; i < pendientesDataFiltrado.length; i += BATCH_SIZE) {
-        const batch = writeBatch(db);
-        const pendientesBatch = pendientesDataFiltrado.slice(i, i + BATCH_SIZE);
+      if (solicitudesDuplicadas.length > 0) {
+        console.log(`Eliminando ${solicitudesDuplicadas.length} solicitudes pendientes duplicadas`);
         
-        for (const pendiente of pendientesBatch) {
-          // Verificar que todos los campos tengan valores válidos para Firebase
-          const validPendiente = {};
-          Object.entries(pendiente).forEach(([key, value]) => {
-            if (value !== undefined) {
-              validPendiente[key] = value;
-            } else {
-              console.warn(`Campo ${key} undefined encontrado, ignorando`);
-            }
-          });
+        for (let i = 0; i < solicitudesDuplicadas.length; i += BATCH_SIZE) {
+          const batch = writeBatch(db);
+          const solicitudesBatch = solicitudesDuplicadas.slice(i, i + BATCH_SIZE);
           
-          const newDocRef = doc(collection(db, "solicitudesPendientes"));
-          batch.set(newDocRef, validPendiente);
-        }
-        
-        await batch.commit();
-      }
-      
-      // Agregar datos al historial en lotes
-      setMaintenanceMessage("Guardando historial...");
-      setMaintenanceProgress(85);
-      
-      for (let i = 0; i < historialData.length; i += BATCH_SIZE) {
-        const batch = writeBatch(db);
-        const historialBatch = historialData.slice(i, i + BATCH_SIZE);
-        
-        for (const historial of historialBatch) {
-          // Verificar que todos los campos tengan valores válidos para Firebase
-          const validHistorial = {};
-          Object.entries(historial).forEach(([key, value]) => {
-            if (value !== undefined) {
-              validHistorial[key] = value;
-            } else {
-              console.warn(`Campo ${key} undefined encontrado en historial, ignorando`);
+          for (const solicitud of solicitudesBatch) {
+            const solicitudRef = doc(db, "solicitudesPendientes", solicitud.docId);
+            batch.delete(solicitudRef);
+            
+            // Mover a historial
+            const historialRef = doc(collection(db, "historialSolicitudes"));
+            const asignacionCorrespondiente = [...asignacionesActuales].find(a => a.order === solicitud.orden);
+            
+            if (asignacionCorrespondiente) {
+              const historialData = {
+                ...solicitud,
+                estado: "ASIGNADA",
+                centroAsignado: asignacionCorrespondiente.centro || "Sin información",
+                centroId: asignacionCorrespondiente.id || "desconocido", // Evitar valores undefined
+                fechaHistorico: new Date().toISOString(),
+                timestamp: Date.now()
+              };
+              
+              // Eliminar docId para no duplicarlo
+              delete historialData.docId;
+              
+              // Filtrar cualquier propiedad undefined para evitar errores de Firebase
+              const historialDataFiltrado = {};
+              Object.keys(historialData).forEach(key => {
+                if (historialData[key] !== undefined) {
+                  historialDataFiltrado[key] = historialData[key];
+                } else {
+                  console.warn(`Campo ${key} con valor undefined encontrado, asignando valor por defecto`);
+                  // Asignar valores por defecto según el tipo de campo
+                  if (key === 'centroId' || key === 'centroAsignado') {
+                    historialDataFiltrado[key] = "desconocido";
+                  } else if (key === 'timestamp') {
+                    historialDataFiltrado[key] = Date.now();
+                  } else {
+                    historialDataFiltrado[key] = null; // último recurso
+                  }
+                }
+              });
+              
+              batch.set(historialRef, historialDataFiltrado);
             }
-          });
+          }
           
-          const newDocRef = doc(collection(db, "historialSolicitudes"));
-          batch.set(newDocRef, validHistorial);
+          await batch.commit();
+          setMaintenanceProgress(80 + Math.floor((i / solicitudesDuplicadas.length) * 10));
         }
-        
-        await batch.commit();
-      }
-      
-      // Eliminar asignaciones originales en lotes
-      setMaintenanceMessage("Eliminando asignaciones antiguas...");
-      setMaintenanceProgress(90);
-      
-      for (let i = 0; i < docIdsToDelete.length; i += BATCH_SIZE) {
-        const batch = writeBatch(db);
-        const idsBatch = docIdsToDelete.slice(i, i + BATCH_SIZE);
-        
-        for (const docId of idsBatch) {
-          batch.delete(doc(db, "asignaciones", docId));
-        }
-        
-        await batch.commit();
       }
       
       // Recargar los datos actualizados
@@ -1701,7 +2028,7 @@ function App() {
       
       // Mostrar mensaje de éxito que se verá después de salir del modo mantenimiento
       setTimeout(() => {
-        showNotification('Reset completo realizado: todas las asignaciones se han movido a solicitudes pendientes', 'success');
+        showNotification(`Verificación completada: ${asignacionesActuales.length} asignaciones verificadas, ${solicitudesDuplicadas.length} solicitudes duplicadas eliminadas`, 'success');
       }, 1000);
       
     } catch (error) {
@@ -1720,32 +2047,48 @@ function App() {
         setIsVerificationMaintenance(false);
       }, 2000);
     }
-  }, [isProcessing, cargarDatosDesdeFirebase]);
+  }, [isProcessing, cargarDatosDesdeFirebase, eliminarSolicitudesDuplicadas]);
 
-  // Modificar el intervalo para ejecutar la verificación a las 00:00 cada día
+  // Modificar el intervalo para ejecutar la verificación a las 2:00 AM cada día
   useEffect(() => {
+    // Evitar múltiples programaciones usando una referencia
+    if (verificacionProgramadaRef.current) {
+      console.log("Verificación ya programada, ignorando programación duplicada");
+      return;
+    }
+    
+    verificacionProgramadaRef.current = true;
+    
     const programarVerificacionDiaria = () => {
       const ahora = new Date();
-      const medianoche = new Date();
-      medianoche.setHours(0, 0, 0, 0); // Establecer a las 00:00:00
-      medianoche.setDate(medianoche.getDate() + 1); // Próxima medianoche
+      const horaVerificacion = new Date();
+      horaVerificacion.setHours(2, 0, 0, 0); // Establecer a las 02:00:00
       
-      // Calcular milisegundos hasta la próxima medianoche
-      const tiempoHastaMedianoche = medianoche.getTime() - ahora.getTime();
+      // Si ya pasaron las 2 AM, programar para mañana
+      if (ahora.getHours() >= 2) {
+        horaVerificacion.setDate(horaVerificacion.getDate() + 1);
+      }
       
-      console.log(`Programando verificación diaria para ejecutarse en ${Math.floor(tiempoHastaMedianoche / (1000 * 60 * 60))} horas y ${Math.floor((tiempoHastaMedianoche % (1000 * 60 * 60)) / (1000 * 60))} minutos`);
+      // Calcular milisegundos hasta las 2 AM
+      const tiempoHastaVerificacion = horaVerificacion.getTime() - ahora.getTime();
       
-      // Programar la verificación a medianoche
+      console.log(`Verificación diaria programada para ejecutarse en ${Math.floor(tiempoHastaVerificacion / (1000 * 60 * 60))} horas y ${Math.floor((tiempoHastaVerificacion % (1000 * 60 * 60)) / (1000 * 60))} minutos (2:00 AM)`);
+    
+      // Programar la verificación a las 2 AM
       const timeoutId = setTimeout(() => {
-        console.log('Ejecutando verificación diaria programada');
-        verificarYCorregirAsignaciones().then(() => {
-          // Reprogramar para la próxima medianoche después de completar
+        console.log('Ejecutando verificación diaria programada (2:00 AM)');
+        verificarYCorregirAsignaciones(true).then(() => { // Pasar true para volcar el historial
+          // Reprogramar para la próxima verificación después de completar
           programarVerificacionDiaria();
         });
-      }, tiempoHastaMedianoche);
+      }, tiempoHastaVerificacion);
       
       return timeoutId;
     };
+    
+    // Guardar la hora actual para evitar reprogramaciones frecuentes
+    const fechaActual = new Date();
+    console.log(`Configurando verificación diaria a las 2:00 AM. Hora actual: ${fechaActual.toLocaleTimeString()}`);
     
     // Iniciar la programación
     const timeoutId = programarVerificacionDiaria();
@@ -1753,72 +2096,9 @@ function App() {
     // Limpiar al desmontar
     return () => {
       clearTimeout(timeoutId);
+      verificacionProgramadaRef.current = false;
     };
-  }, [verificarYCorregirAsignaciones]);
-
-  // Función para eliminar solicitudes duplicadas
-  const eliminarSolicitudesDuplicadas = async () => {
-    try {
-      // Obtener todas las solicitudes pendientes
-      const solicitudesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
-      const solicitudes = solicitudesSnapshot.docs.map(doc => ({
-        ...doc.data(),
-        docId: doc.id
-      }));
-      
-      // Verificar si hay números de orden duplicados
-      const ordenesVistos = new Map();
-      const duplicadas = [];
-      
-      for (const solicitud of solicitudes) {
-        if (!ordenesVistos.has(solicitud.orden)) {
-          ordenesVistos.set(solicitud.orden, solicitud);
-        } else {
-          // Es un duplicado, elegir cuál mantener (nos quedamos con la que tenga el timestamp más reciente)
-          const solicitudExistente = ordenesVistos.get(solicitud.orden);
-          
-          if (solicitud.timestamp > solicitudExistente.timestamp) {
-            duplicadas.push(solicitudExistente);
-            ordenesVistos.set(solicitud.orden, solicitud);
-          } else {
-            duplicadas.push(solicitud);
-          }
-        }
-      }
-      
-      // Verificar también si ya hay asignaciones para estas solicitudes
-      const asignacionesSnapshot = await getDocs(collection(db, "asignaciones"));
-      const asignaciones = asignacionesSnapshot.docs.map(doc => ({
-        ...doc.data(),
-        docId: doc.id
-      }));
-      
-      // Encontrar solicitudes que ya tienen asignaciones
-      for (const solicitud of solicitudes) {
-        const tieneAsignacion = asignaciones.some(asignacion => asignacion.order === solicitud.orden);
-        
-        if (tieneAsignacion) {
-          duplicadas.push(solicitud);
-        }
-      }
-      
-      // Eliminar las solicitudes duplicadas o que ya tienen asignación
-      let eliminadas = 0;
-      for (const solicitud of duplicadas) {
-        await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
-        eliminadas++;
-      }
-      
-      if (eliminadas > 0) {
-        console.log(`Se han eliminado ${eliminadas} solicitudes duplicadas o ya asignadas`);
-      }
-      
-      return eliminadas;
-    } catch (error) {
-      console.error("Error al eliminar solicitudes duplicadas:", error);
-      return 0;
-    }
-  };
+  }, []); // Sin dependencias para ejecutar solo una vez
 
   // Restaurar el intervalo para eliminar duplicados cada minuto
   useEffect(() => {
@@ -1832,6 +2112,104 @@ function App() {
       clearInterval(limpiezaInterval);
     };
   }, [isProcessing, loadingProcess]);
+
+  // Agregar función para volcar datos de historial a solicitudes pendientes
+  const volcarHistorialASolicitudesPendientes = async () => {
+    try {
+      console.log("Volcando datos de historial a solicitudes pendientes...");
+      
+      // Obtener todos los elementos de historialSolicitudes
+      const historialSnapshot = await getDocs(collection(db, "historialSolicitudes"));
+      
+      if (historialSnapshot.empty) {
+        console.log("No hay entradas en el historial para procesar");
+        return { volcados: 0 };
+      }
+      
+      // Convertir a array para procesamiento
+      const historialData = historialSnapshot.docs.map(doc => ({
+        ...doc.data(),
+        docId: doc.id
+      }));
+      
+      console.log(`Se encontraron ${historialData.length} entradas en el historial`);
+      
+      // Obtener solicitudes pendientes actuales para evitar duplicados
+      const solicitudesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
+      const ordenesExistentes = new Set();
+      solicitudesSnapshot.docs.forEach(doc => {
+        const solicitud = doc.data();
+        if (solicitud.orden) {
+          ordenesExistentes.add(solicitud.orden);
+        }
+      });
+      
+      // Obtener asignaciones actuales para evitar duplicados
+      const asignacionesSnapshot = await getDocs(collection(db, "asignaciones"));
+      asignacionesSnapshot.docs.forEach(doc => {
+        const asignacion = doc.data();
+        if (asignacion.order) {
+          ordenesExistentes.add(asignacion.order);
+        }
+      });
+      
+      console.log(`Se encontraron ${ordenesExistentes.size} órdenes ya existentes`);
+      
+      // Filtrar entradas que no estén ya en solicitudes pendientes o asignaciones
+      const entradasAVolcar = historialData.filter(entrada => 
+        !ordenesExistentes.has(entrada.orden) && 
+        entrada.estado !== "ASIGNADA" &&
+        entrada.centrosIds && 
+        entrada.centrosIds.length > 0
+      );
+      
+      console.log(`Se volcarán ${entradasAVolcar.length} entradas del historial`);
+      
+      if (entradasAVolcar.length === 0) {
+        return { volcados: 0 };
+      }
+      
+      // Crear solicitudes pendientes en lotes
+      const BATCH_SIZE = 100;
+      let volcados = 0;
+      
+      for (let i = 0; i < entradasAVolcar.length; i += BATCH_SIZE) {
+        const batch = writeBatch(db);
+        const lote = entradasAVolcar.slice(i, i + BATCH_SIZE);
+        
+        for (const entrada of lote) {
+          // Crear nueva solicitud pendiente con los datos del historial
+          const nuevaSolicitud = {
+            orden: entrada.orden,
+            centrosIds: entrada.centrosIds,
+            timestamp: Date.now(),
+            intentosFallidos: 0
+          };
+          
+          // Verificar que no hay valores undefined
+          const solicitudValida = {};
+          Object.entries(nuevaSolicitud).forEach(([key, value]) => {
+            if (value !== undefined) {
+              solicitudValida[key] = value;
+            }
+          });
+          
+          const docRef = doc(collection(db, "solicitudesPendientes"));
+          batch.set(docRef, solicitudValida);
+          volcados++;
+        }
+        
+        await batch.commit();
+        console.log(`Procesado lote ${i / BATCH_SIZE + 1} (${lote.length} entradas)`);
+      }
+      
+      console.log(`Se volcaron ${volcados} entradas del historial a solicitudes pendientes`);
+      return { volcados };
+    } catch (error) {
+      console.error("Error al volcar datos del historial:", error);
+      return { error: error.message, volcados: 0 };
+    }
+  };
 
   return (
     <div className="App" style={styles.container}>
