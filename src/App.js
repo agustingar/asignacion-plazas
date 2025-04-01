@@ -884,9 +884,9 @@ function App() {
           await new Promise(resolve => setTimeout(resolve, 5000)); // 5 segundos
           
           // Ejecutar verificación completa con pantalla de mantenimiento
-          verificarYCorregirAsignaciones();
+          await eliminarSolicitudesDuplicadas();
           
-          console.log("Verificación inicial programada");
+          console.log("Verificación inicial completada");
         } catch (error) {
           console.error("Error en verificación inicial:", error);
         }
@@ -894,8 +894,8 @@ function App() {
       
       ejecutarVerificacionInicialDeployment();
     }
-  }, [availablePlazas, verificarYCorregirAsignaciones]);
-  
+  }, [availablePlazas]);
+
   // Añadir ref para controlar si ya se ha hecho la verificación inicial
   const cargaInicialCompletadaRef = useRef(false);
 
@@ -1730,6 +1730,26 @@ function App() {
       clearTimeout(timeoutId);
     };
   }, [verificarYCorregirAsignaciones, isProcessing, loadingProcess]);
+
+  // Agregar un efecto para ejecutar verificación inicial una vez que la función esté definida
+  useEffect(() => {
+    if (availablePlazas.length > 0 && !cargaInicialCompletadaRef.current) {
+      const programarVerificacionInicial = async () => {
+        // Marca para no volver a ejecutar
+        cargaInicialCompletadaRef.current = true;
+        
+        console.log("Programando verificación inicial después del despliegue");
+        
+        // Esperar a que todo esté cargado
+        await new Promise(resolve => setTimeout(resolve, 10000)); // 10 segundos
+        
+        // Ejecutar verificación completa con pantalla de mantenimiento
+        await verificarYCorregirAsignaciones();
+      };
+      
+      programarVerificacionInicial();
+    }
+  }, [availablePlazas, verificarYCorregirAsignaciones]);
 
   // Eliminar el intervalo anterior que ejecutaba la verificación cada 3 minutos
   // useEffect(() => {
