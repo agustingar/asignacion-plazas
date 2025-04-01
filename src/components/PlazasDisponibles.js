@@ -202,7 +202,7 @@ const PlazasDisponibles = ({
 
   return (
     <div className="plazas-container">
-      <h2>Plazas Disponibles</h2>
+
       
       {/* Formulario para solicitar plaza */}
       <div style={{ 
