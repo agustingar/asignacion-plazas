@@ -498,20 +498,25 @@ function App() {
   useEffect(() => {
     // Solo iniciar si los datos están cargados
     if (availablePlazas.length > 0) {
-      // Procesar inmediatamente al cargar
-      if (solicitudes.length > 0 && !loadingProcess) {
-        procesarTodasLasSolicitudes(true);
-      }
+      // Procesar inmediatamente al cargar por primera vez
+      const procesarInicial = async () => {
+        if (solicitudes.length > 0 && !loadingProcess) {
+          console.log("Procesando solicitudes al iniciar la aplicación...");
+          await procesarTodasLasSolicitudes(true);
+        }
+      };
+      
+      procesarInicial();
       
       // Configurar intervalo de procesamiento cada 60 segundos
-      processingTimerRef.current = setInterval(() => {
+      processingTimerRef.current = setInterval(async () => {
         if (solicitudes.length > 0 && !loadingProcess) {
           // Verificar que haya pasado al menos 45 segundos desde el último procesamiento
           // Esto evita procesamiento excesivo si el anterior tardó mucho
           const ahora = Date.now();
           if (ahora - lastProcessedTimestampRef.current >= 45000) {
-            console.log("Iniciando procesamiento automático de solicitudes...");
-            procesarTodasLasSolicitudes(true);
+            console.log(`Iniciando procesamiento automático de ${solicitudes.length} solicitudes pendientes...`);
+            await procesarTodasLasSolicitudes(true);
             // Reiniciar el contador de segundos
             setSecondsUntilNextUpdate(60);
           }
@@ -528,7 +533,7 @@ function App() {
         }
       };
     }
-  }, [availablePlazas.length, solicitudes.length]);
+  }, [availablePlazas.length]);
   
   // Configurar el contador de segundos hasta la próxima actualización
   useEffect(() => {
@@ -575,9 +580,16 @@ function App() {
         return;
       }
       
+      // Obtener los datos más recientes antes de procesar
+      await cargarDatosDesdeFirebase();
+      
+      // Obtener la lista actualizada de solicitudes
+      const solicitudesActualizadas = [...solicitudes];
+      console.log(`Procesando ${solicitudesActualizadas.length} solicitudes después de recargar`);
+      
       // Optimización: procesar en lotes para evitar sobrecarga
       const BATCH_SIZE = 25; // Procesar 25 solicitudes a la vez
-      const solicitudesOrdenadas = [...solicitudes].sort((a, b) => a.orden - b.orden);
+      const solicitudesOrdenadas = [...solicitudesActualizadas].sort((a, b) => a.orden - b.orden);
       let procesadas = 0;
       let exitosas = 0;
       
@@ -589,19 +601,15 @@ function App() {
           setProcessingMessage(`Procesando lote ${Math.ceil((i+1)/BATCH_SIZE)}/${Math.ceil(solicitudesOrdenadas.length/BATCH_SIZE)}...`);
         }
         
-        // Procesar cada solicitud del lote en paralelo
-        const resultados = await Promise.all(lote.map(solicitud => 
-          procesarSolicitud(solicitud, availablePlazas, assignments, db)
-            .catch(error => {
-              console.error(`Error al procesar solicitud ${solicitud.orden}:`, error);
-              return { success: false, error: error.message };
-            })
-        ));
-        
-        // Contar resultados exitosos
-        for (const resultado of resultados) {
-          procesadas++;
-          if (resultado.success) exitosas++;
+        // Procesar cada solicitud del lote en serie para evitar conflictos
+        for (const solicitud of lote) {
+          try {
+            const resultado = await procesarSolicitud(solicitud, availablePlazas, assignments, db, solicitudesActualizadas);
+            procesadas++;
+            if (resultado.success) exitosas++;
+          } catch (error) {
+            console.error(`Error al procesar solicitud ${solicitud.orden}:`, error);
+          }
         }
       }
       
@@ -689,7 +697,7 @@ function App() {
         setCentrosSeleccionados([]);
         
         // Mostrar confirmación después de iniciar el procesamiento
-        showNotification(`Tu solicitud ha sido actualizada y se está procesando automáticamente.`, 'success');
+        showNotification(`Tu solicitud ha sido actualizada con ${centrosIdsNumericos.length} centros seleccionados. Se procesará automáticamente. Recuerda: menor número de orden = mayor prioridad.`, 'success');
         
         // Procesar todas las solicitudes automáticamente después de actualizar
         await procesarTodasLasSolicitudes();
@@ -704,7 +712,7 @@ function App() {
         setCentrosSeleccionados([]);
         
         // Mostrar confirmación después de iniciar el procesamiento
-        showNotification("Tu solicitud ha sido registrada y se está procesando automáticamente.", 'success');
+        showNotification(`Tu solicitud con ${centrosIdsNumericos.length} centros ha sido registrada. Se procesará automáticamente cada minuto priorizando por número de orden.`, 'success');
         
         // Procesar todas las solicitudes automáticamente después de guardar
         await procesarTodasLasSolicitudes();
@@ -1100,7 +1108,7 @@ function App() {
               }}></div>
             </div>
           </div>
-    </div>
+        </div>
       )}
       
       {/* Estilos CSS */}

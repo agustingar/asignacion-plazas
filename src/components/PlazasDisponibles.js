@@ -222,6 +222,26 @@ const PlazasDisponibles = ({
             />
           </div>
           
+          <div style={{
+            padding: '12px 15px',
+            backgroundColor: '#e6f7ff',
+            border: '1px solid #91d5ff',
+            borderRadius: '6px',
+            marginBottom: '15px',
+            fontSize: '14px',
+            color: '#1890ff',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '10px'
+          }}>
+            <span style={{ fontSize: '18px' }}>ℹ️</span>
+            <div>
+              <strong>Información importante:</strong> Puedes solicitar plazas aunque aparezcan como completas. 
+              El sistema asignará las plazas priorizando por número de orden (menor número = mayor prioridad), 
+              incluso si la plaza ya está asignada a alguien con un número de orden mayor.
+            </div>
+          </div>
+          
           <div style={{ 
             padding: '10px 15px', 
             backgroundColor: '#e9f5fe', 
