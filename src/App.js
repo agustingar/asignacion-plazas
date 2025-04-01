@@ -1,14 +1,15 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
-import { collection, onSnapshot, addDoc, updateDoc, doc, getDocs, query, deleteDoc, setDoc } from "firebase/firestore";
+import { collection, onSnapshot, addDoc, updateDoc, doc, getDocs, query, deleteDoc, setDoc, getDoc, where } from "firebase/firestore";
 import { db } from './utils/firebaseConfig';
-import { procesarSolicitudes, procesarSolicitud, resetearContadoresAsignaciones } from './utils/assignmentUtils';
+import { procesarSolicitudes, procesarSolicitud, resetearContadoresAsignaciones, procesarSolicitudEnCola } from './utils/assignmentUtils';
 
 // Importar componentes
 import Dashboard from './components/Dashboard';
 import PlazasDisponibles from './components/PlazasDisponibles';
 import SolicitudesPendientes from './components/SolicitudesPendientes';
 import Footer from './components/Footer';
+import DashboardInfo from './components/DashboardInfo';
 
 function App() {
   // Estados principales
@@ -806,10 +807,13 @@ function App() {
       borderBottom: '1px solid #e7e7e7',
       paddingBottom: '15px'
     },
-    title: {
+    headerTitle: {
       color: '#2c3e50',
       fontSize: '28px',
       margin: '0 0 10px 0'
+    },
+    primaryColor: {
+      color: '#3498db'
     },
     subtitle: {
       color: '#7f8c8d',
@@ -817,7 +821,7 @@ function App() {
       fontWeight: 'normal',
       margin: 0
     },
-    tabs: {
+    tabContainer: {
       display: 'flex',
       gap: '2px',
       marginBottom: '20px',
@@ -935,12 +939,14 @@ function App() {
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <h1 style={styles.title}>Sistema de Asignación de Plazas</h1>
+        <h1 style={styles.headerTitle}>
+          <span style={styles.primaryColor}>i</span>Asignación de Plazas
+        </h1>
         <h2 style={styles.subtitle}>Gestión y seguimiento de solicitudes y asignaciones</h2>
       </div>
       
-      {/* Tabs de navegación */}
-      <div style={styles.tabs}>
+      {/* Pestañas */}
+      <div style={styles.tabContainer}>
         <div 
           style={{
             ...styles.tab,
@@ -970,118 +976,13 @@ function App() {
         </div>
       </div>
       
-      {/* Información de última actualización */}
-      <div style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: '15px',
-        fontSize: '14px',
-        color: '#666',
-        padding: '8px 12px',
-        backgroundColor: '#f0f8ff',
-        borderRadius: '6px'
-      }}>
-        <div>
-          <span style={{fontWeight: 'bold', marginRight: '5px'}}>Plazas disponibles:</span>
-          {7066 - assignments.length} de 7066
-           {' '}
-          <button 
-            onClick={resetearContadores}
-            disabled={resetingCounters}
-            style={{
-              backgroundColor: resetingCounters ? '#ccc' : '#3498db',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              padding: '3px 8px',
-              fontSize: '12px',
-              cursor: resetingCounters ? 'not-allowed' : 'pointer',
-              marginLeft: '10px'
-            }}
-          >
-            {resetingCounters ? 'Recalculando...' : 'Recalcular contadores'}
-          </button>
-        </div>
-        <div style={{display: 'flex', alignItems: 'center'}}>
-          {solicitudes.length > 0 && (
-            <span style={{marginRight: '10px', color: loadingProcess ? '#e74c3c' : '#2ecc71'}}>
-              {loadingProcess ? (
-                <>
-                  <span style={{
-                    display: 'inline-block', 
-                    width: '12px', 
-                    height: '12px', 
-                    border: '2px solid rgba(231,76,60,0.3)', 
-                    borderRadius: '50%', 
-                    borderTopColor: '#e74c3c', 
-                    animation: 'spin 1s linear infinite',
-                    marginRight: '5px',
-                    verticalAlign: 'middle'
-                  }}></span>
-                  Procesando {solicitudes.length} solicitudes...
-                </>
-              ) : (
-                <>
-                  <span style={{color: '#2ecc71', marginRight: '5px'}}>●</span>
-                  {solicitudes.length} solicitudes pendientes 
-                </>
-              )}
-            </span>
-          )}
-          <span style={{fontWeight: 'bold', marginRight: '5px'}}>Última actualización:</span>
-          {lastProcessed ? 
-            new Intl.DateTimeFormat('es-ES', {
-              hour: '2-digit',
-              minute: '2-digit',
-              second: '2-digit',
-              hour12: false
-            }).format(lastProcessed) 
-            : 'No disponible'}
-          
-          {!loadingProcess && (
-            <span style={{
-              marginLeft: '10px', 
-              color: '#555', 
-              fontSize: '13px', 
-              display: 'flex', 
-              alignItems: 'center'
-            }}>
-              <span style={{
-                display: 'inline-block',
-                width: '10px',
-                height: '10px',
-                borderRadius: '50%',
-                backgroundColor: secondsUntilNextUpdate <= 10 ? '#f39c12' : '#3498db',
-                marginRight: '4px',
-                opacity: secondsUntilNextUpdate % 2 === 0 ? 0.7 : 1,
-                animation: 'pulse 1s infinite',
-                transition: 'background-color 0.3s'
-              }}></span>
-              
-              <span style={{marginRight: '3px'}}>
-                {secondsUntilNextUpdate <= 5 ? 'Actualizando pronto...' : 'Próxima actualización en:'}
-              </span>
-              
-              <span style={{
-                fontWeight: 'bold', 
-                marginLeft: '3px',
-                color: secondsUntilNextUpdate <= 10 ? '#e67e22' : '#2980b9'
-              }}>
-                {secondsUntilNextUpdate}s
-              </span>
-              
-              <style>{`
-                @keyframes pulse {
-                  0% { opacity: 0.4; transform: scale(0.95); }
-                  50% { opacity: 1; transform: scale(1.05); }
-                  100% { opacity: 0.4; transform: scale(0.95); }
-                }
-              `}</style>
-            </span>
-          )}
-        </div>
-      </div>
+      {/* Panel de información */}
+      <DashboardInfo 
+        plazasDisponibles={7066 - assignments.length} 
+        plazasTotal={7066} 
+        onRecalcular={resetearContadores}
+        isRecalculando={resetingCounters}
+      />
       
       {/* Contenido según la pestaña activa */}
       {activeTab === 'asignaciones' && (
@@ -1231,7 +1132,7 @@ function App() {
               }}></div>
             </div>
           </div>
-    </div>
+        </div>
       )}
       
       {/* Estilos CSS */}

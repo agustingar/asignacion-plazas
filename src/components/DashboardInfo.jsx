@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import './DashboardInfo.css';
 
-const DashboardInfo = ({ plazasDisponibles, plazasTotal, onRecalcular }) => {
+const DashboardInfo = ({ plazasDisponibles, plazasTotal, onRecalcular, isRecalculando }) => {
   const [lastUpdate, setLastUpdate] = useState(null);
   const [timer, setTimer] = useState(45);
   const [updating, setUpdating] = useState(false);
@@ -50,8 +50,12 @@ const DashboardInfo = ({ plazasDisponibles, plazasTotal, onRecalcular }) => {
       <div className="info-left">
         <span className="label">Plazas disponibles:</span>
         <span className="plazas">{plazasDisponibles} de {plazasTotal}</span>
-        <button className="btn-recalcular" onClick={handleRecalcular}>
-          Recalcular contadores
+        <button 
+          className="btn-recalcular" 
+          onClick={handleRecalcular}
+          disabled={isRecalculando}
+        >
+          {isRecalculando ? 'Recalculando...' : 'Recalcular contadores'}
         </button>
       </div>
       <div className="info-right">

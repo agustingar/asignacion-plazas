@@ -36,6 +36,11 @@
   margin-left: 10px;
 }
 
+.btn-recalcular:disabled {
+  background-color: #ccc;
+  cursor: not-allowed;
+}
+
 .update-status {
   margin-left: 5px;
 }
