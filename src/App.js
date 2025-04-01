@@ -516,8 +516,8 @@ function App() {
       const procesarInicial = async () => {
         if (solicitudes.length > 0 && !loadingProcess) {
           await procesarTodasLasSolicitudes(true);
-          // Iniciar el contador en 30 segundos
-          setSecondsUntilNextUpdate(30);
+          // Iniciar el contador en 45 segundos
+          setSecondsUntilNextUpdate(45);
         }
       };
       
@@ -546,7 +546,7 @@ function App() {
           if (!loadingProcess && solicitudes.length > 0) {
             procesarTodasLasSolicitudes(true);
           }
-          return 30; // Aumentado a 30 segundos (antes era 10)
+          return 45; // Cambiado de 30 a 45 segundos
         }
         return prevSeconds - 1;
       });
@@ -582,8 +582,8 @@ function App() {
       if (solicitudes.length === 0) {
         setLastProcessed(new Date());
         setLoadingProcess(false);
-        // Restablecer el contador a 30 segundos
-        setSecondsUntilNextUpdate(30);
+        // Restablecer el contador a 45 segundos
+        setSecondsUntilNextUpdate(45);
         return {
           success: true,
           message: "No hay solicitudes pendientes para procesar"
@@ -709,7 +709,7 @@ function App() {
       setLastProcessed(ahora);
       
       // Si quedan solicitudes pendientes, reducir el tiempo para el siguiente procesamiento
-      const nuevoTiempo = solicitudes.length > 0 ? 5 : 30;
+      const nuevoTiempo = solicitudes.length > 0 ? 5 : 45;
       setSecondsUntilNextUpdate(nuevoTiempo);
       
       if (!silencioso) {
