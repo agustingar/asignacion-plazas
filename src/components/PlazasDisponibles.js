@@ -654,6 +654,7 @@ const PlazasDisponibles = ({
           flex-direction: column;
           overflow: hidden;
           max-width: 100%;
+          box-sizing: border-box;
         }
         
         .search-container {
@@ -661,6 +662,7 @@ const PlazasDisponibles = ({
           margin-bottom: 15px;
           width: 100%;
           max-width: 100%;
+          box-sizing: border-box;
         }
         
         .search-box {
@@ -671,6 +673,8 @@ const PlazasDisponibles = ({
           font-size: 16px;
           transition: border-color 0.3s;
           box-sizing: border-box;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
         
         .search-box:focus {
@@ -689,6 +693,9 @@ const PlazasDisponibles = ({
           font-size: 24px;
           cursor: pointer;
           color: #999;
+          padding: 5px;
+          line-height: 1;
+          z-index: 5;
         }
         
         .clear-search:hover {
@@ -701,6 +708,7 @@ const PlazasDisponibles = ({
           gap: 10px;
           margin-bottom: 15px;
           max-width: 100%;
+          box-sizing: border-box;
         }
         
         .filter-select {
@@ -708,8 +716,31 @@ const PlazasDisponibles = ({
           border: 1px solid #ddd;
           border-radius: 4px;
           min-width: 150px;
-          flex-grow: 1;
+          flex: 1 1 auto;
           box-sizing: border-box;
+          max-width: 100%;
+        }
+        
+        @media (max-width: 768px) {
+          .filters-container {
+            flex-direction: column;
+            gap: 8px;
+          }
+          
+          .filter-select {
+            width: 100%;
+            min-width: auto;
+          }
+          
+          .search-box {
+            padding: 12px 14px;
+            font-size: 14px;
+          }
+          
+          .clear-search {
+            right: 5px;
+            font-size: 20px;
+          }
         }
         
         .results-info {
@@ -720,6 +751,8 @@ const PlazasDisponibles = ({
           color: #555;
           font-weight: 500;
           flex-wrap: wrap;
+          width: 100%;
+          box-sizing: border-box;
         }
         
         .plazas-grid {

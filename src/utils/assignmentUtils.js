@@ -254,208 +254,319 @@ export const borrarAsignacion = async (asignacion, docId, availablePlazas) => {
  * @param {Array} solicitudes - Lista completa de solicitudes pendientes
  * @returns {Promise<Object>} - Resultado del procesamiento
  */
-export const procesarSolicitud = async (solicitud, availablePlazas, assignments, db, solicitudes = []) => {
+export const procesarSolicitud = async (solicitud, availablePlazas, assignments, db, todasLasSolicitudes) => {
   try {
-    const { orden, centrosIds, docId: solicitudDocId } = solicitud;
-    
-    // Comprobar si ya existe una asignación para este orden
-    const asignacionExistente = assignments.find(a => a.order === orden);
-    if (asignacionExistente) {
-      console.log(`El orden ${orden} ya tiene una asignación en ${asignacionExistente.centro}`);
-      return { 
-        success: true, 
-        message: `El orden ${orden} ya tiene una asignación en ${asignacionExistente.centro}`,
-        yaAsignado: true 
+    // Verificar si la solicitud ya fue procesada y tiene una asignación
+    const existingAssignment = assignments.find(a => a.order === solicitud.orden);
+    if (existingAssignment) {
+      console.log(`La solicitud ${solicitud.orden} ya tiene una plaza asignada en: ${existingAssignment.centro}`);
+      
+      // Guardar solicitud en el historial antes de eliminarla
+      try {
+        const historialData = {
+          ...solicitud,
+          estado: "ASIGNADA",
+          centroAsignado: existingAssignment.centro,
+          centroId: existingAssignment.centroId,
+          fechaHistorico: new Date().toISOString(),
+          timestamp: Date.now()
+        };
+        
+        // Eliminar docId para no duplicarlo
+        delete historialData.docId;
+        
+        // Guardar en historial
+        await addDoc(collection(db, "historialSolicitudes"), historialData);
+        console.log(`Solicitud ${solicitud.orden} guardada en historial`);
+        
+        // Eliminar la solicitud pendiente ya que ya está procesada
+        const docRef = doc(db, "solicitudesPendientes", solicitud.docId);
+        await deleteDoc(docRef);
+        console.log(`Solicitud ${solicitud.orden} eliminada de pendientes porque ya tiene asignación`);
+      } catch (error) {
+        console.error(`Error al procesar historial para solicitud ${solicitud.orden}:`, error);
+      }
+      
+      return {
+        success: true,
+        message: `La solicitud ${solicitud.orden} ya tiene asignación en ${existingAssignment.centro}`
       };
     }
     
-    // Crear mapa para acceso rápido a las plazas
-    const plazasMap = {};
-    availablePlazas.forEach(plaza => {
-      plazasMap[plaza.id] = { ...plaza };
-    });
+    // Obtener los centros solicitados que con su orden de preferencia
+    const centrosSolicitadosIds = solicitud.centrosIds || [];
     
-    // Variable para saber si ya se asignó una plaza
-    let asignado = false;
+    if (centrosSolicitadosIds.length === 0) {
+      console.log(`La solicitud ${solicitud.orden} no tiene centros seleccionados.`);
+      return {
+        success: false,
+        message: `La solicitud ${solicitud.orden} no contiene centros seleccionados.`
+      };
+    }
     
-    // Recorrer los centros en orden de preferencia
-    for (const centroId of centrosIds) {
-      const centro = plazasMap[centroId];
+    console.log(`Procesando solicitud para orden ${solicitud.orden} con prioridad de centros: ${centrosSolicitadosIds.join(', ')}`);
+    
+    // Verificar cada centro solicitado en orden de preferencia
+    for (const centroId of centrosSolicitadosIds) {
+      // Buscar el centro en las plazas disponibles
+      const centro = availablePlazas.find(c => c.id === centroId);
+      
       if (!centro) {
-        console.warn(`Centro con ID ${centroId} no encontrado para orden ${orden}`);
+        console.warn(`El centro con ID ${centroId} no existe para la solicitud ${solicitud.orden}`);
         continue;
       }
       
-      // Verificar disponibilidad
-      const disponibles = centro.plazas - (centro.asignadas || 0);
+      console.log(`Evaluando centro ${centro.centro} para orden ${solicitud.orden}...`);
       
-      if (disponibles > 0) {
-        // Hay plazas disponibles, asignar directamente
-        const asignacionId = await asignarPlaza(orden, centroId, centro, solicitudDocId, centrosIds);
-        console.log(`✅ Asignación directa completada: Orden ${orden} → ${centro.centro} (plazas disponibles)`);
+      // Comprobar si hay plazas disponibles directamente
+      const plazasDisponibles = centro.plazas - (centro.asignadas || 0);
+      
+      if (plazasDisponibles > 0) {
+        // Hay plazas disponibles - asignar directamente
+        console.log(`✅ Hay ${plazasDisponibles} plazas disponibles en ${centro.centro} para orden ${solicitud.orden}`);
         
-        asignado = true;
-        return {
-          success: true,
-          message: `Plaza asignada para orden ${orden} en ${centro.centro}`,
-          desplazado: false,
-          asignacionId
+        // Crear la asignación
+        const asignacionData = {
+          order: solicitud.orden,
+          centroId: centro.id,
+          centro: centro.centro,
+          municipio: centro.municipio,
+          codigo: centro.codigo,
+          timestamp: Date.now()
         };
-      } else {
-        // NO hay plazas disponibles, verificar si podemos desplazar a alguien con mayor número de orden
-        // Buscar todas las asignaciones actuales para este centro
-        const asignacionesCentro = assignments.filter(a => a.id === centroId);
         
-        if (asignacionesCentro.length === 0) {
-          console.warn(`No se encontraron asignaciones para el centro ${centro.centro} aunque figura como completo`);
-          continue;
+        // Guardar la asignación en la colección "asignaciones"
+        const docRef = await addDoc(collection(db, "asignaciones"), asignacionData);
+        console.log(`Asignación directa creada con ID: ${docRef.id}`);
+        
+        // Actualizar el contador de plazas asignadas en el centro
+        const centroRef = doc(db, "centros", centro.docId);
+        await updateDoc(centroRef, {
+          asignadas: (centro.asignadas || 0) + 1
+        });
+        
+        // Guardar la solicitud en el historial antes de eliminarla
+        try {
+          const historialData = {
+            ...solicitud,
+            centroAsignado: centro.centro,
+            centroId: centro.id,
+            estado: "ASIGNADA",
+            fechaHistorico: new Date().toISOString(),
+            timestamp: Date.now()
+          };
+          
+          // Eliminar docId para no duplicarlo
+          delete historialData.docId;
+          
+          // Guardar en historial
+          await addDoc(collection(db, "historialSolicitudes"), historialData);
+          console.log(`Solicitud ${solicitud.orden} guardada en historial con asignación a ${centro.centro}`);
+        } catch (error) {
+          console.error(`Error al guardar historial para solicitud ${solicitud.orden}:`, error);
         }
         
-        // Obtener todas las asignaciones ordenadas por número de orden (mayor primero = menor prioridad)
-        const asignacionesOrdenadas = [...asignacionesCentro].sort((a, b) => b.order - a.order);
-        const asignacionMayorOrden = asignacionesOrdenadas[0];
+        // Eliminar la solicitud de las pendientes
+        await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
         
-        console.log(`Centro ${centro.centro}: asignaciones existentes ${asignacionesOrdenadas.map(a => a.order).join(', ')}`);
+        return {
+          success: true,
+          message: `Plaza asignada en ${centro.centro} para orden ${solicitud.orden}`
+        };
+      } else {
+        // No hay plazas disponibles - verificar si podemos desplazar a alguien
+        console.log(`⚠️ No hay plazas disponibles en ${centro.centro} para orden ${solicitud.orden}. Verificando si se puede reasignar...`);
         
-        // Verificar si podemos desplazar (si nuestro orden es menor que el mayor orden asignado)
-        if (asignacionMayorOrden && asignacionMayorOrden.order > orden) {
-          // Encontramos a alguien con menor prioridad, podemos desplazarlo
-          console.log(`⚠️ Desplazando: orden ${asignacionMayorOrden.order} (menor prioridad) para asignar ${orden} (mayor prioridad) en ${centro.centro}`);
-          
-          // Eliminar la asignación anterior
-          await deleteDoc(doc(db, "asignaciones", asignacionMayorOrden.docId));
-          
-          // Asignar la plaza a la nueva solicitud
-          const asignacionId = await asignarPlaza(orden, centroId, centro, solicitudDocId, centrosIds);
-          
-          // Buscar todas las solicitudes originales para tener un historial completo
-          // Primero, buscar en la colección de solicitudes históricas
-          let solicitudHistorica = null;
+        // Buscar todas las asignaciones para este centro
+        const asignacionesCentro = assignments.filter(a => a.centroId === centro.id);
+        
+        if (asignacionesCentro.length === 0) {
+          console.log(`No hay asignaciones registradas para el centro ${centro.centro}`);
+          continue; // Probar con el siguiente centro preferido
+        }
+        
+        // Buscar asignaciones con número de orden mayor (menor prioridad)
+        const asignacionesMenorPrioridad = asignacionesCentro.filter(a => a.order > solicitud.orden);
+        
+        if (asignacionesMenorPrioridad.length === 0) {
+          console.log(`No hay asignaciones de menor prioridad en ${centro.centro} para desplazar`);
+          continue; // Probar con el siguiente centro preferido
+        }
+        
+        // Ordenar por número de orden descendente (mayor número = menor prioridad)
+        const asignacionesOrdenadas = [...asignacionesMenorPrioridad].sort((a, b) => b.order - a.order);
+        const asignacionADesplazar = asignacionesOrdenadas[0]; // La de menor prioridad
+        
+        console.log(`🔄 Desplazando orden ${asignacionADesplazar.order} (prioridad menor) para asignar orden ${solicitud.orden} (prioridad mayor) en ${centro.centro}`);
+        
+        try {
+          // 1. Buscar primero si hay datos en historial de la persona a desplazar
+          let centrosPreferidos = [];
           try {
-            const historicoSnapshot = await getDocs(collection(db, "historialSolicitudes"));
-            solicitudHistorica = historicoSnapshot.docs
-              .map(doc => ({ ...doc.data(), docId: doc.id }))
-              .find(s => s.orden === asignacionMayorOrden.order);
+            // Buscar en historial
+            const queryHistorial = await getDocs(collection(db, "historialSolicitudes"));
+            const historialesSolicitud = queryHistorial.docs
+              .map(doc => ({ ...doc.data() }))
+              .filter(h => h.orden === asignacionADesplazar.order);
+            
+            if (historialesSolicitud.length > 0) {
+              // Usar el historial más reciente
+              const historialMasReciente = historialesSolicitud.sort((a, b) => b.timestamp - a.timestamp)[0];
+              centrosPreferidos = historialMasReciente.centrosIds || [];
+              console.log(`Encontrados ${centrosPreferidos.length} centros preferidos del historial para orden ${asignacionADesplazar.order}`);
+            }
           } catch (error) {
-            console.log("No se pudo buscar en historial de solicitudes:", error.message);
+            console.error(`Error al buscar historial para orden ${asignacionADesplazar.order}:`, error);
           }
           
-          // Buscar en solicitudes pendientes actuales
-          const solicitudOriginal = solicitudes.find(s => s.orden === asignacionMayorOrden.order);
-          
-          let centrosPreferidos;
-          if (solicitudOriginal) {
-            // Si encontramos la solicitud original, usamos sus centros preferidos
-            centrosPreferidos = solicitudOriginal.centrosIds;
-            console.log(`Encontrada solicitud original para orden ${asignacionMayorOrden.order} con ${centrosPreferidos.length} centros preferidos`);
-          } else if (solicitudHistorica) {
-            // Si encontramos en el historial, usamos esos centros
-            centrosPreferidos = solicitudHistorica.centrosIds;
-            console.log(`Encontrada solicitud histórica para orden ${asignacionMayorOrden.order} con ${centrosPreferidos.length} centros preferidos`);
-          } else {
-            // Si no encontramos la solicitud, creamos una con este centro
-            console.log(`No se encontró solicitud para orden ${asignacionMayorOrden.order}, usando solo el centro actual`);
-            centrosPreferidos = [centroId];
+          // Buscar también en solicitudes pendientes actuales
+          const solicitudDesplazada = todasLasSolicitudes.find(s => s.orden === asignacionADesplazar.order);
+          if (solicitudDesplazada && solicitudDesplazada.centrosIds) {
+            centrosPreferidos = solicitudDesplazada.centrosIds;
+            console.log(`Encontrados ${centrosPreferidos.length} centros preferidos de solicitud pendiente para orden ${asignacionADesplazar.order}`);
           }
           
-          // Asegurarnos que el centro actual esté incluido (por si acaso)
-          if (!centrosPreferidos.includes(centroId)) {
-            centrosPreferidos.push(centroId);
+          // Si no encontramos centros preferidos, usar al menos el centro actual
+          if (centrosPreferidos.length === 0) {
+            centrosPreferidos = [centro.id];
+            console.log(`No se encontraron preferencias para orden ${asignacionADesplazar.order}, usando centro actual`);
           }
           
-          // Crear una nueva solicitud pendiente para la persona desplazada
-          const solicitudNueva = {
-            orden: asignacionMayorOrden.order,
+          // 2. Eliminar la asignación existente
+          if (asignacionADesplazar.docId) {
+            await deleteDoc(doc(db, "asignaciones", asignacionADesplazar.docId));
+            console.log(`Eliminada asignación anterior de orden ${asignacionADesplazar.order}`);
+          }
+          
+          // 3. Crear la nueva asignación para la solicitud actual
+          const asignacionData = {
+            order: solicitud.orden,
+            centroId: centro.id,
+            centro: centro.centro,
+            municipio: centro.municipio,
+            codigo: centro.codigo,
+            timestamp: Date.now()
+          };
+          
+          const docRef = await addDoc(collection(db, "asignaciones"), asignacionData);
+          console.log(`Nueva asignación creada con ID: ${docRef.id}`);
+          
+          // 4. Guardar la solicitud actual en el historial
+          const historialSolicitudActual = {
+            ...solicitud,
+            centroAsignado: centro.centro,
+            centroId: centro.id,
+            estado: "ASIGNADA",
+            fechaHistorico: new Date().toISOString(),
+            timestamp: Date.now(),
+            desplazoA: asignacionADesplazar.order
+          };
+          
+          // Eliminar docId para no duplicarlo
+          delete historialSolicitudActual.docId;
+          
+          // Guardar en historial
+          await addDoc(collection(db, "historialSolicitudes"), historialSolicitudActual);
+          console.log(`Solicitud ${solicitud.orden} guardada en historial con asignación mediante desplazamiento`);
+          
+          // 5. Crear una nueva solicitud pendiente para el orden desplazado
+          const nuevaSolicitudPendiente = {
+            orden: asignacionADesplazar.order,
             centrosIds: centrosPreferidos,
             timestamp: Date.now(),
-            desplazadoPor: orden // Guardar quién lo desplazó para seguimiento
+            desplazadoPor: solicitud.orden
           };
           
-          // Guardar en solicitudes pendientes
-          const docRef = await addDoc(collection(db, "solicitudesPendientes"), solicitudNueva);
-          console.log(`⚠️ Nueva solicitud pendiente creada para el orden desplazado ${asignacionMayorOrden.order}`);
+          await addDoc(collection(db, "solicitudesPendientes"), nuevaSolicitudPendiente);
+          console.log(`Nueva solicitud pendiente creada para orden ${asignacionADesplazar.order} con ${centrosPreferidos.length} centros preferidos`);
           
-          // También guardar una copia en el historial para no perder centros preferidos
-          try {
-            await addDoc(collection(db, "historialSolicitudes"), {
-              ...solicitudNueva,
-              fechaHistorico: new Date().toISOString()
-            });
-          } catch (error) {
-            console.log("Error al guardar en historial:", error.message);
-          }
+          // 6. Guardar también un registro en historial para el desplazado
+          const historialDesplazado = {
+            ...nuevaSolicitudPendiente,
+            estado: "DESPLAZADO",
+            centroDesplazado: centro.centro,
+            fechaHistorico: new Date().toISOString()
+          };
           
-          asignado = true;
+          await addDoc(collection(db, "historialSolicitudes"), historialDesplazado);
+          console.log(`Registro de desplazamiento guardado en historial para orden ${asignacionADesplazar.order}`);
+          
+          // 7. Eliminar nuestra solicitud de las pendientes
+          await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
+          
           return {
             success: true,
-            message: `Plaza reasignada para orden ${orden} en ${centro.centro}, desplazando a orden ${asignacionMayorOrden.order}`,
-            desplazado: true,
-            ordenDesplazado: asignacionMayorOrden.order,
-            asignacionId
+            message: `Plaza reasignada en ${centro.centro}. Se desplazó al usuario con orden ${asignacionADesplazar.order} (menor prioridad).`,
+            desplazamiento: true,
+            ordenDesplazado: asignacionADesplazar.order
           };
-        } else {
-          console.log(`No se puede desplazar en ${centro.centro}: la orden ${orden} tiene menor prioridad que las existentes`);
+        } catch (error) {
+          console.error(`Error al realizar el desplazamiento: ${error.message}`);
+          // Continuar con el siguiente centro preferido
+          continue;
         }
       }
     }
     
-    if (!asignado) {
-      console.log(`⚠️ No se pudo asignar plaza para orden ${orden}. Todos sus centros preferidos están completos con solicitantes de mayor prioridad.`);
+    // Si llegamos aquí, no se pudo asignar plaza en ninguno de los centros preferidos
+    console.log(`❌ No se pudo asignar plaza para orden ${solicitud.orden} en ninguno de sus centros preferidos`);
+    
+    // Verificar si es porque todos están ocupados por personas con mayor prioridad
+    let todosCentrosOcupadosPorMayorPrioridad = true;
+    
+    for (const centroId of centrosSolicitadosIds) {
+      const centro = availablePlazas.find(c => c.id === centroId);
+      if (!centro) continue;
+      
+      const asignacionesCentro = assignments.filter(a => a.centroId === centro.id);
+      const hayAsignacionesMenorPrioridad = asignacionesCentro.some(a => a.order > solicitud.orden);
+      
+      if (hayAsignacionesMenorPrioridad) {
+        todosCentrosOcupadosPorMayorPrioridad = false;
+        break;
+      }
+    }
+    
+    // En cualquier caso, guardar la solicitud en historial con estado de error o rechazo
+    try {
+      const historialData = {
+        ...solicitud,
+        estado: todosCentrosOcupadosPorMayorPrioridad ? "RECHAZADA_ORDEN_MENOR" : "ERROR_PROCESAMIENTO",
+        fechaHistorico: new Date().toISOString(),
+        timestamp: Date.now(),
+        mensaje: todosCentrosOcupadosPorMayorPrioridad ? 
+          "Todos los centros ocupados por orden menor" : 
+          "Error al procesar la solicitud"
+      };
+      
+      // Eliminar docId para no duplicarlo
+      delete historialData.docId;
+      
+      // Guardar en historial
+      await addDoc(collection(db, "historialSolicitudes"), historialData);
+      console.log(`Solicitud ${solicitud.orden} guardada en historial con estado de error/rechazo`);
+    } catch (error) {
+      console.error(`Error al guardar historial para solicitud fallida ${solicitud.orden}:`, error);
+    }
+    
+    if (todosCentrosOcupadosPorMayorPrioridad) {
       return {
         success: false,
-        message: `No se pudo asignar plaza para orden ${orden}. Todos sus centros preferidos están ocupados por solicitantes con menor número de orden (mayor prioridad). Puedes probar con otros centros o esperar a que se liberen plazas.`
+        message: `No hay plazas disponibles en los centros solicitados. Las plazas están ocupadas por solicitudes con números de orden menores (mayor prioridad).`,
+        razon: "COMPLETO_POR_ORDENES_MENORES"
+      };
+    } else {
+      return {
+        success: false,
+        message: `No se pudieron procesar las asignaciones en este momento. Por favor, intente nuevamente más tarde.`,
+        razon: "ERROR_PROCESAMIENTO"
       };
     }
   } catch (error) {
-    console.error("Error al procesar solicitud:", error);
+    console.error(`Error al procesar solicitud ${solicitud.orden}:`, error);
     return {
       success: false,
-      error: error.message,
-      message: "Error al procesar solicitud: " + error.message
+      message: `Error al procesar: ${error.message}`
     };
-  }
-  
-  // Función interna para asignar plaza
-  async function asignarPlaza(orden, centroId, centro, solicitudDocId, centrosPreferidos) {
-    // Crear la asignación
-    const nuevaAsignacion = {
-      order: orden,
-      id: centroId,
-      localidad: centro.localidad || centro.municipio,
-      centro: centro.centro,
-      municipio: centro.municipio,
-      timestamp: Date.now()
-    };
-    
-    // Guardar en Firebase
-    const asignacionRef = await addDoc(collection(db, "asignaciones"), nuevaAsignacion);
-    
-    // Incrementar el contador de plazas asignadas
-    const nuevasAsignadas = (centro.asignadas || 0) + 1;
-    await updateDoc(doc(db, "centros", centro.docId), {
-      asignadas: nuevasAsignadas
-    });
-    
-    // Eliminar la solicitud procesada de solicitudes pendientes
-    if (solicitudDocId) {
-      await deleteDoc(doc(db, "solicitudesPendientes", solicitudDocId));
-    }
-    
-    // Guardar también en historial de solicitudes para mantener registro
-    try {
-      await addDoc(collection(db, "historialSolicitudes"), {
-        orden,
-        centrosIds: centrosPreferidos,
-        centroAsignado: centroId,
-        timestamp: Date.now(),
-        fechaHistorico: new Date().toISOString()
-      });
-    } catch (error) {
-      console.log("Error al guardar en historial:", error.message);
-    }
-    
-    console.log(`✅ Plaza asignada: Orden ${orden} → ${centro.centro}`);
-    
-    return asignacionRef.id;
   }
 };

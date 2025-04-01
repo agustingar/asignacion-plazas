@@ -19,7 +19,7 @@ function App() {
   const [processingMessage, setProcessingMessage] = useState('');
   const [loadingCSV, setLoadingCSV] = useState(false);
   const [lastProcessed, setLastProcessed] = useState(null);
-  const [secondsUntilNextUpdate, setSecondsUntilNextUpdate] = useState(60);
+  const [secondsUntilNextUpdate, setSecondsUntilNextUpdate] = useState(15);
   
   // Estados para el formulario de solicitud
   const [orderNumber, setOrderNumber] = useState('');
@@ -503,8 +503,8 @@ function App() {
         if (solicitudes.length > 0 && !loadingProcess) {
           console.log("Procesando solicitudes al iniciar la aplicación...");
           await procesarTodasLasSolicitudes(true);
-          // Iniciar el contador en 60 segundos
-          setSecondsUntilNextUpdate(60);
+          // Iniciar el contador en 15 segundos
+          setSecondsUntilNextUpdate(15);
         }
       };
       
@@ -527,14 +527,14 @@ function App() {
     // Iniciar el contador de cuenta regresiva
     countdownTimerRef.current = setInterval(() => {
       setSecondsUntilNextUpdate(prevSeconds => {
-        // Si llegamos a 0, volver a 60 y forzar el procesamiento
+        // Si llegamos a 0, volver a 15 y forzar el procesamiento
         if (prevSeconds <= 1) {
           console.log("Contador llegó a 0, iniciando procesamiento automático...");
           // Solo iniciar el procesamiento si no está ya en proceso y hay solicitudes
           if (!loadingProcess && solicitudes.length > 0) {
             procesarTodasLasSolicitudes(true);
           }
-          return 60;
+          return 15;
         }
         return prevSeconds - 1;
       });
@@ -572,9 +572,12 @@ function App() {
         console.log("No hay solicitudes pendientes después de recargar datos");
         setLastProcessed(new Date());
         setLoadingProcess(false);
-        // Restablecer el contador a 60 segundos
-        setSecondsUntilNextUpdate(60);
-        return;
+        // Restablecer el contador a 15 segundos
+        setSecondsUntilNextUpdate(15);
+        return {
+          success: true,
+          message: "No hay solicitudes pendientes para procesar"
+        };
       }
       
       console.log(`Procesando ${solicitudes.length} solicitudes pendientes...`);
@@ -583,12 +586,17 @@ function App() {
       const solicitudesOrdenadas = [...solicitudes].sort((a, b) => a.orden - b.orden);
       console.log(`Solicitudes ordenadas por prioridad: ${solicitudesOrdenadas.map(s => s.orden).join(', ')}`);
       
-      // Optimización: procesar en lotes pequeños para evitar sobrecarga
-      const BATCH_SIZE = 10; // Procesar 10 solicitudes a la vez
+      // MEJORA: Usar lotes más pequeños y forzar recargas más frecuentes
+      const BATCH_SIZE = 5; // Reducido a 5 solicitudes a la vez para mayor precisión
       let procesadas = 0;
       let exitosas = 0;
+      let intentosFallidos = 0;
+      let solicitudesBloqueadasPorOrdenMenor = [];
       
-      // Procesar por lotes
+      // Crear una copia que usaremos para verificar que todas se procesen
+      const solicitudesPendientesCopia = [...solicitudesOrdenadas];
+      
+      // Procesar por lotes con retries para solicitudes problemáticas
       for (let i = 0; i < solicitudesOrdenadas.length; i += BATCH_SIZE) {
         const lote = solicitudesOrdenadas.slice(i, i + BATCH_SIZE);
         
@@ -596,7 +604,7 @@ function App() {
           setProcessingMessage(`Procesando lote ${Math.ceil((i+1)/BATCH_SIZE)}/${Math.ceil(solicitudesOrdenadas.length/BATCH_SIZE)}...`);
         }
         
-        // Procesar cada solicitud del lote en serie para evitar conflictos
+        // Procesar cada solicitud del lote individualmente
         for (const solicitud of lote) {
           try {
             console.log(`Procesando solicitud con orden ${solicitud.orden}...`);
@@ -609,21 +617,86 @@ function App() {
             );
             
             procesadas++;
+            
+            // MEJORA: Verificar y registrar cada solicitud procesada
             if (resultado.success) {
               exitosas++;
-              console.log(`Procesamiento exitoso para orden ${solicitud.orden}: ${resultado.message}`);
+              console.log(`✅ Procesamiento exitoso para orden ${solicitud.orden}: ${resultado.message}`);
+              
+              // Eliminar de nuestra lista de verificación
+              const index = solicitudesPendientesCopia.findIndex(s => s.docId === solicitud.docId);
+              if (index !== -1) {
+                solicitudesPendientesCopia.splice(index, 1);
+              }
             } else {
-              console.log(`No se pudo procesar orden ${solicitud.orden}: ${resultado.message}`);
+              console.log(`❌ No se pudo procesar orden ${solicitud.orden}: ${resultado.message}`);
+              intentosFallidos++;
+              
+              // Registrar si la razón fue por números de orden menores
+              if (resultado.razon === "COMPLETO_POR_ORDENES_MENORES") {
+                solicitudesBloqueadasPorOrdenMenor.push(solicitud.orden);
+              }
             }
           } catch (error) {
             console.error(`Error al procesar solicitud ${solicitud.orden}:`, error);
+            intentosFallidos++;
           }
+          
+          // Hacer una pequeña pausa entre solicitudes (100ms) para permitir actualizaciones
+          await new Promise(resolve => setTimeout(resolve, 100));
         }
         
         // Recargar datos después de cada lote para tener actualizaciones
-        if (i + BATCH_SIZE < solicitudesOrdenadas.length) {
-          console.log("Recargando datos después del lote...");
-          await cargarDatosDesdeFirebase();
+        console.log("Recargando datos después del lote...");
+        await cargarDatosDesdeFirebase();
+      }
+      
+      // MEJORA: Segundo intento para las solicitudes que pudieron haberse quedado sin procesar
+      if (solicitudesPendientesCopia.length > 0) {
+        console.log(`⚠️ Quedan ${solicitudesPendientesCopia.length} solicitudes sin procesar. Haciendo segundo intento...`);
+        
+        for (const solicitudPendiente of solicitudesPendientesCopia) {
+          try {
+            console.log(`Segundo intento para solicitud orden ${solicitudPendiente.orden}...`);
+            
+            // Obtener datos actualizados antes de cada intento
+            await cargarDatosDesdeFirebase();
+            
+            // Verificar si la solicitud aún existe (podría haberse procesado por otra instancia)
+            const todaviaExiste = solicitudes.some(s => s.docId === solicitudPendiente.docId);
+            if (!todaviaExiste) {
+              console.log(`La solicitud orden ${solicitudPendiente.orden} ya no existe en la base de datos`);
+              continue;
+            }
+            
+            // Intentar procesarla individualmente
+            const resultado = await procesarSolicitud(
+              solicitudPendiente, 
+              availablePlazas, 
+              assignments, 
+              db, 
+              solicitudes
+            );
+            
+            if (resultado.success) {
+              exitosas++;
+              console.log(`✅ Segundo intento exitoso para orden ${solicitudPendiente.orden}`);
+            } else {
+              console.log(`❌ Segundo intento fallido para orden ${solicitudPendiente.orden}: ${resultado.message}`);
+              
+              // Registrar si la razón fue por números de orden menores
+              if (resultado.razon === "COMPLETO_POR_ORDENES_MENORES") {
+                if (!solicitudesBloqueadasPorOrdenMenor.includes(solicitudPendiente.orden)) {
+                  solicitudesBloqueadasPorOrdenMenor.push(solicitudPendiente.orden);
+                }
+              }
+            }
+          } catch (error) {
+            console.error(`Error en segundo intento para solicitud ${solicitudPendiente.orden}:`, error);
+          }
+          
+          // Pausa más larga entre reintentos (200ms)
+          await new Promise(resolve => setTimeout(resolve, 200));
         }
       }
       
@@ -635,24 +708,47 @@ function App() {
       const ahora = new Date();
       setLastProcessed(ahora);
       
-      // Restablecer el contador a 60 segundos
-      setSecondsUntilNextUpdate(60);
+      // Restablecer el contador a 15 segundos
+      setSecondsUntilNextUpdate(15);
       
       if (!silencioso) {
-        // Mostrar notificación si no es silencioso
+        // Mostrar notificación detallada
         const mensaje = exitosas > 0 
-          ? `Se han procesado ${exitosas} de ${procesadas} solicitudes correctamente.` 
+          ? `Se procesaron ${exitosas} de ${procesadas} solicitudes (${intentosFallidos} intentos fallidos).` 
           : "No se pudieron procesar las solicitudes pendientes.";
         
         showNotification(mensaje, exitosas > 0 ? 'success' : 'warning');
         setProcessingMessage("Procesamiento completado");
       }
       
+      // Verificación final de solicitudes pendientes
+      if (solicitudes.length > 0) {
+        console.log(`⚠️ Después del procesamiento aún quedan ${solicitudes.length} solicitudes pendientes.`);
+      } else {
+        console.log("✅ Todas las solicitudes han sido procesadas correctamente.");
+      }
+      
+      // Devolver resultado con información adicional
+      return {
+        success: true,
+        procesadas: procesadas,
+        exitosas: exitosas,
+        intentosFallidos: intentosFallidos,
+        pendientesRestantes: solicitudes.length,
+        solicitudesBloqueadasPorOrdenMenor: solicitudesBloqueadasPorOrdenMenor,
+        razon: solicitudesBloqueadasPorOrdenMenor.length > 0 ? "COMPLETO_POR_ORDENES_MENORES" : null
+      };
+      
     } catch (error) {
       console.error("Error al procesar solicitudes:", error);
       if (!silencioso) {
         showNotification(`Error al procesar solicitudes: ${error.message}`, 'error');
       }
+      
+      return {
+        success: false,
+        message: `Error al procesar solicitudes: ${error.message}`
+      };
     } finally {
       // Finalizar el procesamiento
       setLoadingProcess(false);
@@ -716,7 +812,12 @@ function App() {
         showNotification(`Tu solicitud ha sido actualizada con ${centrosIdsNumericos.length} centros seleccionados. Se procesará automáticamente. Recuerda: menor número de orden = mayor prioridad.`, 'success');
         
         // Procesar todas las solicitudes automáticamente después de actualizar
-        await procesarTodasLasSolicitudes();
+        const resultadoProcesamiento = await procesarTodasLasSolicitudes();
+        
+        // Verificar si hubo solicitudes que no se procesaron por números de orden menores
+        if (resultadoProcesamiento && resultadoProcesamiento.razon === "COMPLETO_POR_ORDENES_MENORES") {
+          showNotification(`No se pudieron asignar plazas para la solicitud con número ${numOrden} porque las plazas solicitadas ya están ocupadas por solicitudes con números de orden menores (mayor prioridad).`, 'warning');
+        }
       } else {
         // Crear nueva solicitud en Firebase
         console.log("Creando nueva solicitud");
@@ -728,10 +829,15 @@ function App() {
         setCentrosSeleccionados([]);
         
         // Mostrar confirmación después de iniciar el procesamiento
-        showNotification(`Tu solicitud con ${centrosIdsNumericos.length} centros ha sido registrada. Se procesará automáticamente cada minuto priorizando por número de orden.`, 'success');
+        showNotification(`Tu solicitud con ${centrosIdsNumericos.length} centros ha sido registrada. Se procesará automáticamente cada 15 segundos priorizando por número de orden.`, 'success');
         
         // Procesar todas las solicitudes automáticamente después de guardar
-        await procesarTodasLasSolicitudes();
+        const resultadoProcesamiento = await procesarTodasLasSolicitudes();
+        
+        // Verificar si hubo solicitudes que no se procesaron por números de orden menores
+        if (resultadoProcesamiento && resultadoProcesamiento.razon === "COMPLETO_POR_ORDENES_MENORES") {
+          showNotification(`No se pudieron asignar plazas para la solicitud con número ${numOrden} porque las plazas solicitadas ya están ocupadas por solicitudes con números de orden menores (mayor prioridad).`, 'warning');
+        }
       }
       
       // Finalizar el estado de procesamiento solo después de que todo esté completo
