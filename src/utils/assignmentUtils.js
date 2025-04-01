@@ -240,3 +240,97 @@ export const borrarAsignacion = async (asignacion, docId, availablePlazas) => {
     };
   }
 };
+
+/**
+ * Procesa una única solicitud pendiente e intenta asignar una plaza
+ * @param {Object} solicitud - La solicitud a procesar
+ * @param {Array} availablePlazas - Lista de plazas disponibles
+ * @param {Array} assignments - Lista de asignaciones existentes
+ * @param {Object} db - Referencia a la base de datos Firestore
+ * @returns {Promise<Object>} - Resultado del procesamiento
+ */
+export const procesarSolicitud = async (solicitud, availablePlazas, assignments, db) => {
+  try {
+    const { orden, centrosIds } = solicitud;
+    
+    // Verificar si ya existe una asignación para este orden
+    const asignacionExistente = assignments.find(a => a.order === orden);
+    if (asignacionExistente) {
+      console.log(`El orden ${orden} ya tiene una asignación en ${asignacionExistente.centro}`);
+      return { 
+        success: true, 
+        message: `El orden ${orden} ya tiene una asignación en ${asignacionExistente.centro}`,
+        yaAsignado: true 
+      };
+    }
+    
+    // Crear mapa para acceso rápido a las plazas
+    const plazasMap = {};
+    availablePlazas.forEach(plaza => {
+      plazasMap[plaza.id] = { ...plaza };
+    });
+    
+    // Variable para saber si ya se asignó una plaza
+    let asignado = false;
+    
+    // Recorrer los centros en orden de preferencia
+    for (const centroId of centrosIds) {
+      const centro = plazasMap[centroId];
+      if (!centro) {
+        console.warn(`Centro con ID ${centroId} no encontrado para orden ${orden}`);
+        continue;
+      }
+      
+      // Verificar disponibilidad
+      const disponibles = centro.plazas - (centro.asignadas || 0);
+      if (disponibles > 0) {
+        // Crear la asignación
+        const nuevaAsignacion = {
+          order: orden,
+          id: centroId,
+          localidad: centro.localidad || centro.municipio,
+          centro: centro.centro,
+          municipio: centro.municipio,
+          timestamp: Date.now()
+        };
+        
+        // Guardar en Firebase
+        const asignacionRef = await addDoc(collection(db, "asignaciones"), nuevaAsignacion);
+        
+        // Incrementar el contador de plazas asignadas
+        const nuevasAsignadas = (centro.asignadas || 0) + 1;
+        await updateDoc(doc(db, "centros", centro.docId), {
+          asignadas: nuevasAsignadas
+        });
+        
+        // Eliminar la solicitud procesada
+        if (solicitud.docId) {
+          await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
+        }
+        
+        console.log(`✅ Plaza asignada: Orden ${orden} → ${centro.centro} (preferencia ${centrosIds.indexOf(centroId) + 1})`);
+        
+        asignado = true;
+        return {
+          success: true,
+          message: `Plaza asignada para orden ${orden} en ${centro.centro}`,
+          asignacionId: asignacionRef.id
+        };
+      }
+    }
+    
+    if (!asignado) {
+      console.log(`⚠️ No se pudo asignar plaza para orden ${orden}. Todos sus centros preferidos están completos.`);
+      return {
+        success: false,
+        message: `No se pudo asignar plaza para orden ${orden}. Todos sus centros preferidos están completos.`
+      };
+    }
+  } catch (error) {
+    console.error(`Error al procesar solicitud para orden ${solicitud.orden}:`, error);
+    return {
+      success: false,
+      message: `Error al procesar solicitud: ${error.message}`
+    };
+  }
+};

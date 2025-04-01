@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 import { collection, onSnapshot, addDoc, updateDoc, doc, getDocs, query, deleteDoc, setDoc } from "firebase/firestore";
 import { db } from './utils/firebaseConfig';
-import { procesarSolicitudes } from './utils/assignmentUtils';
+import { procesarSolicitudes, procesarSolicitud } from './utils/assignmentUtils';
 
 // Importar componentes
 import Dashboard from './components/Dashboard';
@@ -537,13 +537,12 @@ function App() {
         await updateDoc(solicitudRef, datosParaGuardar);
         console.log("Solicitud actualizada correctamente");
         
-        // Mostramos confirmación
-        setIsProcessing(false);
-        showNotification(`Tu solicitud ha sido actualizada. Se procesará según orden de preferencia.`, 'success');
-        
         // Limpiar formulario
         setOrderNumber('');
         setCentrosSeleccionados([]);
+        
+        // Mostrar confirmación después de iniciar el procesamiento
+        showNotification(`Tu solicitud ha sido actualizada y se está procesando automáticamente.`, 'success');
         
         // Procesar todas las solicitudes automáticamente después de actualizar
         await procesarTodasLasSolicitudes();
@@ -553,16 +552,19 @@ function App() {
         const docRef = await addDoc(collection(db, "solicitudesPendientes"), datosParaGuardar);
         console.log("Nueva solicitud creada con ID:", docRef.id);
         
-        setIsProcessing(false);
-        showNotification("Tu solicitud ha sido registrada. Se procesará según tu número de orden y preferencias de centros.", 'success');
-        
         // Limpiar formulario
         setOrderNumber('');
         setCentrosSeleccionados([]);
         
+        // Mostrar confirmación después de iniciar el procesamiento
+        showNotification("Tu solicitud ha sido registrada y se está procesando automáticamente.", 'success');
+        
         // Procesar todas las solicitudes automáticamente después de guardar
         await procesarTodasLasSolicitudes();
       }
+      
+      // Finalizar el estado de procesamiento solo después de que todo esté completo
+      setIsProcessing(false);
     } catch (error) {
       console.error("Error al guardar solicitud:", error);
       // Mostrar error pero mantener el formulario para permitir intentar de nuevo
@@ -576,29 +578,63 @@ function App() {
     if (loadingProcess) return;
     
     setLoadingProcess(true);
-    setProcessingMessage("Iniciando procesamiento de todas las solicitudes...");
+    setProcessingMessage("Procesando solicitudes pendientes...");
     
     try {
       console.log("Procesando todas las solicitudes...");
       
-      const result = await procesarSolicitudes(
-        solicitudes, 
-        assignments, 
-        availablePlazas,
-        setProcessingMessage
-      );
-      
-      if (result.success) {
-        setLoadingProcess(false);
-        showNotification(result.message, 'success');
-      } else {
-        setLoadingProcess(false);
-        showNotification(`Error al procesar solicitudes: ${result.error}`, 'error');
+      // Verificar que tenemos solicitudes pendientes
+      if (solicitudes.length === 0) {
+        console.log("No hay solicitudes pendientes para procesar.");
+        setProcessingMessage("No hay solicitudes pendientes.");
+        setTimeout(() => setLoadingProcess(false), 1000);
+        return;
       }
+      
+      // Procesamiento de solicitudes con retroalimentación
+      const solicitudesOrdenadas = [...solicitudes].sort((a, b) => a.orden - b.orden);
+      let procesadas = 0;
+      
+      for (const solicitud of solicitudesOrdenadas) {
+        setProcessingMessage(`Procesando solicitud con orden ${solicitud.orden} (${procesadas + 1}/${solicitudesOrdenadas.length})...`);
+        
+        const result = await procesarSolicitud(
+          solicitud, 
+          availablePlazas, 
+          assignments, 
+          db
+        );
+        
+        if (result.success) {
+          procesadas++;
+          console.log(`Solicitud ${solicitud.orden} procesada correctamente: ${result.message}`);
+        } else {
+          console.warn(`No se pudo procesar la solicitud ${solicitud.orden}: ${result.message}`);
+        }
+        
+        // Breve pausa para evitar sobrecarga
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      
+      // Refrescar datos después del procesamiento
+      await cargarDatosDesdeFirebase();
+      
+      const mensaje = procesadas > 0 
+        ? `Se han procesado ${procesadas} solicitudes correctamente.` 
+        : "No se pudieron procesar las solicitudes pendientes.";
+      
+      setProcessingMessage("Procesamiento completado");
+      showNotification(mensaje, procesadas > 0 ? 'success' : 'warning');
+      
+      // Breve pausa antes de ocultar el indicador de carga
+      setTimeout(() => {
+        setLoadingProcess(false);
+      }, 1500);
+      
     } catch (error) {
       console.error("Error al procesar solicitudes:", error);
-      setLoadingProcess(false);
       showNotification(`Error al procesar solicitudes: ${error.message}`, 'error');
+      setLoadingProcess(false);
     }
   };
   
