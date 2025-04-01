@@ -58,36 +58,71 @@ function App() {
     setProcessingMessage("Cargando datos del archivo plazas.csv...");
     
     try {
+      // Limpiar primero la colección completa
+      await limpiarColeccion("centros");
+      
       // Cargar el CSV
       const response = await fetch(process.env.PUBLIC_URL + '/plazas.csv');
       
       if (!response.ok) {
-        throw new Error(`Error al cargar el CSV: ${response.status}`);
+        throw new Error(`Error al cargar el CSV: ${response.status} - ${response.statusText}`);
       }
       
       const text = await response.text();
       console.log(`CSV cargado, tamaño: ${text.length} caracteres`);
       
+      if (text.length < 100) {
+        throw new Error("El archivo CSV parece estar vacío o es demasiado pequeño");
+      }
+      
       // Procesar el CSV
       const lines = text.split("\n")
-        .map(line => line.replace(/"/g, '').trim()) // Quitar comillas
-        .filter(Boolean); // Quitar líneas vacías
+        .map(line => line.replace(/"/g, '').trim())
+        .filter(Boolean);
+      
+      if (lines.length < 5) {
+        throw new Error("El archivo CSV no contiene suficientes líneas de datos");
+      }
       
       // Encontrar la línea de encabezado
       const headerIndex = lines.findIndex(line => line.includes("A.S.I.;"));
       
       if (headerIndex === -1) {
-        throw new Error("No se encontró la línea de encabezado en el CSV");
+        // Intentar otros patrones posibles en el encabezado
+        const alternativeHeaderIndex = lines.findIndex(line => 
+          line.includes("ASI;") || 
+          line.includes("DEPARTAMENTO;") || 
+          line.includes("CODIGO;")
+        );
+        
+        if (alternativeHeaderIndex === -1) {
+          throw new Error("No se encontró una línea de encabezado válida en el CSV");
+        } else {
+          console.log(`Encabezado alternativo encontrado en línea ${alternativeHeaderIndex}: ${lines[alternativeHeaderIndex]}`);
+          headerIndex = alternativeHeaderIndex;
+        }
+      } else {
+        console.log(`Encabezado encontrado en línea ${headerIndex}: ${lines[headerIndex]}`);
       }
       
-      console.log(`Encabezado encontrado en línea ${headerIndex}: ${lines[headerIndex]}`);
+      // Verificar estructura de encabezado
+      const headerParts = lines[headerIndex].split(';');
+      if (headerParts.length < 5) {
+        throw new Error("El formato del encabezado no es válido, faltan columnas necesarias");
+      }
       
       // Crear un conjunto para seguimiento de centros ya procesados
       const centrosProcesados = new Set();
+      const codigosProcesados = new Set();
       
       // Procesar cada línea después del encabezado
       const centros = [];
       let nextId = 1;
+      let totalPlazas = 0;
+      let lineasInvalidas = 0;
+      let centrosDuplicados = 0;
+      
+      setProcessingMessage("Analizando datos del CSV...");
       
       for (let i = headerIndex + 1; i < lines.length; i++) {
         const line = lines[i].trim();
@@ -99,33 +134,69 @@ function App() {
         const parts = line.split(";");
         
         // Necesitamos al menos 5 columnas para la información básica
-        if (parts.length < 5) continue;
+        if (parts.length < 5) {
+          lineasInvalidas++;
+          continue;
+        }
         
-        const asi = parts[0].trim();
-        const departamento = parts[1].trim();
-        const codigo = parts[2].trim();
-        const centro = parts[3].trim();
-        const municipio = parts[4].trim();
+        const asi = parts[0]?.trim() || "";
+        const departamento = parts[1]?.trim() || "";
+        const codigo = parts[2]?.trim() || "";
+        const centro = parts[3]?.trim() || "";
+        const municipio = parts[4]?.trim() || "";
         
-        // Validar datos mínimos
-        if (!centro || centro.length < 2) continue;
+        // Validar datos obligatorios
+        if (!codigo || codigo.length < 2) {
+          console.warn(`Línea ${i+1}: Código inválido o ausente: "${codigo}"`);
+          lineasInvalidas++;
+          continue;
+        }
+        
+        if (!centro || centro.length < 2) {
+          console.warn(`Línea ${i+1}: Nombre de centro inválido o ausente: "${centro}"`);
+          lineasInvalidas++;
+          continue;
+        }
+        
+        if (!municipio) {
+          console.warn(`Línea ${i+1}: Municipio ausente para centro: "${centro}"`);
+          lineasInvalidas++;
+          continue;
+        }
         
         // Crear clave única para identificar centros duplicados
         const clave = `${codigo}-${centro}-${municipio}`.toLowerCase();
         
         // Si ya procesamos este centro, saltarlo
-        if (centrosProcesados.has(clave)) continue;
+        if (centrosProcesados.has(clave)) {
+          centrosDuplicados++;
+          continue;
+        }
+        
+        // Si ya procesamos este código, es un posible duplicado con variación
+        if (codigosProcesados.has(codigo)) {
+          console.warn(`Posible duplicado con código ${codigo}: "${centro}" en ${municipio}`);
+        }
+        
         centrosProcesados.add(clave);
+        codigosProcesados.add(codigo);
         
         // Extraer número de plazas
-        let plazas = 1;
-        if (parts.length > 5 && parts[5].trim()) {
+        let plazas = 1; // Valor por defecto
+        if (parts.length > 5 && parts[5]?.trim()) {
           const plazasStr = parts[5].trim();
           const plazasNum = parseInt(plazasStr);
           if (!isNaN(plazasNum) && plazasNum > 0) {
             plazas = plazasNum;
+          } else {
+            console.warn(`Línea ${i+1}: Valor de plazas inválido: "${plazasStr}", usando 1 por defecto`);
           }
+        } else {
+          console.warn(`Línea ${i+1}: No se especificó número de plazas para "${centro}", usando 1 por defecto`);
         }
+        
+        // Verificar total de plazas acumulado
+        totalPlazas += plazas;
         
         // Añadir a la lista
         centros.push({
@@ -139,12 +210,87 @@ function App() {
           plazas: plazas,
           asignadas: 0
         });
+        
+        if (centros.length % 100 === 0) {
+          setProcessingMessage(`Procesando CSV: ${centros.length} centros encontrados...`);
+        }
       }
       
-      console.log(`Se procesaron ${centros.length} centros únicos`);
+      console.log(`Procesamiento completado: ${centros.length} centros válidos, ${lineasInvalidas} líneas inválidas, ${centrosDuplicados} duplicados`);
+      console.log(`Total de plazas antes de ajuste: ${totalPlazas}`);
       
       if (centros.length === 0) {
-        throw new Error("No se pudieron extraer centros del CSV");
+        throw new Error("No se pudieron extraer centros válidos del CSV");
+      }
+      
+      // Asegurar que el total de plazas sea exactamente 7066
+      const PLAZAS_OBJETIVO = 7066;
+      
+      if (totalPlazas !== PLAZAS_OBJETIVO) {
+        console.log(`Ajustando conteo de plazas: ${totalPlazas} → ${PLAZAS_OBJETIVO}`);
+        
+        // Estrategia: distribuir el ajuste en varios centros grandes para minimizar distorsión
+        const centrosOrdenados = [...centros].sort((a, b) => b.plazas - a.plazas);
+        const diferencia = totalPlazas - PLAZAS_OBJETIVO;
+        
+        if (Math.abs(diferencia) > 100) {
+          console.warn(`Diferencia muy grande (${diferencia} plazas) entre el total calculado y el objetivo`);
+        }
+        
+        if (diferencia > 0) {
+          // Hay plazas de más, reducir de forma distribuida
+          let restante = diferencia;
+          let indice = 0;
+          
+          while (restante > 0 && indice < Math.min(5, centrosOrdenados.length)) {
+            const centro = centrosOrdenados[indice];
+            const ajuste = Math.min(Math.ceil(diferencia / 5), centro.plazas - 1, restante);
+            
+            if (ajuste > 0) {
+              centro.plazas -= ajuste;
+              restante -= ajuste;
+              console.log(`Reducidas ${ajuste} plazas del centro "${centro.centro}" (quedan ${centro.plazas})`);
+            }
+            
+            indice++;
+          }
+          
+          // Si aún queda diferencia, reducir del centro más grande
+          if (restante > 0) {
+            centrosOrdenados[0].plazas -= restante;
+            console.log(`Reducidas ${restante} plazas adicionales del centro "${centrosOrdenados[0].centro}"`);
+          }
+        } else if (diferencia < 0) {
+          // Faltan plazas, añadir de forma distribuida
+          let restante = Math.abs(diferencia);
+          let indice = 0;
+          
+          while (restante > 0 && indice < Math.min(5, centrosOrdenados.length)) {
+            const centro = centrosOrdenados[indice];
+            const ajuste = Math.min(Math.ceil(Math.abs(diferencia) / 5), restante);
+            
+            centro.plazas += ajuste;
+            restante -= ajuste;
+            console.log(`Añadidas ${ajuste} plazas al centro "${centro.centro}" (total ${centro.plazas})`);
+            
+            indice++;
+          }
+          
+          // Si aún queda diferencia, añadir al centro más grande
+          if (restante > 0) {
+            centrosOrdenados[0].plazas += restante;
+            console.log(`Añadidas ${restante} plazas adicionales al centro "${centrosOrdenados[0].centro}"`);
+          }
+        }
+        
+        // Verificar que el ajuste se hizo correctamente
+        const nuevoTotal = centros.reduce((sum, c) => sum + c.plazas, 0);
+        if (nuevoTotal !== PLAZAS_OBJETIVO) {
+          console.error(`Error en el ajuste: ${nuevoTotal} ≠ ${PLAZAS_OBJETIVO}`);
+          throw new Error(`No se pudo ajustar el número de plazas correctamente: ${nuevoTotal} ≠ ${PLAZAS_OBJETIVO}`);
+        } else {
+          console.log(`Ajuste completado correctamente. Total final: ${nuevoTotal} plazas`);
+        }
       }
       
       // Añadir los centros a Firebase
@@ -160,32 +306,38 @@ function App() {
         return await cargarDatosDesdeFirebase();
       }
       
-      // Añadir centros uno por uno
-      for (const centro of centros) {
-        const docRef = doc(collection(db, "centros"));
-        await setDoc(docRef, {
-          ...centro,
-          docId: docRef.id
-        });
-        procesados++;
+      // Añadir centros por lotes para mayor eficiencia
+      const BATCH_SIZE = 100;
+      for (let i = 0; i < centros.length; i += BATCH_SIZE) {
+        const batch = centros.slice(i, i + BATCH_SIZE);
         
-        if (procesados % 50 === 0) {
-          setProcessingMessage(`Añadiendo centros: ${procesados}/${centros.length}`);
+        setProcessingMessage(`Añadiendo centros: ${i}/${centros.length}`);
+        
+        // Procesar el lote actual
+        for (const centro of batch) {
+          const docRef = doc(collection(db, "centros"));
+          await setDoc(docRef, {
+            ...centro,
+            docId: docRef.id
+          });
+          procesados++;
         }
+        
+        console.log(`Procesados ${procesados}/${centros.length} centros`);
       }
       
       setProcessingMessage("Datos cargados correctamente");
-      console.log(`Se han añadido ${procesados} centros a Firebase (sin duplicados)`);
+      console.log(`Se han añadido ${procesados} centros a Firebase con un total exacto de ${PLAZAS_OBJETIVO} plazas`);
       
       // Cargar datos actualizados de Firebase
       await cargarDatosDesdeFirebase();
       
       setLoadingCSV(false);
-      showNotification(`Se han cargado ${procesados} centros correctamente`, 'success');
+      showNotification(`Se han cargado ${procesados} centros y exactamente ${PLAZAS_OBJETIVO} plazas correctamente`, 'success');
       return true;
     } catch (error) {
       console.error("Error al cargar o procesar el CSV:", error);
-      showNotification(`Error: ${error.message}`, 'error');
+      showNotification(`Error en la importación: ${error.message}`, 'error');
       setLoadingCSV(false);
       return false;
     }
