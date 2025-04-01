@@ -65,34 +65,8 @@ function App() {
 
   // Función para activar/desactivar el modo mantenimiento
   const toggleMaintenanceMode = (active) => {
-    setIsMaintenanceMode(active);
-    
-    if (active) {
-      setProcessingMessage("El sistema está en modo de mantenimiento. Por favor, espere.");
-      // Parar el procesamiento automático
-      if (countdownTimerRef.current) {
-        clearInterval(countdownTimerRef.current);
-      }
-      showNotification("El sistema está en modo de mantenimiento", "warning");
-    } else {
-      setProcessingMessage("");
-      // Reiniciar el procesamiento automático
-      setSecondsUntilNextUpdate(45);
-      // Configurar el contador de cuenta regresiva
-      countdownTimerRef.current = setInterval(() => {
-        setSecondsUntilNextUpdate(prevSeconds => {
-          if (prevSeconds <= 1) {
-            if (!loadingProcess && solicitudes.length > 0 && !isMaintenanceMode) {
-              procesarTodasLasSolicitudes(true);
-            }
-            return 45;
-          }
-          return prevSeconds - 1;
-        });
-      }, 1000);
-      
-      showNotification("El sistema ha salido del modo de mantenimiento", "success");
-    }
+    // Ya no cambiamos el modo, simplemente se mantiene siempre en false
+    // setIsMaintenanceMode(active);
   };
 
   // Función para resetear los contadores de asignaciones
@@ -1266,50 +1240,41 @@ function App() {
         
         {/* Panel de administrador con modo mantenimiento */}
         <div style={styles.adminPanel}>
-          <button 
-            onClick={() => toggleMaintenanceMode(true)}
-            style={{
-              padding: '8px 15px',
-              backgroundColor: '#e74c3c',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              marginRight: '10px',
-              cursor: 'pointer'
-            }}
-          >
-            Activar Modo Mantenimiento
-          </button>
-          
-          <button 
-            onClick={resetearContadores} 
-            disabled={resetingCounters}
-            style={{
-              padding: '8px 15px',
-              backgroundColor: resetingCounters ? '#95a5a6' : '#3498db',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: resetingCounters ? 'not-allowed' : 'pointer',
-              marginRight: '10px'
-            }}
-          >
-            {resetingCounters ? 'Recalculando...' : 'Recalcular Contadores'}
-          </button>
-          
-          <button 
-            onClick={eliminarCentrosDuplicados}
-            style={{
-              padding: '8px 15px',
-              backgroundColor: '#f39c12',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer'
-            }}
-          >
-            Eliminar Duplicados
-          </button>
+          {!isMaintenanceMode && (
+            <div className="admin-controls">
+              <button 
+                onClick={() => procesarTodasLasSolicitudes(false)}
+                disabled={isProcessing || loadingProcess}
+                className="btn btn-primary"
+              >
+                {isProcessing ? 'Procesando...' : 'Procesar Solicitudes'}
+              </button>
+              
+              <button
+                onClick={verificarYCorregirAsignaciones}
+                disabled={isProcessing}
+                className="btn btn-warning"
+              >
+                Verificar y Corregir Asignaciones
+              </button>
+              
+              {/* Botón para importar centros desde CSV */}
+              <button 
+                onClick={() => document.getElementById('csvFileInput').click()}
+                disabled={isProcessing || loadingCSV}
+                className="btn btn-success"
+              >
+                {loadingCSV ? 'Importando...' : 'Importar Centros CSV'}
+              </button>
+              <input
+                type="file"
+                id="csvFileInput"
+                accept=".csv"
+                style={{ display: 'none' }}
+                onChange={importarCentrosDesdeCSV}
+              />
+            </div>
+          )}
         </div>
         
         <div style={styles.tabs}>
@@ -1359,22 +1324,6 @@ function App() {
           <span style={{fontWeight: 'bold', marginRight: '5px'}}>Plazas disponibles:</span>
           {7066 - assignments.length} de 7066
            {' '}
-          <button 
-            onClick={resetearContadores}
-            disabled={resetingCounters}
-            style={{
-              backgroundColor: resetingCounters ? '#ccc' : '#3498db',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              padding: '3px 8px',
-              fontSize: '12px',
-              cursor: resetingCounters ? 'not-allowed' : 'pointer',
-              marginLeft: '10px'
-            }}
-          >
-            {resetingCounters ? 'Recalculando...' : 'Recalcular contadores'}
-          </button>
         </div>
         <div style={{display: 'flex', alignItems: 'center',flexWrap: 'wrap'}}>
           {solicitudes.length > 0 && (
@@ -1560,79 +1509,6 @@ function App() {
                 borderRadius: '2px',
                 animation: 'loading 1.5s infinite ease-in-out'
               }}></div>
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {/* Mensaje de mantenimiento */}
-      {isMaintenanceMode && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          width: '100%',
-          height: '100%',
-          backgroundColor: 'rgba(0, 0, 0, 0.8)',
-          display: 'flex',
-          flexDirection: 'column',
-          justifyContent: 'center',
-          alignItems: 'center',
-          zIndex: 1000,
-          color: 'white',
-          textAlign: 'center',
-          padding: '20px'
-        }}>
-          <div style={{
-            backgroundColor: '#fff',
-            padding: '30px',
-            borderRadius: '8px',
-            maxWidth: '600px',
-            width: '90%'
-          }}>
-            <h2 style={{color: '#e74c3c', margin: '0 0 20px 0'}}>
-              Sistema en Mantenimiento
-            </h2>
-            <p style={{fontSize: '16px', color: '#333', marginBottom: '20px', lineHeight: '1.6'}}>
-              Estamos realizando actualizaciones para mejorar el sistema de asignación de plazas.
-              <br />
-              Por favor, inténtelo de nuevo más tarde.
-            </p>
-            <div style={{marginTop: '20px', display: 'flex', justifyContent: 'center'}}>
-              <form onSubmit={(e) => {
-                e.preventDefault();
-                const password = e.target.password.value;
-                if (password === "admin123") {
-                  toggleMaintenanceMode(false);
-                } else {
-                  alert("Contraseña incorrecta");
-                }
-              }}>
-                <input 
-                  type="password" 
-                  name="password" 
-                  placeholder="Contraseña de administrador" 
-                  style={{
-                    padding: '10px',
-                    marginRight: '10px',
-                    border: '1px solid #ddd',
-                    borderRadius: '4px'
-                  }}
-                />
-                <button 
-                  type="submit"
-                  style={{
-                    padding: '10px 15px',
-                    backgroundColor: '#3498db',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '4px',
-                    cursor: 'pointer'
-                  }}
-                >
-                  Desactivar Mantenimiento
-                </button>
-              </form>
             </div>
           </div>
         </div>
