@@ -503,49 +503,37 @@ function App() {
         if (solicitudes.length > 0 && !loadingProcess) {
           console.log("Procesando solicitudes al iniciar la aplicación...");
           await procesarTodasLasSolicitudes(true);
+          // Iniciar el contador en 60 segundos
+          setSecondsUntilNextUpdate(60);
         }
       };
       
       procesarInicial();
       
-      // Configurar intervalo de procesamiento cada 60 segundos
-      processingTimerRef.current = setInterval(async () => {
-        console.log(`Verificando para procesar solicitudes automáticamente. ${solicitudes.length} solicitudes pendientes.`);
-        // Procesar aunque no haya pasado mucho tiempo desde la última vez
-        // Esto asegura que siempre se procesen solicitudes cada 60 segundos
-        if (solicitudes.length > 0) {
-          if (loadingProcess) {
-            console.log("Procesamiento ya en curso, esperando a que termine...");
-          } else {
-            console.log(`Iniciando procesamiento automático de ${solicitudes.length} solicitudes pendientes...`);
-            await procesarTodasLasSolicitudes(true);
-            // Reiniciar el contador de segundos
-            setSecondsUntilNextUpdate(60);
-          }
-        } else {
-          console.log("No hay solicitudes pendientes para procesar");
-        }
-      }, 60000); // 60 segundos = 1 minuto
-      
-      // Limpiar el intervalo al desmontar
+      // Ya no configuramos un intervalo de procesamiento aquí
+      // porque lo hemos movido al contador de segundos
+            
+      // Limpiar al desmontar
       return () => {
         if (processingTimerRef.current) {
           clearInterval(processingTimerRef.current);
         }
-        if (countdownTimerRef.current) {
-          clearInterval(countdownTimerRef.current);
-        }
       };
     }
-  }, [availablePlazas.length, solicitudes.length]);
+  }, [availablePlazas.length]);
   
   // Configurar el contador de segundos hasta la próxima actualización
   useEffect(() => {
     // Iniciar el contador de cuenta regresiva
     countdownTimerRef.current = setInterval(() => {
       setSecondsUntilNextUpdate(prevSeconds => {
-        // Si llegamos a 0, volver a 60
+        // Si llegamos a 0, volver a 60 y forzar el procesamiento
         if (prevSeconds <= 1) {
+          console.log("Contador llegó a 0, iniciando procesamiento automático...");
+          // Solo iniciar el procesamiento si no está ya en proceso y hay solicitudes
+          if (!loadingProcess && solicitudes.length > 0) {
+            procesarTodasLasSolicitudes(true);
+          }
           return 60;
         }
         return prevSeconds - 1;
@@ -558,7 +546,7 @@ function App() {
         clearInterval(countdownTimerRef.current);
       }
     };
-  }, []);
+  }, [loadingProcess, solicitudes.length]);
   
   // Función para procesar todas las solicitudes - versión optimizada para alto volumen
   const procesarTodasLasSolicitudes = async (silencioso = false) => {
@@ -964,23 +952,42 @@ function App() {
             : 'No disponible'}
           
           {!loadingProcess && (
-            <span style={{marginLeft: '10px', color: '#555', fontSize: '13px', display: 'flex', alignItems: 'center'}}>
+            <span style={{
+              marginLeft: '10px', 
+              color: '#555', 
+              fontSize: '13px', 
+              display: 'flex', 
+              alignItems: 'center'
+            }}>
               <span style={{
                 display: 'inline-block',
                 width: '10px',
                 height: '10px',
                 borderRadius: '50%',
-                backgroundColor: '#3498db',
+                backgroundColor: secondsUntilNextUpdate <= 10 ? '#f39c12' : '#3498db',
                 marginRight: '4px',
-                opacity: 0.7,
-                animation: 'pulse 1s infinite'
+                opacity: secondsUntilNextUpdate % 2 === 0 ? 0.7 : 1,
+                animation: 'pulse 1s infinite',
+                transition: 'background-color 0.3s'
               }}></span>
-              Próxima actualización en: <span style={{fontWeight: 'bold', marginLeft: '3px'}}>{secondsUntilNextUpdate}s</span>
+              
+              <span style={{marginRight: '3px'}}>
+                {secondsUntilNextUpdate <= 5 ? 'Actualizando pronto...' : 'Próxima actualización en:'}
+              </span>
+              
+              <span style={{
+                fontWeight: 'bold', 
+                marginLeft: '3px',
+                color: secondsUntilNextUpdate <= 10 ? '#e67e22' : '#2980b9'
+              }}>
+                {secondsUntilNextUpdate}s
+              </span>
+              
               <style>{`
                 @keyframes pulse {
-                  0% { opacity: 0.4; }
-                  50% { opacity: 1; }
-                  100% { opacity: 0.4; }
+                  0% { opacity: 0.4; transform: scale(0.95); }
+                  50% { opacity: 1; transform: scale(1.05); }
+                  100% { opacity: 0.4; transform: scale(0.95); }
                 }
               `}</style>
             </span>
