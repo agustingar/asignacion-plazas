@@ -19,6 +19,7 @@ function App() {
   const [processingMessage, setProcessingMessage] = useState('');
   const [loadingCSV, setLoadingCSV] = useState(false);
   const [lastProcessed, setLastProcessed] = useState(null);
+  const [secondsUntilNextUpdate, setSecondsUntilNextUpdate] = useState(60);
   
   // Estados para el formulario de solicitud
   const [orderNumber, setOrderNumber] = useState('');
@@ -40,6 +41,7 @@ function App() {
   const cargaCompletadaRef = useRef(false);
   const processingTimerRef = useRef(null);
   const lastProcessedTimestampRef = useRef(0);
+  const countdownTimerRef = useRef(null);
 
   // Función para mostrar un popup con mensaje
   const showNotification = (message, type = 'success') => {
@@ -510,6 +512,8 @@ function App() {
           if (ahora - lastProcessedTimestampRef.current >= 45000) {
             console.log("Iniciando procesamiento automático de solicitudes...");
             procesarTodasLasSolicitudes(true);
+            // Reiniciar el contador de segundos
+            setSecondsUntilNextUpdate(60);
           }
         }
       }, 60000); // 60 segundos = 1 minuto
@@ -519,9 +523,33 @@ function App() {
         if (processingTimerRef.current) {
           clearInterval(processingTimerRef.current);
         }
+        if (countdownTimerRef.current) {
+          clearInterval(countdownTimerRef.current);
+        }
       };
     }
   }, [availablePlazas.length, solicitudes.length]);
+  
+  // Configurar el contador de segundos hasta la próxima actualización
+  useEffect(() => {
+    // Iniciar el contador de cuenta regresiva
+    countdownTimerRef.current = setInterval(() => {
+      setSecondsUntilNextUpdate(prevSeconds => {
+        // Si llegamos a 0, volver a 60
+        if (prevSeconds <= 1) {
+          return 60;
+        }
+        return prevSeconds - 1;
+      });
+    }, 1000);
+    
+    // Limpiar el intervalo al desmontar
+    return () => {
+      if (countdownTimerRef.current) {
+        clearInterval(countdownTimerRef.current);
+      }
+    };
+  }, []);
   
   // Función para procesar todas las solicitudes - versión optimizada para alto volumen
   const procesarTodasLasSolicitudes = async (silencioso = false) => {
@@ -542,6 +570,8 @@ function App() {
       if (solicitudes.length === 0) {
         setLastProcessed(new Date());
         setLoadingProcess(false);
+        // Restablecer el contador a 60 segundos
+        setSecondsUntilNextUpdate(60);
         return;
       }
       
@@ -581,6 +611,9 @@ function App() {
       // Actualizar información de último procesamiento
       const ahora = new Date();
       setLastProcessed(ahora);
+      
+      // Restablecer el contador a 60 segundos
+      setSecondsUntilNextUpdate(60);
       
       if (!silencioso) {
         // Mostrar notificación si no es silencioso
@@ -879,7 +912,7 @@ function App() {
               ) : (
                 <>
                   <span style={{color: '#2ecc71', marginRight: '5px'}}>●</span>
-                  {solicitudes.length} solicitudes pendientes
+                  {solicitudes.length} solicitudes pendientes 
                 </>
               )}
             </span>
@@ -893,22 +926,28 @@ function App() {
               hour12: false
             }).format(lastProcessed) 
             : 'No disponible'}
-          {!loadingProcess && solicitudes.length > 0 && (
-            <button
-              onClick={() => procesarTodasLasSolicitudes()}
-              style={{
-                marginLeft: '10px',
-                padding: '2px 6px',
-                fontSize: '12px',
-                background: 'none',
-                border: '1px solid #3498db',
-                borderRadius: '4px',
-                color: '#3498db',
-                cursor: 'pointer'
-              }}
-            >
-              Actualizar ahora
-            </button>
+          
+          {!loadingProcess && (
+            <span style={{marginLeft: '10px', color: '#555', fontSize: '13px', display: 'flex', alignItems: 'center'}}>
+              <span style={{
+                display: 'inline-block',
+                width: '10px',
+                height: '10px',
+                borderRadius: '50%',
+                backgroundColor: '#3498db',
+                marginRight: '4px',
+                opacity: 0.7,
+                animation: 'pulse 1s infinite'
+              }}></span>
+              Próxima actualización en: <span style={{fontWeight: 'bold', marginLeft: '3px'}}>{secondsUntilNextUpdate}s</span>
+              <style>{`
+                @keyframes pulse {
+                  0% { opacity: 0.4; }
+                  50% { opacity: 1; }
+                  100% { opacity: 0.4; }
+                }
+              `}</style>
+            </span>
           )}
         </div>
       </div>
@@ -1061,7 +1100,7 @@ function App() {
               }}></div>
             </div>
           </div>
-        </div>
+    </div>
       )}
       
       {/* Estilos CSS */}

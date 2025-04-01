@@ -632,12 +632,15 @@ const PlazasDisponibles = ({
           height: 100%;
           display: flex;
           flex-direction: column;
+          overflow: hidden;
+          max-width: 100%;
         }
         
         .search-container {
           position: relative;
           margin-bottom: 15px;
           width: 100%;
+          max-width: 100%;
         }
         
         .search-box {
@@ -647,6 +650,7 @@ const PlazasDisponibles = ({
           border-radius: 6px;
           font-size: 16px;
           transition: border-color 0.3s;
+          box-sizing: border-box;
         }
         
         .search-box:focus {
@@ -676,6 +680,7 @@ const PlazasDisponibles = ({
           flex-wrap: wrap;
           gap: 10px;
           margin-bottom: 15px;
+          max-width: 100%;
         }
         
         .filter-select {
@@ -684,6 +689,7 @@ const PlazasDisponibles = ({
           border-radius: 4px;
           min-width: 150px;
           flex-grow: 1;
+          box-sizing: border-box;
         }
         
         .results-info {
@@ -693,6 +699,7 @@ const PlazasDisponibles = ({
           font-size: 14px;
           color: #555;
           font-weight: 500;
+          flex-wrap: wrap;
         }
         
         .plazas-grid {

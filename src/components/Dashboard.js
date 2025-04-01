@@ -1,5 +1,4 @@
 import React from 'react';
-import * as XLSX from 'xlsx';
 
 /**
  * Componente que muestra el historial de asignaciones
@@ -41,37 +40,6 @@ const Dashboard = ({ assignments }) => {
   const ordenesOrdenados = Object.keys(asignacionesPorOrden)
     .map(Number)
     .sort((a, b) => a - b);
-  
-  // Función para exportar a Excel
-  const exportToExcel = () => {
-    // Crear un nuevo libro de trabajo
-    const workbook = XLSX.utils.book_new();
-    
-    // Convertir los datos a formato de hoja de cálculo
-    const dataParaExcel = [];
-    
-    // Preparar datos para Excel (formato plano para la tabla)
-    ordenesOrdenados.forEach(orden => {
-      const asignacionesDeEsteOrden = asignacionesPorOrden[orden];
-      asignacionesDeEsteOrden.forEach(asignacion => {
-        dataParaExcel.push({
-          'Número de Orden': asignacion.order,
-          'Localidad': asignacion.localidad,
-          'Centro de Trabajo': asignacion.centro,
-          'Municipio': asignacion.municipio
-        });
-      });
-    });
-    
-    // Crear hoja de cálculo
-    const worksheet = XLSX.utils.json_to_sheet(dataParaExcel);
-    
-    // Añadir la hoja al libro
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Asignaciones');
-    
-    // Generar el archivo y descargarlo
-    XLSX.writeFile(workbook, 'asignaciones_plazas.xlsx');
-  };
   
   // Estilos para el componente
   const styles = {
@@ -124,20 +92,6 @@ const Dashboard = ({ assignments }) => {
     statLabel: {
       fontSize: '12px',
       color: '#95a5a6'
-    },
-    exportButton: {
-      padding: '10px 18px',
-      backgroundImage: 'linear-gradient(to right, #3498db, #2980b9)',
-      color: 'white',
-      border: 'none',
-      borderRadius: '6px',
-      cursor: 'pointer',
-      display: 'flex',
-      alignItems: 'center',
-      boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-      transition: 'all 0.2s ease',
-      fontSize: '14px',
-      fontWeight: '500'
     },
     infoBox: {
       padding: '12px 15px',
@@ -224,14 +178,6 @@ const Dashboard = ({ assignments }) => {
             </div>
           </div>
         </div>
-        
-        <button 
-          onClick={exportToExcel} 
-          style={styles.exportButton}
-        >
-          <span style={{ marginRight: '6px' }}>📊</span>
-          Exportar a Excel
-        </button>
       </div>
       
       <div style={styles.infoBox}>
