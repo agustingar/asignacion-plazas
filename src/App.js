@@ -510,16 +510,20 @@ function App() {
       
       // Configurar intervalo de procesamiento cada 60 segundos
       processingTimerRef.current = setInterval(async () => {
-        if (solicitudes.length > 0 && !loadingProcess) {
-          // Verificar que haya pasado al menos 45 segundos desde el último procesamiento
-          // Esto evita procesamiento excesivo si el anterior tardó mucho
-          const ahora = Date.now();
-          if (ahora - lastProcessedTimestampRef.current >= 45000) {
+        console.log(`Verificando para procesar solicitudes automáticamente. ${solicitudes.length} solicitudes pendientes.`);
+        // Procesar aunque no haya pasado mucho tiempo desde la última vez
+        // Esto asegura que siempre se procesen solicitudes cada 60 segundos
+        if (solicitudes.length > 0) {
+          if (loadingProcess) {
+            console.log("Procesamiento ya en curso, esperando a que termine...");
+          } else {
             console.log(`Iniciando procesamiento automático de ${solicitudes.length} solicitudes pendientes...`);
             await procesarTodasLasSolicitudes(true);
             // Reiniciar el contador de segundos
             setSecondsUntilNextUpdate(60);
           }
+        } else {
+          console.log("No hay solicitudes pendientes para procesar");
         }
       }, 60000); // 60 segundos = 1 minuto
       
@@ -533,7 +537,7 @@ function App() {
         }
       };
     }
-  }, [availablePlazas.length]);
+  }, [availablePlazas.length, solicitudes.length]);
   
   // Configurar el contador de segundos hasta la próxima actualización
   useEffect(() => {
@@ -558,7 +562,10 @@ function App() {
   
   // Función para procesar todas las solicitudes - versión optimizada para alto volumen
   const procesarTodasLasSolicitudes = async (silencioso = false) => {
-    if (loadingProcess) return;
+    if (loadingProcess) {
+      console.log("Ya hay un procesamiento en curso, no se iniciará otro");
+      return;
+    }
     
     // Actualizar estado e iniciar procesamiento
     setLoadingProcess(true);
@@ -569,10 +576,12 @@ function App() {
     }
     
     try {
-      console.log(`Procesando ${solicitudes.length} solicitudes pendientes...`);
+      // Obtener los datos más recientes antes de procesar
+      await cargarDatosDesdeFirebase();
       
-      // Si no hay solicitudes, terminar rápido
+      // Verificar nuevamente las solicitudes después de recargar
       if (solicitudes.length === 0) {
+        console.log("No hay solicitudes pendientes después de recargar datos");
         setLastProcessed(new Date());
         setLoadingProcess(false);
         // Restablecer el contador a 60 segundos
@@ -580,16 +589,14 @@ function App() {
         return;
       }
       
-      // Obtener los datos más recientes antes de procesar
-      await cargarDatosDesdeFirebase();
+      console.log(`Procesando ${solicitudes.length} solicitudes pendientes...`);
       
-      // Obtener la lista actualizada de solicitudes
-      const solicitudesActualizadas = [...solicitudes];
-      console.log(`Procesando ${solicitudesActualizadas.length} solicitudes después de recargar`);
+      // Obtener la lista actualizada de solicitudes y ordenarla por número de orden (menor primero)
+      const solicitudesOrdenadas = [...solicitudes].sort((a, b) => a.orden - b.orden);
+      console.log(`Solicitudes ordenadas por prioridad: ${solicitudesOrdenadas.map(s => s.orden).join(', ')}`);
       
-      // Optimización: procesar en lotes para evitar sobrecarga
-      const BATCH_SIZE = 25; // Procesar 25 solicitudes a la vez
-      const solicitudesOrdenadas = [...solicitudesActualizadas].sort((a, b) => a.orden - b.orden);
+      // Optimización: procesar en lotes pequeños para evitar sobrecarga
+      const BATCH_SIZE = 10; // Procesar 10 solicitudes a la vez
       let procesadas = 0;
       let exitosas = 0;
       
@@ -604,16 +611,36 @@ function App() {
         // Procesar cada solicitud del lote en serie para evitar conflictos
         for (const solicitud of lote) {
           try {
-            const resultado = await procesarSolicitud(solicitud, availablePlazas, assignments, db, solicitudesActualizadas);
+            console.log(`Procesando solicitud con orden ${solicitud.orden}...`);
+            const resultado = await procesarSolicitud(
+              solicitud, 
+              availablePlazas, 
+              assignments, 
+              db, 
+              solicitudesOrdenadas
+            );
+            
             procesadas++;
-            if (resultado.success) exitosas++;
+            if (resultado.success) {
+              exitosas++;
+              console.log(`Procesamiento exitoso para orden ${solicitud.orden}: ${resultado.message}`);
+            } else {
+              console.log(`No se pudo procesar orden ${solicitud.orden}: ${resultado.message}`);
+            }
           } catch (error) {
             console.error(`Error al procesar solicitud ${solicitud.orden}:`, error);
           }
         }
+        
+        // Recargar datos después de cada lote para tener actualizaciones
+        if (i + BATCH_SIZE < solicitudesOrdenadas.length) {
+          console.log("Recargando datos después del lote...");
+          await cargarDatosDesdeFirebase();
+        }
       }
       
       // Recargar datos después del procesamiento
+      console.log("Procesamiento terminado, recargando datos finales...");
       await cargarDatosDesdeFirebase();
       
       // Actualizar información de último procesamiento
@@ -641,6 +668,7 @@ function App() {
     } finally {
       // Finalizar el procesamiento
       setLoadingProcess(false);
+      console.log("Procesamiento finalizado");
     }
   };
 

@@ -728,11 +728,13 @@ const PlazasDisponibles = ({
           border: 1px solid #eee;
           border-radius: 4px;
           margin-bottom: 15px;
+          -webkit-overflow-scrolling: touch;
         }
         
         .tabla-plazas {
           width: 100%;
           border-collapse: collapse;
+          table-layout: fixed;
         }
         
         .tabla-plazas th {
@@ -749,6 +751,7 @@ const PlazasDisponibles = ({
         .tabla-plazas td {
           padding: 12px 10px;
           border-bottom: 1px solid #eee;
+          word-break: break-word;
         }
         
         .centro-column {
@@ -910,16 +913,53 @@ const PlazasDisponibles = ({
           
           .tabla-plazas th, .tabla-plazas td {
             padding: 10px 5px;
-            font-size: 14px;
+            font-size: 13px;
+          }
+          
+          .tabla-plazas th:nth-child(1) {
+            width: 65px;
+          }
+          
+          .tabla-plazas th:nth-child(2) {
+            width: 60px;
+          }
+          
+          .tabla-plazas th:nth-child(4) {
+            width: 80px;
+          }
+          
+          .tabla-plazas th:nth-child(5) {
+            width: 45px;
           }
           
           .centro-column {
-            max-width: 120px;
+            max-width: 100px;
           }
           
           .pagination-button {
             padding: 6px 10px;
+            font-size: 13px;
           }
+          
+          h2 {
+            font-size: 20px;
+            margin-top: 0;
+          }
+          
+          form > div {
+            margin-bottom: 10px !important;
+          }
+          
+          .search-box {
+            padding: 10px 12px;
+            font-size: 14px;
+          }
+        }
+        
+        /* Animaciones */
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
         }
       `}</style>
     </div>

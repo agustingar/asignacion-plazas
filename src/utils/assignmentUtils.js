@@ -292,7 +292,7 @@ export const procesarSolicitud = async (solicitud, availablePlazas, assignments,
       if (disponibles > 0) {
         // Hay plazas disponibles, asignar directamente
         const asignacionId = await asignarPlaza(orden, centroId, centro, solicitudDocId, centrosIds);
-        console.log(`Asignación completada con ID: ${asignacionId}`);
+        console.log(`✅ Asignación directa completada: Orden ${orden} → ${centro.centro} (plazas disponibles)`);
         
         asignado = true;
         return {
@@ -302,16 +302,25 @@ export const procesarSolicitud = async (solicitud, availablePlazas, assignments,
           asignacionId
         };
       } else {
-        // Verificar si podemos desplazar a alguien con mayor número de orden
+        // NO hay plazas disponibles, verificar si podemos desplazar a alguien con mayor número de orden
         // Buscar todas las asignaciones actuales para este centro
         const asignacionesCentro = assignments.filter(a => a.id === centroId);
         
-        // Buscar la asignación con el número de orden más alto (menor prioridad)
-        const asignacionMayorOrden = asignacionesCentro.sort((a, b) => b.order - a.order)[0];
+        if (asignacionesCentro.length === 0) {
+          console.warn(`No se encontraron asignaciones para el centro ${centro.centro} aunque figura como completo`);
+          continue;
+        }
         
+        // Obtener todas las asignaciones ordenadas por número de orden (mayor primero = menor prioridad)
+        const asignacionesOrdenadas = [...asignacionesCentro].sort((a, b) => b.order - a.order);
+        const asignacionMayorOrden = asignacionesOrdenadas[0];
+        
+        console.log(`Centro ${centro.centro}: asignaciones existentes ${asignacionesOrdenadas.map(a => a.order).join(', ')}`);
+        
+        // Verificar si podemos desplazar (si nuestro orden es menor que el mayor orden asignado)
         if (asignacionMayorOrden && asignacionMayorOrden.order > orden) {
           // Encontramos a alguien con menor prioridad, podemos desplazarlo
-          console.log(`⚠️ Desplazando orden ${asignacionMayorOrden.order} (mayor) para asignar ${orden} (menor) en ${centro.centro}`);
+          console.log(`⚠️ Desplazando: orden ${asignacionMayorOrden.order} (menor prioridad) para asignar ${orden} (mayor prioridad) en ${centro.centro}`);
           
           // Eliminar la asignación anterior
           await deleteDoc(doc(db, "asignaciones", asignacionMayorOrden.docId));
@@ -364,7 +373,7 @@ export const procesarSolicitud = async (solicitud, availablePlazas, assignments,
           
           // Guardar en solicitudes pendientes
           const docRef = await addDoc(collection(db, "solicitudesPendientes"), solicitudNueva);
-          console.log(`Nueva solicitud pendiente creada para orden ${asignacionMayorOrden.order} con ID: ${docRef.id}`);
+          console.log(`⚠️ Nueva solicitud pendiente creada para el orden desplazado ${asignacionMayorOrden.order}`);
           
           // También guardar una copia en el historial para no perder centros preferidos
           try {
@@ -384,6 +393,8 @@ export const procesarSolicitud = async (solicitud, availablePlazas, assignments,
             ordenDesplazado: asignacionMayorOrden.order,
             asignacionId
           };
+        } else {
+          console.log(`No se puede desplazar en ${centro.centro}: la orden ${orden} tiene menor prioridad que las existentes`);
         }
       }
     }
