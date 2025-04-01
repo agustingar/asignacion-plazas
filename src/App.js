@@ -19,7 +19,7 @@ function App() {
   const [processingMessage, setProcessingMessage] = useState('');
   const [loadingCSV, setLoadingCSV] = useState(false);
   const [lastProcessed, setLastProcessed] = useState(null);
-  const [secondsUntilNextUpdate, setSecondsUntilNextUpdate] = useState(15);
+  const [secondsUntilNextUpdate, setSecondsUntilNextUpdate] = useState(10);
   
   // Estados para el formulario de solicitud
   const [orderNumber, setOrderNumber] = useState('');
@@ -503,8 +503,8 @@ function App() {
         if (solicitudes.length > 0 && !loadingProcess) {
           console.log("Procesando solicitudes al iniciar la aplicación...");
           await procesarTodasLasSolicitudes(true);
-          // Iniciar el contador en 15 segundos
-          setSecondsUntilNextUpdate(15);
+          // Iniciar el contador en 10 segundos
+          setSecondsUntilNextUpdate(10);
         }
       };
       
@@ -527,14 +527,14 @@ function App() {
     // Iniciar el contador de cuenta regresiva
     countdownTimerRef.current = setInterval(() => {
       setSecondsUntilNextUpdate(prevSeconds => {
-        // Si llegamos a 0, volver a 15 y forzar el procesamiento
+        // Si llegamos a 0, volver a 10 y forzar el procesamiento
         if (prevSeconds <= 1) {
           console.log("Contador llegó a 0, iniciando procesamiento automático...");
           // Solo iniciar el procesamiento si no está ya en proceso y hay solicitudes
           if (!loadingProcess && solicitudes.length > 0) {
             procesarTodasLasSolicitudes(true);
           }
-          return 15;
+          return 10;
         }
         return prevSeconds - 1;
       });
@@ -572,8 +572,8 @@ function App() {
         console.log("No hay solicitudes pendientes después de recargar datos");
         setLastProcessed(new Date());
         setLoadingProcess(false);
-        // Restablecer el contador a 15 segundos
-        setSecondsUntilNextUpdate(15);
+        // Restablecer el contador a 10 segundos
+        setSecondsUntilNextUpdate(10);
         return {
           success: true,
           message: "No hay solicitudes pendientes para procesar"
@@ -708,8 +708,8 @@ function App() {
       const ahora = new Date();
       setLastProcessed(ahora);
       
-      // Restablecer el contador a 15 segundos
-      setSecondsUntilNextUpdate(15);
+      // Restablecer el contador a 10 segundos
+      setSecondsUntilNextUpdate(10);
       
       if (!silencioso) {
         // Mostrar notificación detallada
@@ -829,7 +829,7 @@ function App() {
         setCentrosSeleccionados([]);
         
         // Mostrar confirmación después de iniciar el procesamiento
-        showNotification(`Tu solicitud con ${centrosIdsNumericos.length} centros ha sido registrada. Se procesará automáticamente cada 15 segundos priorizando por número de orden.`, 'success');
+        showNotification(`Tu solicitud con ${centrosIdsNumericos.length} centros ha sido registrada. Se procesará automáticamente cada 10 segundos priorizando por número de orden.`, 'success');
         
         // Procesar todas las solicitudes automáticamente después de guardar
         const resultadoProcesamiento = await procesarTodasLasSolicitudes();

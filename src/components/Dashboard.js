@@ -172,7 +172,7 @@ const Dashboard = ({ assignments }) => {
             <div style={styles.statIcon}>🏢</div>
             <div style={styles.statContent}>
               <div style={styles.statValue}>
-                {new Set(assignments.map(a => a.id)).size}
+                {new Set(assignments.map(a => a.centroId || a.id)).size}
               </div>
               <div style={styles.statLabel}>Centros con asignaciones</div>
             </div>
