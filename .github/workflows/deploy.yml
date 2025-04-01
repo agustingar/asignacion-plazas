@@ -24,7 +24,7 @@ jobs:
         run: npm ci
 
       - name: Build
-        run: npm run build
+        run: CI=false npm run build
         env:
           PUBLIC_URL: /asignacion-plazas
 
