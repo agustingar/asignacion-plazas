@@ -62,7 +62,6 @@ function App() {
   // Función para resetear los contadores de asignaciones
   const resetearContadores = async () => {
     if (resetingCounters) {
-      console.log("Ya hay un reseteo de contadores en curso");
       return;
     }
     
@@ -113,7 +112,6 @@ function App() {
       }
       
       const text = await response.text();
-      console.log(`CSV cargado, tamaño: ${text.length} caracteres`);
       
       if (text.length < 100) {
         throw new Error("El archivo CSV parece estar vacío o es demasiado pequeño");
@@ -142,11 +140,9 @@ function App() {
         if (alternativeHeaderIndex === -1) {
           throw new Error("No se encontró una línea de encabezado válida en el CSV");
         } else {
-          console.log(`Encabezado alternativo encontrado en línea ${alternativeHeaderIndex}: ${lines[alternativeHeaderIndex]}`);
           headerIndex = alternativeHeaderIndex;
         }
       } else {
-        console.log(`Encabezado encontrado en línea ${headerIndex}: ${lines[headerIndex]}`);
       }
       
       // Verificar estructura de encabezado
@@ -260,8 +256,6 @@ function App() {
         }
       }
       
-      console.log(`Procesamiento completado: ${centros.length} centros válidos, ${lineasInvalidas} líneas inválidas, ${centrosDuplicados} duplicados`);
-      console.log(`Total de plazas antes de ajuste: ${totalPlazas}`);
       
       if (centros.length === 0) {
         throw new Error("No se pudieron extraer centros válidos del CSV");
@@ -271,7 +265,6 @@ function App() {
       const PLAZAS_OBJETIVO = 7066;
       
       if (totalPlazas !== PLAZAS_OBJETIVO) {
-        console.log(`Ajustando conteo de plazas: ${totalPlazas} → ${PLAZAS_OBJETIVO}`);
         
         // Estrategia: distribuir el ajuste en varios centros grandes para minimizar distorsión
         const centrosOrdenados = [...centros].sort((a, b) => b.plazas - a.plazas);
@@ -293,7 +286,6 @@ function App() {
             if (ajuste > 0) {
               centro.plazas -= ajuste;
               restante -= ajuste;
-              console.log(`Reducidas ${ajuste} plazas del centro "${centro.centro}" (quedan ${centro.plazas})`);
             }
             
             indice++;
@@ -302,7 +294,6 @@ function App() {
           // Si aún queda diferencia, reducir del centro más grande
           if (restante > 0) {
             centrosOrdenados[0].plazas -= restante;
-            console.log(`Reducidas ${restante} plazas adicionales del centro "${centrosOrdenados[0].centro}"`);
           }
         } else if (diferencia < 0) {
           // Faltan plazas, añadir de forma distribuida
@@ -315,7 +306,6 @@ function App() {
             
             centro.plazas += ajuste;
             restante -= ajuste;
-            console.log(`Añadidas ${ajuste} plazas al centro "${centro.centro}" (total ${centro.plazas})`);
             
             indice++;
           }
@@ -323,7 +313,6 @@ function App() {
           // Si aún queda diferencia, añadir al centro más grande
           if (restante > 0) {
             centrosOrdenados[0].plazas += restante;
-            console.log(`Añadidas ${restante} plazas adicionales al centro "${centrosOrdenados[0].centro}"`);
           }
         }
         
@@ -333,7 +322,6 @@ function App() {
           console.error(`Error en el ajuste: ${nuevoTotal} ≠ ${PLAZAS_OBJETIVO}`);
           throw new Error(`No se pudo ajustar el número de plazas correctamente: ${nuevoTotal} ≠ ${PLAZAS_OBJETIVO}`);
         } else {
-          console.log(`Ajuste completado correctamente. Total final: ${nuevoTotal} plazas`);
         }
       }
       
@@ -344,7 +332,6 @@ function App() {
       // Verificar una vez más si hay datos para evitar duplicación
       const verificacionFinal = await getDocs(collection(db, "centros"));
       if (verificacionFinal.size > 0) {
-        console.log(`ADVERTENCIA: Ya existen ${verificacionFinal.size} centros en Firebase. Cancelando carga para evitar duplicación.`);
         showNotification("Se encontraron datos existentes. Usando datos actuales para evitar duplicación.", 'warning');
         setLoadingCSV(false);
         return await cargarDatosDesdeFirebase();
@@ -367,11 +354,9 @@ function App() {
           procesados++;
         }
         
-        console.log(`Procesados ${procesados}/${centros.length} centros`);
       }
       
       setProcessingMessage("Datos cargados correctamente");
-      console.log(`Se han añadido ${procesados} centros a Firebase con un total exacto de ${PLAZAS_OBJETIVO} plazas`);
       
       // Cargar datos actualizados de Firebase
       await cargarDatosDesdeFirebase();
@@ -395,15 +380,12 @@ function App() {
       const snapshot = await getDocs(collection(db, nombreColeccion));
       
       if (snapshot.size > 0) {
-        console.log(`Eliminando ${snapshot.size} documentos de ${nombreColeccion}...`);
         
         for (const docSnapshot of snapshot.docs) {
           await deleteDoc(doc(db, nombreColeccion, docSnapshot.id));
         }
         
-        console.log(`Colección ${nombreColeccion} limpiada correctamente`);
       } else {
-        console.log(`No hay documentos en la colección ${nombreColeccion} para eliminar`);
       }
       
       return true;
@@ -420,19 +402,16 @@ function App() {
       const centrosSnapshot = await getDocs(collection(db, "centros"));
       const centrosData = centrosSnapshot.docs.map(doc => ({ ...doc.data(), docId: doc.id }));
       setAvailablePlazas(centrosData);
-      console.log(`Cargados ${centrosData.length} centros desde Firebase`);
       
       // Cargar asignaciones
       const asignacionesSnapshot = await getDocs(collection(db, "asignaciones"));
       const asignacionesData = asignacionesSnapshot.docs.map(doc => ({ ...doc.data(), docId: doc.id }));
       setAssignments(asignacionesData);
-      console.log(`Cargadas ${asignacionesData.length} asignaciones desde Firebase`);
       
       // Cargar solicitudes pendientes
       const solicitudesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
       const solicitudesData = solicitudesSnapshot.docs.map(doc => ({ ...doc.data(), docId: doc.id }));
       setSolicitudes(solicitudesData);
-      console.log(`Cargadas ${solicitudesData.length} solicitudes desde Firebase`);
       
       return true;
     } catch (error) {
@@ -451,7 +430,6 @@ function App() {
       });
       
       if (centrosData.length > 0) {
-        console.log(`Datos de centros actualizados: ${centrosData.length} centros`);
         setAvailablePlazas(centrosData);
       }
     });
@@ -463,7 +441,6 @@ function App() {
         asignacionesData.push({ ...doc.data(), docId: doc.id });
       });
       
-      console.log(`Datos de asignaciones actualizados: ${asignacionesData.length} asignaciones`);
       setAssignments(asignacionesData);
     });
     
@@ -474,7 +451,6 @@ function App() {
         solicitudesData.push({ ...doc.data(), docId: doc.id });
       });
       
-      console.log(`Datos de solicitudes pendientes actualizados: ${solicitudesData.length} solicitudes`);
       setSolicitudes(solicitudesData);
     });
     
@@ -493,12 +469,10 @@ function App() {
     const inicializarApp = async () => {
       // Usar refs para controlar el estado de inicialización
       if (cargandoRef.current || cargaCompletadaRef.current) {
-        console.log("Inicialización ya en progreso o completada. Omitiendo...");
         return;
       }
       
       cargandoRef.current = true;
-      console.log("Iniciando verificación de datos en Firebase...");
       
       try {
         // Comprobar si ya hay datos en Firebase
@@ -506,11 +480,9 @@ function App() {
         const centrosCount = centrosSnapshot.size;
         
         if (centrosCount === 0) {
-          console.log("No hay centros en Firebase. Cargando desde CSV...");
           await limpiarColeccion("centros"); // Asegurar que está vacío
           await cargarDesdePlazasCSV();
         } else {
-          console.log(`Ya hay ${centrosCount} centros en Firebase. Cargando datos existentes...`);
           await cargarDatosDesdeFirebase();
         }
         
@@ -540,7 +512,6 @@ function App() {
       // Procesar inmediatamente al cargar por primera vez
       const procesarInicial = async () => {
         if (solicitudes.length > 0 && !loadingProcess) {
-          console.log("Procesando solicitudes al iniciar la aplicación...");
           await procesarTodasLasSolicitudes(true);
           // Iniciar el contador en 30 segundos
           setSecondsUntilNextUpdate(30);
@@ -568,7 +539,6 @@ function App() {
       setSecondsUntilNextUpdate(prevSeconds => {
         // Si llegamos a 0, volver a 30 (en vez de 10) y forzar el procesamiento
         if (prevSeconds <= 1) {
-          console.log("Contador llegó a 0, iniciando procesamiento automático...");
           // Solo iniciar el procesamiento si no está ya en proceso y hay solicitudes
           if (!loadingProcess && solicitudes.length > 0) {
             procesarTodasLasSolicitudes(true);
@@ -590,7 +560,6 @@ function App() {
   // Función para procesar todas las solicitudes - versión optimizada para alto volumen
   const procesarTodasLasSolicitudes = async (silencioso = false) => {
     if (loadingProcess) {
-      console.log("Ya hay un procesamiento en curso, no se iniciará otro");
       return;
     }
     
@@ -608,7 +577,6 @@ function App() {
       
       // Verificar nuevamente las solicitudes después de recargar
       if (solicitudes.length === 0) {
-        console.log("No hay solicitudes pendientes después de recargar datos");
         setLastProcessed(new Date());
         setLoadingProcess(false);
         // Restablecer el contador a 30 segundos
@@ -619,7 +587,6 @@ function App() {
         };
       }
       
-      console.log(`Procesando ${solicitudes.length} solicitudes pendientes en cola...`);
       
       // Obtener la lista actualizada de solicitudes y ordenarla por número de orden (menor primero)
       const solicitudesOrdenadas = [...solicitudes].sort((a, b) => {
@@ -631,7 +598,6 @@ function App() {
         return a.orden - b.orden;
       });
       
-      console.log(`Cola de solicitudes (orden de procesamiento): ${solicitudesOrdenadas.map(s => `${s.orden} (${new Date(s.timestamp).toLocaleTimeString()})`).join(', ')}`);
       
       // SOLO PROCESAR LA PRIMERA SOLICITUD DE LA COLA
       // Esto garantiza que incluso con múltiples usuarios, las solicitudes se procesan una a una
@@ -642,13 +608,11 @@ function App() {
           setProcessingMessage(`Procesando solicitud #${primeraSolicitud.orden} (enviada a las ${new Date(primeraSolicitud.timestamp).toLocaleTimeString()})...`);
         }
         
-        console.log(`Procesando primera solicitud de la cola: orden ${primeraSolicitud.orden}...`);
         
         try {
           // Verificar si esta solicitud aún existe
           const solicitudActualizada = solicitudes.find(s => s.docId === primeraSolicitud.docId);
           if (!solicitudActualizada) {
-            console.log(`La solicitud ${primeraSolicitud.orden} ya no existe en la base de datos, omitiendo...`);
             setLoadingProcess(false);
             setSecondsUntilNextUpdate(5); // Verificar rápidamente la siguiente en cola
             return { success: true, message: "Solicitud ya no existe" };
@@ -656,12 +620,10 @@ function App() {
           
           // Verificar si ya existe una asignación para este número de orden
           if (assignments.some(a => a.order === primeraSolicitud.orden)) {
-            console.log(`Ya existe una asignación para el orden ${primeraSolicitud.orden}, eliminando solicitud de la cola...`);
             
             // Eliminar la solicitud de la cola ya que ya tiene asignación
             try {
               await deleteDoc(doc(db, "solicitudesPendientes", primeraSolicitud.docId));
-              console.log(`Solicitud ${primeraSolicitud.orden} eliminada de la cola porque ya tiene asignación`);
             } catch (error) {
               console.error(`Error al eliminar solicitud ${primeraSolicitud.orden} de la cola:`, error);
             }
@@ -681,13 +643,10 @@ function App() {
           );
           
           if (resultado.success) {
-            console.log(`✅ Procesamiento exitoso para la solicitud ${primeraSolicitud.orden} en cola: ${resultado.message}`);
           } else {
-            console.log(`❌ No se pudo procesar la solicitud ${primeraSolicitud.orden} en cola: ${resultado.message}`);
             
             // Si después de 3 intentos fallidos no se puede procesar, moverla al final de la cola
             if (primeraSolicitud.intentosFallidos >= 3) {
-              console.log(`La solicitud ${primeraSolicitud.orden} ha fallado ${primeraSolicitud.intentosFallidos} veces, actualizando timestamp para moverla al final de la cola`);
               
               try {
                 // Actualizar el timestamp para moverla al final de la cola
@@ -733,9 +692,7 @@ function App() {
       
       // Verificación final
       if (solicitudes.length > 0) {
-        console.log(`⚠️ Después del procesamiento aún quedan ${solicitudes.length} solicitudes pendientes en cola.`);
       } else {
-        console.log("✅ Cola de solicitudes vacía.");
       }
       
       return {
@@ -757,7 +714,6 @@ function App() {
     } finally {
       // Finalizar el procesamiento
       setLoadingProcess(false);
-      console.log("Procesamiento de cola finalizado");
     }
   };
 
@@ -806,16 +762,13 @@ function App() {
       const solicitudExistente = solicitudes.find(s => s.orden === parseInt(orderNumber));
       
       if (solicitudExistente) {
-        console.log(`Solicitud con orden ${orderNumber} ya existe, actualizando preferencias...`);
         // Actualizar la solicitud existente en lugar de crear una nueva
         const solicitudRef = doc(db, "solicitudesPendientes", solicitudExistente.docId);
         await updateDoc(solicitudRef, solicitudData);
-        console.log(`Solicitud actualizada correctamente para orden ${orderNumber}`);
         showNotification(`Solicitud actualizada correctamente para orden ${orderNumber}`, "success");
       } else {
         // Guardar nueva solicitud en la base de datos
         await addDoc(collection(db, "solicitudesPendientes"), solicitudData);
-        console.log(`Nueva solicitud creada para orden ${orderNumber}`);
         showNotification(`Solicitud con orden ${orderNumber} enviada correctamente.`, "success");
       }
       
@@ -962,7 +915,6 @@ function App() {
       
       // Resetear contadores cada 60 minutos (3600000 ms) o si nunca se ha hecho
       if (ultimoReset === 0 || (ahora - ultimoReset) > 3600000) {
-        console.log("Ejecutando reseteo automático de contadores...");
         resetearContadores();
       }
     };
