@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
-import { collection, onSnapshot, addDoc, updateDoc, doc, getDocs, query, deleteDoc, setDoc, runTransaction, orderBy, where } from "firebase/firestore";
+import { collection, onSnapshot, addDoc, updateDoc, doc, getDocs, query, deleteDoc, setDoc, runTransaction, orderBy, where, writeBatch } from "firebase/firestore";
 import { db } from './utils/firebaseConfig';
 import { procesarSolicitudes, procesarSolicitud, resetearContadoresAsignaciones } from './utils/assignmentUtils';
 
@@ -22,6 +22,10 @@ function App() {
   const [secondsUntilNextUpdate, setSecondsUntilNextUpdate] = useState(45);
   const [resetingCounters, setResetingCounters] = useState(false);
   const [isMaintenanceMode, setIsMaintenanceMode] = useState(false);
+  // Agregar estado para mostrar pantalla de mantenimiento durante verificación
+  const [isVerificationMaintenance, setIsVerificationMaintenance] = useState(false);
+  const [maintenanceMessage, setMaintenanceMessage] = useState('');
+  const [maintenanceProgress, setMaintenanceProgress] = useState(0);
   
   // Estados para el formulario de solicitud
   const [orderNumber, setOrderNumber] = useState('');
@@ -877,12 +881,12 @@ function App() {
           console.log("Ejecutando verificación inicial después del despliegue");
           
           // Esperar a que todo esté cargado
-          await new Promise(resolve => setTimeout(resolve, 10000)); // 10 segundos
+          await new Promise(resolve => setTimeout(resolve, 5000)); // 5 segundos
           
-          // Solo eliminar duplicados, no hacer reset completo
-          await eliminarSolicitudesDuplicadas();
+          // Ejecutar verificación completa con pantalla de mantenimiento
+          verificarYCorregirAsignaciones();
           
-          console.log("Verificación inicial completada");
+          console.log("Verificación inicial programada");
         } catch (error) {
           console.error("Error en verificación inicial:", error);
         }
@@ -890,7 +894,7 @@ function App() {
       
       ejecutarVerificacionInicialDeployment();
     }
-  }, [availablePlazas]);
+  }, [availablePlazas, verificarYCorregirAsignaciones]);
   
   // Añadir ref para controlar si ya se ha hecho la verificación inicial
   const cargaInicialCompletadaRef = useRef(false);
@@ -1496,94 +1500,196 @@ function App() {
 
   // Función para verificar y corregir asignaciones existentes (reset completo a las 00:00)
   const verificarYCorregirAsignaciones = useCallback(async () => {
-    if (isProcessing || isMaintenanceMode) return;
+    if (isProcessing) return;
     
     try {
+      // Activar modo mantenimiento durante verificación
+      setIsVerificationMaintenance(true);
+      setMaintenanceMessage("Iniciando verificación y reset de asignaciones...");
+      setMaintenanceProgress(10);
       setIsProcessing(true);
       
       // Eliminar solicitudes duplicadas
+      setMaintenanceMessage("Eliminando solicitudes duplicadas...");
+      setMaintenanceProgress(20);
       await eliminarSolicitudesDuplicadas();
       
-      // Obtener todas las asignaciones actuales
-      const asignacionesQuery = query(collection(db, "asignaciones"), orderBy("timestamp", "asc"));
-      const asignacionesSnapshot = await getDocs(asignacionesQuery);
+      // Obtener todas las asignaciones actuales de manera optimizada
+      setMaintenanceMessage("Obteniendo asignaciones actuales...");
+      setMaintenanceProgress(30);
+      
+      // Obtener datos de manera paralela para mejorar velocidad
+      const [asignacionesSnapshot, centrosSnapshot] = await Promise.all([
+        getDocs(query(collection(db, "asignaciones"), orderBy("timestamp", "asc"))),
+        getDocs(collection(db, "centros"))
+      ]);
+      
       const asignacionesActuales = asignacionesSnapshot.docs.map(doc => ({
         ...doc.data(),
         docId: doc.id
       }));
       
-      // Obtener todos los centros
-      const centrosQuery = query(collection(db, "centros"));
-      const centrosSnapshot = await getDocs(centrosQuery);
       const todosCentros = centrosSnapshot.docs.map(doc => ({
         ...doc.data(),
         docId: doc.id
       }));
       
-      // Resetear contadores de asignaciones en centros
-      for (const centro of todosCentros) {
-        await updateDoc(doc(db, "centros", centro.docId), {
-          asignadas: 0
-        });
+      // Resetear contadores de asignaciones en centros usando lotes
+      setMaintenanceMessage("Reseteando contadores de centros...");
+      setMaintenanceProgress(40);
+      
+      // Procesar en lotes para mejorar rendimiento
+      const BATCH_SIZE = 100;
+      
+      for (let i = 0; i < todosCentros.length; i += BATCH_SIZE) {
+        const batch = writeBatch(db);
+        const centroBatch = todosCentros.slice(i, i + BATCH_SIZE);
+        
+        for (const centro of centroBatch) {
+          const centroRef = doc(db, "centros", centro.docId);
+          batch.update(centroRef, { asignadas: 0 });
+        }
+        
+        await batch.commit();
+        setMaintenanceProgress(40 + Math.floor((i / todosCentros.length) * 10));
       }
       
       console.log(`Realizando reset completo: ${asignacionesActuales.length} asignaciones se moverán a solicitudes pendientes`);
+      setMaintenanceMessage(`Procesando ${asignacionesActuales.length} asignaciones...`);
+      setMaintenanceProgress(50);
       
-      // Mover todas las asignaciones a solicitudes pendientes
-      for (const asignacion of asignacionesActuales) {
-        // Guardar solicitud en el historial
-        try {
-          // Crear datos para la solicitud pendiente
-          const solicitudData = {
-            orden: asignacion.order,
-            centrosIds: [asignacion.id], // Usar el centro actualmente asignado como primera preferencia
-            timestamp: Date.now(),
-            intentosFallidos: 0
-          };
-          
-          // Verificar si ya existe una solicitud pendiente con este número de orden
-          const solicitudesPendientesQuery = query(
-            collection(db, "solicitudesPendientes"),
-            where("orden", "==", asignacion.order)
-          );
-          const solicitudesPendientesSnapshot = await getDocs(solicitudesPendientesQuery);
-          
-          if (solicitudesPendientesSnapshot.empty) {
-            // No existe, crear nueva solicitud pendiente
-            await addDoc(collection(db, "solicitudesPendientes"), solicitudData);
-          }
-          
-          // Mover la asignación al historial
-          const historialData = {
-            orden: asignacion.order,
-            centrosIds: [asignacion.id],
-            estado: "REINICIADA_POR_SISTEMA",
-            centroAsignado: asignacion.centro,
-            centroId: asignacion.id,
-            fechaHistorico: new Date().toISOString(),
-            timestamp: asignacion.timestamp || Date.now()
-          };
-          
-          await addDoc(collection(db, "historialSolicitudes"), historialData);
-          
-          // Eliminar la asignación actual
-          await deleteDoc(doc(db, "asignaciones", asignacion.docId));
-        } catch (error) {
-          console.error(`Error al procesar asignación ${asignacion.order}:`, error);
+      // Mover todas las asignaciones a solicitudes pendientes en lotes
+      const pendientesData = [];
+      const historialData = [];
+      const docIdsToDelete = [];
+      
+      // Preparar datos para lotes 
+      for (let i = 0; i < asignacionesActuales.length; i++) {
+        const asignacion = asignacionesActuales[i];
+        
+        // Datos para solicitud pendiente
+        pendientesData.push({
+          orden: asignacion.order,
+          centrosIds: [asignacion.id],
+          timestamp: Date.now(),
+          intentosFallidos: 0
+        });
+        
+        // Datos para historial
+        historialData.push({
+          orden: asignacion.order,
+          centrosIds: [asignacion.id],
+          estado: "REINICIADA_POR_SISTEMA",
+          centroAsignado: asignacion.centro,
+          centroId: asignacion.id,
+          fechaHistorico: new Date().toISOString(),
+          timestamp: asignacion.timestamp || Date.now()
+        });
+        
+        // ID de documento para eliminar
+        docIdsToDelete.push(asignacion.docId);
+        
+        // Actualizar progreso
+        if (i % 10 === 0) {
+          setMaintenanceProgress(50 + Math.floor((i / asignacionesActuales.length) * 20));
         }
       }
       
+      // Buscar órdenes que ya existen en solicitudes pendientes
+      setMaintenanceMessage("Verificando solicitudes existentes...");
+      setMaintenanceProgress(70);
+      
+      const solicitudesPendientesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
+      const ordenesExistentes = new Set();
+      
+      solicitudesPendientesSnapshot.docs.forEach(doc => {
+        const data = doc.data();
+        if (data && data.orden) {
+          ordenesExistentes.add(data.orden);
+        }
+      });
+      
+      // Filtrar solicitudes que ya existen
+      const pendientesDataFiltrado = pendientesData.filter(item => !ordenesExistentes.has(item.orden));
+      
+      // Procesar operaciones en lotes
+      setMaintenanceMessage("Guardando nuevas solicitudes pendientes...");
+      setMaintenanceProgress(80);
+      
+      // Agregar solicitudes pendientes en lotes
+      for (let i = 0; i < pendientesDataFiltrado.length; i += BATCH_SIZE) {
+        const batch = writeBatch(db);
+        const pendientesBatch = pendientesDataFiltrado.slice(i, i + BATCH_SIZE);
+        
+        for (const pendiente of pendientesBatch) {
+          const newDocRef = doc(collection(db, "solicitudesPendientes"));
+          batch.set(newDocRef, pendiente);
+        }
+        
+        await batch.commit();
+      }
+      
+      // Agregar datos al historial en lotes
+      setMaintenanceMessage("Guardando historial...");
+      setMaintenanceProgress(85);
+      
+      for (let i = 0; i < historialData.length; i += BATCH_SIZE) {
+        const batch = writeBatch(db);
+        const historialBatch = historialData.slice(i, i + BATCH_SIZE);
+        
+        for (const historial of historialBatch) {
+          const newDocRef = doc(collection(db, "historialSolicitudes"));
+          batch.set(newDocRef, historial);
+        }
+        
+        await batch.commit();
+      }
+      
+      // Eliminar asignaciones originales en lotes
+      setMaintenanceMessage("Eliminando asignaciones antiguas...");
+      setMaintenanceProgress(90);
+      
+      for (let i = 0; i < docIdsToDelete.length; i += BATCH_SIZE) {
+        const batch = writeBatch(db);
+        const idsBatch = docIdsToDelete.slice(i, i + BATCH_SIZE);
+        
+        for (const docId of idsBatch) {
+          batch.delete(doc(db, "asignaciones", docId));
+        }
+        
+        await batch.commit();
+      }
+      
       // Recargar los datos actualizados
+      setMaintenanceMessage("Recargando datos...");
+      setMaintenanceProgress(95);
       await cargarDatosDesdeFirebase();
       
-      showNotification('Reset completo realizado: todas las asignaciones se han movido a solicitudes pendientes', 'success');
+      setMaintenanceProgress(100);
+      setMaintenanceMessage("¡Verificación completada!");
+      
+      // Mostrar mensaje de éxito que se verá después de salir del modo mantenimiento
+      setTimeout(() => {
+        showNotification('Reset completo realizado: todas las asignaciones se han movido a solicitudes pendientes', 'success');
+      }, 1000);
+      
     } catch (error) {
       console.error('Error al verificar y corregir asignaciones:', error);
-      showNotification('Error al verificar asignaciones: ' + error.message, 'error');
+      setMaintenanceMessage(`Error: ${error.message}`);
+      
+      // Mostrar notificación después de salir del modo mantenimiento
+      setTimeout(() => {
+        showNotification('Error al verificar asignaciones: ' + error.message, 'error');
+      }, 1000);
     } finally {
-      setIsProcessing(false);
+      // Establecer un pequeño retraso antes de salir del modo mantenimiento
+      // para que el usuario vea que se completó al 100%
+      setTimeout(() => {
+        setIsProcessing(false);
+        setIsVerificationMaintenance(false);
+      }, 2000);
     }
-  }, [isProcessing, isMaintenanceMode, cargarDatosDesdeFirebase]);
+  }, [isProcessing, cargarDatosDesdeFirebase]);
 
   // Modificar el intervalo para ejecutar la verificación a las 00:00 cada día
   useEffect(() => {
@@ -1721,10 +1827,107 @@ function App() {
 
   return (
     <div className="App" style={styles.container}>
+      {/* Pantalla de mantenimiento durante la verificación */}
+      {isVerificationMaintenance && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          backgroundColor: '#0a192f',
+          zIndex: 9999,
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'center',
+          alignItems: 'center',
+          color: 'white',
+          padding: '20px'
+        }}>
+          <div style={{
+            backgroundColor: 'rgba(255, 255, 255, 0.1)',
+            borderRadius: '16px',
+            padding: '40px',
+            maxWidth: '500px',
+            width: '90%',
+            textAlign: 'center',
+            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.2)',
+            backdropFilter: 'blur(8px)'
+          }}>
+            <div style={{
+              fontSize: '28px',
+              fontWeight: 'bold',
+              marginBottom: '20px',
+              color: '#64ffda'
+            }}>
+              SISTEMA EN MANTENIMIENTO
+            </div>
+            
+            <div style={{
+              fontSize: '18px',
+              lineHeight: '1.6',
+              marginBottom: '30px'
+            }}>
+              {maintenanceMessage || 'Estamos verificando y actualizando las asignaciones...'}
+            </div>
+            
+            <div style={{
+              width: '100%',
+              height: '8px',
+              backgroundColor: 'rgba(255, 255, 255, 0.1)',
+              borderRadius: '4px',
+              marginBottom: '10px',
+              overflow: 'hidden'
+            }}>
+              <div style={{
+                height: '100%',
+                width: `${maintenanceProgress}%`,
+                backgroundColor: '#64ffda',
+                borderRadius: '4px',
+                transition: 'width 0.5s ease'
+              }} />
+            </div>
+            
+            <div style={{fontSize: '14px', color: '#8892b0'}}>
+              {maintenanceProgress}% completado
+            </div>
+            
+            <div style={{
+              marginTop: '30px',
+              fontSize: '14px',
+              color: '#8892b0',
+              fontStyle: 'italic'
+            }}>
+              Por favor espere. El sistema volverá a estar disponible automáticamente.
+            </div>
+          </div>
+        </div>
+      )}
+      
       <div style={styles.header}>
         <h1 style={styles.title}>Sistema de Asignación de Plazas</h1>
         
-        {/* Panel de administrador - Todos los botones eliminados */}
+        {/* Panel de administrador con botón para verificación y mantenimiento */}
+        <div style={styles.adminPanel}>
+          <button 
+            onClick={verificarYCorregirAsignaciones}
+            disabled={isProcessing || isVerificationMaintenance}
+            style={{
+              backgroundColor: isProcessing || isVerificationMaintenance ? '#ccc' : '#ff6347',
+              color: 'white',
+              border: 'none',
+              borderRadius: '6px',
+              padding: '10px 20px',
+              fontSize: '14px',
+              fontWeight: 'bold',
+              cursor: isProcessing || isVerificationMaintenance ? 'not-allowed' : 'pointer',
+              boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+              transition: 'all 0.3s ease'
+            }}
+          >
+            {isProcessing || isVerificationMaintenance ? 'Procesando...' : 'Iniciar Verificación'}
+          </button>
+        </div>
         
         <div style={styles.tabs}>
           <div 
