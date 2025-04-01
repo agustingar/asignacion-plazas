@@ -2214,24 +2214,26 @@ function App() {
         
         {/* Panel de administrador con botón para verificación y mantenimiento */}
         <div style={styles.adminPanel}>
-          <button 
-            onClick={verificarYCorregirAsignaciones}
-            disabled={isProcessing || isVerificationMaintenance}
-            style={{
-              backgroundColor: isProcessing || isVerificationMaintenance ? '#ccc' : '#ff6347',
-              color: 'white',
-              border: 'none',
-              borderRadius: '6px',
-              padding: '10px 20px',
-              fontSize: '14px',
-              fontWeight: 'bold',
-              cursor: isProcessing || isVerificationMaintenance ? 'not-allowed' : 'pointer',
-              boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-              transition: 'all 0.3s ease'
-            }}
-          >
-            {isProcessing || isVerificationMaintenance ? 'Procesando...' : 'Iniciar Verificación'}
-          </button>
+          {!window.verificacionInicialCompletada && (
+            <button 
+              onClick={verificarYCorregirAsignaciones}
+              disabled={isProcessing || isVerificationMaintenance}
+              style={{
+                backgroundColor: isProcessing || isVerificationMaintenance ? '#ccc' : '#ff6347',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                padding: '10px 20px',
+                fontSize: '14px',
+                fontWeight: 'bold',
+                cursor: isProcessing || isVerificationMaintenance ? 'not-allowed' : 'pointer',
+                boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+                transition: 'all 0.3s ease'
+              }}
+            >
+              {isProcessing || isVerificationMaintenance ? 'Procesando...' : 'Iniciar Verificación'}
+            </button>
+          )}
         </div>
         
         <div style={styles.tabs}>
