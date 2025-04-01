@@ -751,67 +751,92 @@ function App() {
     try {
       setIsLoadingSubmit(true);
       
+      // Verificar conexión con Firebase primero
+      try {
+        const testRef = doc(db, "test_connection");
+        await setDoc(testRef, { timestamp: Date.now() });
+        await deleteDoc(testRef);
+      } catch (connError) {
+        console.error("Error de conexión con Firebase:", connError);
+        showNotification("Error de conexión con la base de datos. Por favor, verifica tu conexión a internet e intenta nuevamente.", "error");
+        setIsLoadingSubmit(false);
+        return;
+      }
+      
       // Usar transacción para verificar y crear/actualizar de forma atómica
       const resultado = await runTransaction(db, async (transaction) => {
-        // 1. Verificar si ya existe una asignación para este orden
-        const asignacionesRef = collection(db, "asignaciones");
-        const asignacionesQuery = query(asignacionesRef);
-        const asignacionesDocs = await transaction.get(asignacionesQuery);
-        
-        const yaExisteAsignacion = asignacionesDocs.docs.some(doc => doc.data().order === orderNumber);
-        if (yaExisteAsignacion) {
-          return { 
-            success: false, 
-            error: "duplicated_assignment",
-            message: `Ya existe una asignación para el número de orden ${orderNumber}` 
-          };
-        }
-        
-        // 2. Comprobar solicitudes pendientes existentes
-        const solicitudesPendientesRef = collection(db, "solicitudesPendientes");
-        const solicitudesPendientesQuery = query(solicitudesPendientesRef);
-        const solicitudesPendientesDocs = await transaction.get(solicitudesPendientesQuery);
-        
-        let existingSolicitudId = null;
-        solicitudesPendientesDocs.docs.forEach(doc => {
-          const data = doc.data();
-          if (data.orden === orderNumber) {
-            existingSolicitudId = doc.id;
+        try {
+          // 1. Verificar si ya existe una asignación para este orden
+          const asignacionesRef = collection(db, "asignaciones");
+          const asignacionesQuery = query(asignacionesRef);
+          const asignacionesDocs = await transaction.get(asignacionesQuery);
+          
+          const yaExisteAsignacion = asignacionesDocs.docs.some(doc => {
+            const data = doc.data();
+            return data && data.order === parseInt(orderNumber);
+          });
+          
+          if (yaExisteAsignacion) {
+            return { 
+              success: false, 
+              error: "duplicated_assignment",
+              message: `Ya existe una asignación para el número de orden ${orderNumber}` 
+            };
           }
-        });
-        
-        // 3. Preparar datos de la solicitud
-        const solicitudData = {
-          orden: orderNumber,
-          centrosIds: selectedCenters,
-          timestamp: Date.now(),
-          intentosFallidos: 0
-        };
-
-        // 4. Crear o actualizar la solicitud
-        if (existingSolicitudId) {
-          // Actualizar preferencias si ya existe la solicitud
-          const solicitudRef = doc(db, "solicitudesPendientes", existingSolicitudId);
-          transaction.update(solicitudRef, {
+          
+          // 2. Comprobar solicitudes pendientes existentes
+          const solicitudesPendientesRef = collection(db, "solicitudesPendientes");
+          const solicitudesPendientesQuery = query(solicitudesPendientesRef);
+          const solicitudesPendientesDocs = await transaction.get(solicitudesPendientesQuery);
+          
+          let existingSolicitudId = null;
+          solicitudesPendientesDocs.docs.forEach(doc => {
+            const data = doc.data();
+            if (data && data.orden === parseInt(orderNumber)) {
+              existingSolicitudId = doc.id;
+            }
+          });
+          
+          // 3. Preparar datos de la solicitud
+          const solicitudData = {
+            orden: parseInt(orderNumber),
             centrosIds: selectedCenters,
             timestamp: Date.now(),
             intentosFallidos: 0
-          });
-          
-          return { 
-            success: true, 
-            updated: true,
-            message: `Solicitud actualizada correctamente para orden ${orderNumber}` 
           };
-        } else {
-          // Crear nueva solicitud
-          const nuevaSolicitudRef = doc(collection(db, "solicitudesPendientes"));
-          transaction.set(nuevaSolicitudRef, solicitudData);
-          
-          return { 
-            success: true, 
-            updated: false,
-            message: `Nueva solicitud creada para orden ${orderNumber}` 
+
+          // 4. Crear o actualizar la solicitud
+          if (existingSolicitudId) {
+            // Actualizar preferencias si ya existe la solicitud
+            const solicitudRef = doc(db, "solicitudesPendientes", existingSolicitudId);
+            transaction.update(solicitudRef, {
+              centrosIds: selectedCenters,
+              timestamp: Date.now(),
+              intentosFallidos: 0
+            });
+            
+            return { 
+              success: true, 
+              updated: true,
+              message: `Solicitud actualizada correctamente para orden ${orderNumber}` 
+            };
+          } else {
+            // Crear nueva solicitud
+            const nuevaSolicitudRef = doc(collection(db, "solicitudesPendientes"));
+            transaction.set(nuevaSolicitudRef, solicitudData);
+            
+            return { 
+              success: true, 
+              updated: false,
+              message: `Nueva solicitud creada para orden ${orderNumber}` 
+            };
+          }
+        } catch (transactionError) {
+          console.error("Error dentro de la transacción:", transactionError);
+          return {
+            success: false,
+            error: "transaction_error",
+            message: `Error en la transacción: ${transactionError.message}`
           };
         }
       });
