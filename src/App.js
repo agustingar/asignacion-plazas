@@ -1461,6 +1461,9 @@ function App() {
     try {
       setIsProcessing(true);
       
+      // Eliminar solicitudes duplicadas
+      await eliminarSolicitudesDuplicadas();
+      
       // Obtener todas las asignaciones actuales
       const asignacionesQuery = query(collection(db, "asignaciones"), orderBy("timestamp", "asc"));
       const asignacionesSnapshot = await getDocs(asignacionesQuery);
@@ -1516,14 +1519,21 @@ function App() {
       // Mover todas las solicitudes del historial a pendientes para reprocesarlas
       for (const solicitud of solicitudesHistorial) {
         if (solicitud.estado === "ASIGNADA" || solicitud.estado === "ASIGNADA_POR_OTRO_PROCESO") {
-          // Copiar a solicitudes pendientes sin el docId y sin estado
-          const { docId, estado, centroAsignado, centroId, fechaHistorico, esHistorial, ...datosSolicitud } = solicitud;
+          // Verificar si ya existe una solicitud pendiente con el mismo número de orden
+          const existeSolicitudPendiente = todasLasSolicitudes.some(
+            s => !s.esHistorial && s.orden === solicitud.orden
+          );
           
-          // Agregar a solicitudes pendientes
-          await addDoc(collection(db, "solicitudesPendientes"), {
-            ...datosSolicitud,
-            intentosFallidos: 0
-          });
+          if (!existeSolicitudPendiente) {
+            // Copiar a solicitudes pendientes sin el docId y sin estado
+            const { docId, estado, centroAsignado, centroId, fechaHistorico, esHistorial, ...datosSolicitud } = solicitud;
+            
+            // Agregar a solicitudes pendientes
+            await addDoc(collection(db, "solicitudesPendientes"), {
+              ...datosSolicitud,
+              intentosFallidos: 0
+            });
+          }
         }
       }
       
@@ -1539,16 +1549,80 @@ function App() {
     }
   }, [isProcessing, isMaintenanceMode, procesarTodasLasSolicitudes]);
 
-  // Añadir un intervalo separado para la verificación y corrección de asignaciones cada 5 minutos
+  // Función para eliminar solicitudes duplicadas
+  const eliminarSolicitudesDuplicadas = async () => {
+    try {
+      // Obtener todas las solicitudes pendientes
+      const solicitudesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
+      const solicitudes = solicitudesSnapshot.docs.map(doc => ({
+        ...doc.data(),
+        docId: doc.id
+      }));
+      
+      // Verificar si hay números de orden duplicados
+      const ordenesVistos = new Map();
+      const duplicadas = [];
+      
+      for (const solicitud of solicitudes) {
+        if (!ordenesVistos.has(solicitud.orden)) {
+          ordenesVistos.set(solicitud.orden, solicitud);
+        } else {
+          // Es un duplicado, elegir cuál mantener (nos quedamos con la que tenga el timestamp más reciente)
+          const solicitudExistente = ordenesVistos.get(solicitud.orden);
+          
+          if (solicitud.timestamp > solicitudExistente.timestamp) {
+            duplicadas.push(solicitudExistente);
+            ordenesVistos.set(solicitud.orden, solicitud);
+          } else {
+            duplicadas.push(solicitud);
+          }
+        }
+      }
+      
+      // Verificar también si ya hay asignaciones para estas solicitudes
+      const asignacionesSnapshot = await getDocs(collection(db, "asignaciones"));
+      const asignaciones = asignacionesSnapshot.docs.map(doc => ({
+        ...doc.data(),
+        docId: doc.id
+      }));
+      
+      // Encontrar solicitudes que ya tienen asignaciones
+      for (const solicitud of solicitudes) {
+        const tieneAsignacion = asignaciones.some(asignacion => asignacion.order === solicitud.orden);
+        
+        if (tieneAsignacion) {
+          duplicadas.push(solicitud);
+        }
+      }
+      
+      // Eliminar las solicitudes duplicadas o que ya tienen asignación
+      let eliminadas = 0;
+      for (const solicitud of duplicadas) {
+        await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
+        eliminadas++;
+      }
+      
+      if (eliminadas > 0) {
+        console.log(`Se han eliminado ${eliminadas} solicitudes duplicadas o ya asignadas`);
+      }
+      
+      return eliminadas;
+    } catch (error) {
+      console.error("Error al eliminar solicitudes duplicadas:", error);
+      return 0;
+    }
+  };
+
+  // Añadir un intervalo separado para la verificación y corrección de asignaciones cada 3 minutos
   useEffect(() => {
     // Solo configurar este intervalo si no estamos en modo mantenimiento
     if (!isMaintenanceMode) {
       const verificacionInterval = setInterval(async () => {
-        // La verificación y corrección se ejecuta cada 5 minutos sin afectar el contador visual
+        // La verificación y corrección se ejecuta cada 3 minutos sin afectar el contador visual
         if (!isProcessing && !loadingProcess) {
           await verificarYCorregirAsignaciones();
         }
-      }, 300000); // 5 minutos
+      }, 180000); // 3 minutos
       
       return () => {
         clearInterval(verificacionInterval);
@@ -1556,49 +1630,25 @@ function App() {
     }
   }, [isMaintenanceMode, verificarYCorregirAsignaciones, isProcessing, loadingProcess]);
 
+  // Agregar intervalo para eliminar duplicados cada minuto
+  useEffect(() => {
+    const limpiezaInterval = setInterval(async () => {
+      if (!isProcessing && !loadingProcess) {
+        await eliminarSolicitudesDuplicadas();
+      }
+    }, 60000); // 1 minuto
+    
+    return () => {
+      clearInterval(limpiezaInterval);
+    };
+  }, [isProcessing, loadingProcess]);
+
   return (
     <div className="App" style={styles.container}>
       <div style={styles.header}>
         <h1 style={styles.title}>Sistema de Asignación de Plazas</h1>
         
-        {/* Panel de administrador con modo mantenimiento */}
-        <div style={styles.adminPanel}>
-          {!isMaintenanceMode && (
-            <div className="admin-controls">
-              <button 
-                onClick={() => procesarTodasLasSolicitudes(false)}
-                disabled={isProcessing || loadingProcess}
-                className="btn btn-primary"
-              >
-                {isProcessing ? 'Procesando...' : 'Procesar Solicitudes'}
-              </button>
-              
-              <button
-                onClick={verificarYCorregirAsignaciones}
-                disabled={isProcessing}
-                className="btn btn-warning"
-              >
-                Verificar y Corregir Asignaciones
-              </button>
-              
-              {/* Botón para importar centros desde CSV */}
-              <button 
-                onClick={() => document.getElementById('csvFileInput').click()}
-                disabled={isProcessing || loadingCSV}
-                className="btn btn-success"
-              >
-                {loadingCSV ? 'Importando...' : 'Importar Centros CSV'}
-              </button>
-              <input
-                type="file"
-                id="csvFileInput"
-                accept=".csv"
-                style={{ display: 'none' }}
-                onChange={cargarDesdePlazasCSV}
-              />
-            </div>
-          )}
-        </div>
+        {/* Panel de administrador - Todos los botones eliminados */}
         
         <div style={styles.tabs}>
           <div 
