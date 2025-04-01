@@ -71,9 +71,11 @@ const Dashboard = ({ assignments }) => {
       if (filtroEstado === 'TODOS') return true;
       
       const asignacionesDeEsteOrden = asignacionesPorOrden[orden];
-      return asignacionesDeEsteOrden.some(asignacion => 
-        asignacion.estado === filtroEstado
-      );
+      return asignacionesDeEsteOrden.some(asignacion => {
+        // Considerar las asignaciones sin estado como "ASIGNADA"
+        const estadoReal = asignacion.estado || 'ASIGNADA';
+        return estadoReal === filtroEstado;
+      });
     })
     .sort((a, b) => a - b);
   
@@ -383,8 +385,9 @@ const Dashboard = ({ assignments }) => {
           <button 
             style={{
               ...styles.botonFiltro,
-              ...(filtroEstado === 'ASIGNADA' ? styles.botonFiltroActivo : {}),
-              backgroundColor: filtroEstado === 'ASIGNADA' ? '#2e7d32' : undefined
+              ...(filtroEstado === 'ASIGNADA' ? 
+                { backgroundColor: '#2e7d32', color: 'white', border: '1px solid #2e7d32' } : 
+                {})
             }}
             onClick={() => setFiltroEstado('ASIGNADA')}
           >
@@ -393,8 +396,9 @@ const Dashboard = ({ assignments }) => {
           <button 
             style={{
               ...styles.botonFiltro,
-              ...(filtroEstado === 'NO_ASIGNABLE' ? styles.botonFiltroActivo : {}),
-              backgroundColor: filtroEstado === 'NO_ASIGNABLE' ? '#c62828' : undefined
+              ...(filtroEstado === 'NO_ASIGNABLE' ? 
+                { backgroundColor: '#c62828', color: 'white', border: '1px solid #c62828' } : 
+                {})
             }}
             onClick={() => setFiltroEstado('NO_ASIGNABLE')}
           >
@@ -403,8 +407,9 @@ const Dashboard = ({ assignments }) => {
           <button 
             style={{
               ...styles.botonFiltro,
-              ...(filtroEstado === 'FUERA_DE_ORDEN' ? styles.botonFiltroActivo : {}),
-              backgroundColor: filtroEstado === 'FUERA_DE_ORDEN' ? '#e65100' : undefined
+              ...(filtroEstado === 'FUERA_DE_ORDEN' ? 
+                { backgroundColor: '#e65100', color: 'white', border: '1px solid #e65100' } : 
+                {})
             }}
             onClick={() => setFiltroEstado('FUERA_DE_ORDEN')}
           >

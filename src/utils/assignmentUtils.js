@@ -667,6 +667,23 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
           };
         } catch (deleteError) {
           // Error al mover al historial
+          return {
+            success: false,
+            message: `Error al mover solicitud a historial: ${deleteError.message}`,
+            error: deleteError
+          };
+        }
+      } else {
+        // Si aún no ha fallado suficientes veces, incrementar el contador de intentos
+        try {
+          if (solicitud.docId) {
+            const solicitudRef = doc(db, "solicitudesPendientes", solicitud.docId);
+            await updateDoc(solicitudRef, {
+              intentosFallidos: (solicitud.intentosFallidos || 0) + 1
+            });
+          }
+        } catch (updateError) {
+          // Error al actualizar contador de intentos, no es crítico
         }
       }
       
