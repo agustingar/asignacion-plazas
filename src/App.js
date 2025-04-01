@@ -782,123 +782,74 @@ function App() {
     try {
       setIsLoadingSubmit(true);
       
-      // Verificar conexión con Firebase primero
-      try {
-        // Crear una colección y documento temporal para verificar la conexión
-        const testCollection = collection(db, "test_connection");
-        const testDocRef = doc(testCollection);
-        await setDoc(testDocRef, { timestamp: Date.now() });
-        await deleteDoc(testDocRef);
-      } catch (connError) {
-        console.error("Error de conexión con Firebase:", connError);
-        showNotification("Error de conexión con la base de datos. Por favor, verifica tu conexión a internet e intenta nuevamente.", "error");
-        setIsLoadingSubmit(false);
-        return;
-      }
-      
       // Convertir orderNumber a número entero
       const orderNum = parseInt(orderNumber);
       
-      // Usar transacción para verificar y crear/actualizar de forma atómica
+      // 1. Verificar si ya existe una asignación para este orden (fuera de la transacción)
       try {
-        const resultado = await runTransaction(db, async (transaction) => {
-          try {
-            // 1. Verificar si ya existe una asignación para este orden
-            const asignacionesRef = collection(db, "asignaciones");
-            const asignacionesQuery = query(asignacionesRef);
-            const asignacionesDocs = await transaction.get(asignacionesQuery);
-            
-            // Verificar si algún documento contiene este número de orden
-            let yaExisteAsignacion = false;
-            asignacionesDocs.forEach(doc => {
-              const data = doc.data();
-              if (data && data.order === orderNum) {
-                yaExisteAsignacion = true;
-              }
-            });
-            
-            if (yaExisteAsignacion) {
-              return { 
-                success: false, 
-                error: "duplicated_assignment",
-                message: `Ya existe una asignación para el número de orden ${orderNumber}` 
-              };
-            }
-            
-            // 2. Comprobar solicitudes pendientes existentes
-            const solicitudesPendientesRef = collection(db, "solicitudesPendientes");
-            const solicitudesPendientesQuery = query(solicitudesPendientesRef);
-            const solicitudesPendientesDocs = await transaction.get(solicitudesPendientesQuery);
-            
-            let existingSolicitudId = null;
-            solicitudesPendientesDocs.forEach(doc => {
-              const data = doc.data();
-              if (data && data.orden === orderNum) {
-                existingSolicitudId = doc.id;
-              }
-            });
-            
-            // 3. Preparar datos de la solicitud
-            const solicitudData = {
-              orden: orderNum,
-              centrosIds: selectedCenters,
-              timestamp: Date.now(),
-              intentosFallidos: 0
-            };
-
-            // 4. Crear o actualizar la solicitud
-            if (existingSolicitudId) {
-              // Actualizar preferencias si ya existe la solicitud
-              const solicitudRef = doc(db, "solicitudesPendientes", existingSolicitudId);
-              transaction.update(solicitudRef, {
-                centrosIds: selectedCenters,
-                timestamp: Date.now(),
-                intentosFallidos: 0
-              });
-              
-              return { 
-                success: true, 
-                updated: true,
-                message: `Solicitud actualizada correctamente para orden ${orderNumber}` 
-              };
-            } else {
-              // Alternativa más segura para crear un documento nuevo
-              // Usar un ID generado manualmente
-              const randomId = Date.now().toString() + Math.floor(Math.random() * 1000000).toString();
-              const nuevaSolicitudRef = doc(db, "solicitudesPendientes", randomId);
-              transaction.set(nuevaSolicitudRef, solicitudData);
-              
-              return { 
-                success: true, 
-                updated: false,
-                message: `Nueva solicitud creada para orden ${orderNumber}` 
-              };
-            }
-          } catch (transactionError) {
-            console.error("Error en la transacción:", transactionError);
-            return {
-              success: false,
-              error: "transaction_error",
-              message: `Error en la transacción: ${transactionError.message}`
-            };
+        const asignacionesQuery = query(collection(db, "asignaciones"));
+        const asignacionesSnapshot = await getDocs(asignacionesQuery);
+        
+        // Verificar si algún documento contiene este número de orden
+        let yaExisteAsignacion = false;
+        asignacionesSnapshot.forEach(doc => {
+          const data = doc.data();
+          if (data && data.order === orderNum) {
+            yaExisteAsignacion = true;
           }
         });
         
-        // Procesar el resultado de la transacción
-        if (resultado.success) {
-          showNotification(resultado.message, "success");
-          
-          // Limpiar campos después de enviar correctamente
-          setOrderNumber("");
-          setCentrosSeleccionados([]);
-          
-          // Recargar datos
-          await cargarDatosDesdeFirebase();
-        } else if (resultado.error === "duplicated_assignment") {
-          showNotification(resultado.message, "error");
-        } else {
-          showNotification(`Error en la transacción: ${resultado.message}`, "error");
+        if (yaExisteAsignacion) {
+          showNotification(`Ya existe una asignación para el número de orden ${orderNumber}`, "error");
+          setIsLoadingSubmit(false);
+          setIsProcessing(false);
+          return;
         }
+        
+        // 2. Comprobar solicitudes pendientes existentes (fuera de la transacción)
+        const solicitudesPendientesQuery = query(collection(db, "solicitudesPendientes"));
+        const solicitudesPendientesSnapshot = await getDocs(solicitudesPendientesQuery);
+        
+        let existingSolicitudId = null;
+        solicitudesPendientesSnapshot.forEach(doc => {
+          const data = doc.data();
+          if (data && data.orden === orderNum) {
+            existingSolicitudId = doc.id;
+          }
+        });
+        
+        // 3. Preparar datos de la solicitud
+        const solicitudData = {
+          orden: orderNum,
+          centrosIds: selectedCenters,
+          timestamp: Date.now(),
+          intentosFallidos: 0
+        };
+
+        // 4. Crear o actualizar la solicitud
+        if (existingSolicitudId) {
+          // Actualizar preferencias si ya existe la solicitud
+          await updateDoc(doc(db, "solicitudesPendientes", existingSolicitudId), {
+            centrosIds: selectedCenters,
+            timestamp: Date.now(),
+            intentosFallidos: 0
+          });
+          
+          showNotification(`Solicitud actualizada correctamente para orden ${orderNumber}`, "success");
+        } else {
+          // Crear nueva solicitud - directamente sin usar transacción
+          const nuevaSolicitudRef = await addDoc(collection(db, "solicitudesPendientes"), solicitudData);
+          
+          showNotification(`Nueva solicitud creada para orden ${orderNumber}`, "success");
+        }
+        
+        // Limpiar campos después de enviar correctamente
+        setOrderNumber("");
+        setCentrosSeleccionados([]);
+        
+        // Recargar datos
+        await cargarDatosDesdeFirebase();
+        
       } catch (error) {
         console.error("Error al enviar solicitud:", error);
         showNotification(`Error al enviar solicitud: ${error.message}`, "error");
@@ -908,8 +859,10 @@ function App() {
         setProcessingMessage("");
       }
     } catch (error) {
-      console.error("Error al enviar solicitud:", error);
-      showNotification(`Error al enviar solicitud: ${error.message}`, "error");
+      console.error("Error en el proceso de solicitud:", error);
+      showNotification(`Error al procesar la solicitud: ${error.message}`, "error");
+      setIsLoadingSubmit(false);
+      setIsProcessing(false);
     }
   };
   
