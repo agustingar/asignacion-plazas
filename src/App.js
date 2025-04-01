@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
-import { collection, onSnapshot, addDoc, updateDoc, doc, getDocs, query, deleteDoc, setDoc, runTransaction } from "firebase/firestore";
+import { collection, onSnapshot, addDoc, updateDoc, doc, getDocs, query, deleteDoc, setDoc, runTransaction, orderBy, where } from "firebase/firestore";
 import { db } from './utils/firebaseConfig';
 import { procesarSolicitudes, procesarSolicitud, resetearContadoresAsignaciones } from './utils/assignmentUtils';
 
@@ -711,8 +711,31 @@ function App() {
           if (resultado.success) {
             // La solicitud se procesó exitosamente
           } else {
-            // Si después de 3 intentos fallidos no se puede procesar, moverla al final de la cola
-            if (primeraSolicitud.intentosFallidos >= 3) {
+            // Verificar si el mensaje indica que la plaza está reservada para un orden menor
+            if (resultado.message && (resultado.message.includes("plaza reservada para orden menor") || 
+                                   resultado.message.includes("Plazas reservadas para órdenes menores"))) {
+              if (!silencioso) {
+                showNotification(resultado.message, 'warning');
+              }
+              
+              // Incrementar intentos fallidos para que eventualmente se mueva al final de la cola
+              try {
+                await runTransaction(db, async (transaction) => {
+                  const solicitudRef = doc(db, "solicitudesPendientes", primeraSolicitud.docId);
+                  const solicitudDoc = await transaction.get(solicitudRef);
+                  
+                  if (solicitudDoc.exists()) {
+                    const datos = solicitudDoc.data();
+                    transaction.update(solicitudRef, {
+                      intentosFallidos: (datos.intentosFallidos || 0) + 1
+                    });
+                  }
+                });
+              } catch (error) {
+                console.error(`Error al incrementar intentos fallidos para ${primeraSolicitud.orden}:`, error);
+              }
+            } else if (primeraSolicitud.intentosFallidos >= 3) {
+              // Si después de 3 intentos fallidos no se puede procesar, moverla al final de la cola
               try {
                 // Actualizar el timestamp para moverla al final de la cola dentro de una transacción
                 await runTransaction(db, async (transaction) => {
@@ -730,7 +753,7 @@ function App() {
                 console.error(`Error al mover solicitud ${primeraSolicitud.orden} al final de la cola:`, error);
               }
             } else {
-              // Incrementar contador de intentos fallidos dentro de una transacción
+              // Incrementar contador de intentos fallidos dentro de una transacción para otros casos
               try {
                 await runTransaction(db, async (transaction) => {
                   const solicitudRef = doc(db, "solicitudesPendientes", primeraSolicitud.docId);
@@ -1134,6 +1157,108 @@ function App() {
     }
   };
 
+  // Función para verificar y corregir asignaciones existentes
+  const verificarYCorregirAsignaciones = useCallback(async () => {
+    if (isProcessing || isMaintenanceMode) return;
+    
+    try {
+      setIsProcessing(true);
+      
+      // Obtener todas las asignaciones actuales
+      const asignacionesQuery = query(collection(db, "asignaciones"), orderBy("timestamp", "asc"));
+      const asignacionesSnapshot = await getDocs(asignacionesQuery);
+      const asignacionesActuales = asignacionesSnapshot.docs.map(doc => ({
+        ...doc.data(),
+        docId: doc.id
+      }));
+      
+      // Obtener todos los centros
+      const centrosQuery = query(collection(db, "centros"));
+      const centrosSnapshot = await getDocs(centrosQuery);
+      const todosCentros = centrosSnapshot.docs.map(doc => ({
+        ...doc.data(),
+        docId: doc.id
+      }));
+      
+      // Resetear contadores de asignaciones en centros
+      for (const centro of todosCentros) {
+        await updateDoc(doc(db, "centros", centro.docId), {
+          asignadas: 0
+        });
+      }
+      
+      // Eliminar todas las asignaciones actuales
+      for (const asignacion of asignacionesActuales) {
+        await deleteDoc(doc(db, "asignaciones", asignacion.docId));
+      }
+      
+      // Obtener todas las solicitudes pendientes y del historial
+      const solicitudesPendientesQuery = query(collection(db, "solicitudesPendientes"));
+      const solicitudesPendientesSnapshot = await getDocs(solicitudesPendientesQuery);
+      let todasLasSolicitudes = solicitudesPendientesSnapshot.docs.map(doc => ({
+        ...doc.data(),
+        docId: doc.id
+      }));
+      
+      // Obtener solicitudes del historial que no sean "ELIMINADA"
+      const historialQuery = query(
+        collection(db, "historialSolicitudes"),
+        where("estado", "!=", "ELIMINADA")
+      );
+      const historialSnapshot = await getDocs(historialQuery);
+      const solicitudesHistorial = historialSnapshot.docs.map(doc => ({
+        ...doc.data(),
+        docId: doc.id,
+        esHistorial: true
+      }));
+      
+      // Combinar todas las solicitudes y ordenarlas por número de orden
+      todasLasSolicitudes = [...todasLasSolicitudes, ...solicitudesHistorial]
+        .sort((a, b) => a.orden - b.orden);
+      
+      // Mover todas las solicitudes del historial a pendientes para reprocesarlas
+      for (const solicitud of solicitudesHistorial) {
+        if (solicitud.estado === "ASIGNADA" || solicitud.estado === "ASIGNADA_POR_OTRO_PROCESO") {
+          // Copiar a solicitudes pendientes sin el docId y sin estado
+          const { docId, estado, centroAsignado, centroId, fechaHistorico, esHistorial, ...datosSolicitud } = solicitud;
+          
+          // Agregar a solicitudes pendientes
+          await addDoc(collection(db, "solicitudesPendientes"), {
+            ...datosSolicitud,
+            intentosFallidos: 0
+          });
+        }
+      }
+      
+      // Procesar todas las solicitudes con la nueva lógica
+      await procesarTodasLasSolicitudes(true);
+      
+      showNotification('Verificación y reasignación de plazas completada', 'success');
+    } catch (error) {
+      console.error('Error al verificar y corregir asignaciones:', error);
+      showNotification('Error al verificar asignaciones: ' + error.message, 'error');
+    } finally {
+      setIsProcessing(false);
+    }
+  }, [isProcessing, isMaintenanceMode, procesarTodasLasSolicitudes]);
+
+  // Añadir un intervalo separado para la verificación y corrección de asignaciones cada 5 minutos
+  useEffect(() => {
+    // Solo configurar este intervalo si no estamos en modo mantenimiento
+    if (!isMaintenanceMode) {
+      const verificacionInterval = setInterval(async () => {
+        // La verificación y corrección se ejecuta cada 5 minutos sin afectar el contador visual
+        if (!isProcessing && !loadingProcess) {
+          await verificarYCorregirAsignaciones();
+        }
+      }, 300000); // 5 minutos
+      
+      return () => {
+        clearInterval(verificacionInterval);
+      };
+    }
+  }, [isMaintenanceMode, verificarYCorregirAsignaciones, isProcessing, loadingProcess]);
+
   return (
     <div className="App" style={styles.container}>
       <div style={styles.header}>
@@ -1286,48 +1411,6 @@ function App() {
               hour12: false
             }).format(lastProcessed) 
             : 'No disponible'}
-          
-          {!loadingProcess && (
-            <span style={{
-              marginLeft: '10px', 
-              color: '#555', 
-              fontSize: '13px', 
-              display: 'flex', 
-              alignItems: 'center'
-            }}>
-              <span style={{
-                display: 'inline-block',
-                width: '10px',
-                height: '10px',
-                borderRadius: '50%',
-                backgroundColor: secondsUntilNextUpdate <= 10 ? '#f39c12' : '#3498db',
-                marginRight: '4px',
-                opacity: secondsUntilNextUpdate % 2 === 0 ? 0.7 : 1,
-                animation: 'pulse 1s infinite',
-                transition: 'background-color 0.3s'
-              }}></span>
-              
-              <span style={{marginRight: '3px'}}>
-                {secondsUntilNextUpdate <= 5 ? 'Actualizando pronto...' : 'Próxima actualización en:'}
-              </span>
-              
-              <span style={{
-                fontWeight: 'bold', 
-                marginLeft: '3px',
-                color: secondsUntilNextUpdate <= 10 ? '#e67e22' : '#2980b9'
-              }}>
-                {secondsUntilNextUpdate}s
-              </span>
-              
-              <style>{`
-                @keyframes pulse {
-                  0% { opacity: 0.4; transform: scale(0.95); }
-                  50% { opacity: 1; transform: scale(1.05); }
-                  100% { opacity: 0.4; transform: scale(0.95); }
-                }
-              `}</style>
-            </span>
-          )}
         </div>
       </div>
       

@@ -374,7 +374,6 @@ export const procesarSolicitud = async (solicitud, availablePlazas, assignments,
       };
     }
     
-    
     // VERIFICACIÓN ADICIONAL para evitar asignaciones duplicadas
     // Verificar nuevamente si se creó una asignación para este orden en otro proceso paralelo
     const asignacionesActualizadas = await getDocs(collection(db, "asignaciones"));
@@ -446,8 +445,31 @@ export const procesarSolicitud = async (solicitud, availablePlazas, assignments,
           const plazasOcupadas = centroData.asignadas || 0;
           const plazasDisponibles = centro.plazas - plazasOcupadas;
           
+          // Si no hay plazas disponibles, continuar con el siguiente centro
           if (plazasDisponibles <= 0) {
             return { success: false, message: `No hay plazas disponibles en ${centro.centro}` };
+          }
+          
+          // Verificar si hay solicitudes con número de orden menor que también quieren este centro
+          // (aplicar esta lógica incluso cuando hay más de una plaza disponible)
+          
+          // Obtener todas las solicitudes pendientes que incluyan este centro
+          // y tengan número de orden menor que la solicitud actual
+          const solicitudesConEsteCentro = todasLasSolicitudes.filter(s => 
+            s.orden < solicitud.orden && // Número de orden menor
+            s.centrosIds && s.centrosIds.includes(centroId) && // Incluye este centro
+            s.docId !== solicitud.docId // No es la misma solicitud
+          );
+          
+          // Si hay más solicitudes con orden menor que plazas disponibles, 
+          // esta solicitud debe buscar otra opción
+          if (solicitudesConEsteCentro.length >= plazasDisponibles) {
+            // Obtener el menor número de orden para el mensaje
+            const ordenMenor = Math.min(...solicitudesConEsteCentro.map(s => s.orden));
+            return { 
+              success: false, 
+              message: `Plazas reservadas para órdenes menores (como ${ordenMenor}) en ${centro.centro}`
+            };
           }
           
           // Verificar de nuevo que no exista ya una asignación para este orden
