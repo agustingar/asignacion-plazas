@@ -1,4 +1,4 @@
-import { collection, doc, setDoc, updateDoc, getDocs, query, deleteDoc, addDoc, getDoc, where } from "firebase/firestore";
+import { collection, doc, setDoc, updateDoc, getDocs, query, deleteDoc, addDoc, getDoc, where, runTransaction } from "firebase/firestore";
 import { db } from "./firebaseConfig";
 
 /**
@@ -121,8 +121,7 @@ export const procesarSolicitudes = async (solicitudes, assignments, availablePla
             }
             
             // Guardar en Firebase
-            const asignacionRef = await addDoc(collection(db, "asignaciones"), nuevaAsignacion);
-            nuevaAsignacion.docId = asignacionRef.id;
+            const { newAsignId } = await asignarConTransaccion(solicitud, nuevaAsignacion);
             
             // Incrementar contador de plazas asignadas para este centro
             centro.asignadas++;
@@ -411,7 +410,7 @@ export const procesarSolicitud = async (solicitud, availablePlazas, assignments,
         // Como estamos reasignando una plaza existente, NO INCREMENTAMOS el contador
         // La plaza ya estaba ocupada, solo cambiamos quién la ocupa
         
-        const docRef = await addDoc(collection(db, "asignaciones"), asignacionData);
+        const { newAsignId: newAsignIdReasignacion1 } = await asignarConTransaccion(solicitud, asignacionData);
         
         // 4. Guardar la solicitud actual en el historial
         const historialSolicitudActual = {
@@ -534,7 +533,7 @@ export const procesarSolicitud = async (solicitud, availablePlazas, assignments,
           // Como estamos reasignando una plaza existente, NO INCREMENTAMOS el contador
           // La plaza ya estaba ocupada, solo cambiamos quién la ocupa
           
-          const docRef = await addDoc(collection(db, "asignaciones"), asignacionData);
+          const { newAsignId: newAsignIdReasignacion2 } = await asignarConTransaccion(solicitud, asignacionData);
           
           // 4. Guardar la solicitud actual en el historial
           const historialSolicitudActual = {
@@ -731,3 +730,22 @@ export const resetearContadoresAsignaciones = async (centros, asignaciones, db) 
     };
   }
 };
+
+export async function asignarConTransaccion(solicitud, asignacionData) {
+  const solicitudRef = doc(db, "solicitudesPendientes", solicitud.docId);
+  return runTransaction(db, async (transaction) => {
+    const solicitudSnap = await transaction.get(solicitudRef);
+    if (!solicitudSnap.exists()) {
+      throw new Error("La solicitud ya ha sido procesada.");
+    }
+    const asignacionQuery = query(collection(db, "asignaciones"), where("order", "==", solicitud.orden));
+    const asignacionSnap = await transaction.get(asignacionQuery);
+    if (!asignacionSnap.empty) {
+      throw new Error(`Ya existe asignación para el orden ${solicitud.orden}.`);
+    }
+    const newAsignRef = doc(collection(db, "asignaciones"));
+    transaction.set(newAsignRef, asignacionData);
+    transaction.delete(solicitudRef);
+    return { newAsignId: newAsignRef.id };
+  });
+}
