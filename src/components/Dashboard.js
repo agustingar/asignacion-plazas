@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 /**
  * Componente que muestra el historial de asignaciones
@@ -7,6 +7,8 @@ import React from 'react';
  * @returns {JSX.Element} - Componente Dashboard
  */
 const Dashboard = ({ assignments }) => {
+  const [searchTerm, setSearchTerm] = useState('');
+  
   if (!assignments.length) {
     return (
       <div style={{ 
@@ -36,10 +38,32 @@ const Dashboard = ({ assignments }) => {
     return acc;
   }, {});
   
-  // Ordenar los números de orden
-  const ordenesOrdenados = Object.keys(asignacionesPorOrden)
-    .map(Number)
-    .sort((a, b) => a - b);
+  // Obtener todos los números de orden
+  const todosLosOrdenes = Object.keys(asignacionesPorOrden).map(Number);
+  
+  // Filtrar órdenes según término de búsqueda
+  const ordenesOrdenados = todosLosOrdenes
+    .filter(orden => {
+      if (!searchTerm) return true;
+      
+      const ordenStr = orden.toString();
+      // Verificar si el número de orden coincide con la búsqueda
+      if (ordenStr.includes(searchTerm.toLowerCase())) return true;
+      
+      // Buscar en los centros de este número de orden
+      const asignacionesDeEsteOrden = asignacionesPorOrden[orden];
+      return asignacionesDeEsteOrden.some(asignacion => {
+        const centroInfo = [
+          asignacion.centro,
+          asignacion.municipio,
+          asignacion.localidad,
+          asignacion.codigo
+        ].filter(Boolean).join(' ').toLowerCase();
+        
+        return centroInfo.includes(searchTerm.toLowerCase());
+      });
+    })
+    .sort((a, b) => a - b); // Ordenar de menor a mayor
   
   // Estilos para el componente
   const styles = {
@@ -103,6 +127,47 @@ const Dashboard = ({ assignments }) => {
       color: '#2c3e50',
       lineHeight: '1.5'
     },
+    searchContainer: {
+      marginBottom: '20px',
+      position: 'relative',
+      width: '100%'
+    },
+    searchInput: {
+      width: '100%',
+      padding: '12px 15px',
+      paddingLeft: '40px',
+      border: '1px solid #ddd',
+      borderRadius: '6px',
+      fontSize: '16px',
+      boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.05)',
+      boxSizing: 'border-box'
+    },
+    searchIcon: {
+      position: 'absolute',
+      left: '12px',
+      top: '50%',
+      transform: 'translateY(-50%)',
+      color: '#666',
+      fontSize: '18px',
+      pointerEvents: 'none'
+    },
+    clearButton: {
+      position: 'absolute',
+      right: '12px',
+      top: '50%',
+      transform: 'translateY(-50%)',
+      background: 'none',
+      border: 'none',
+      fontSize: '18px',
+      cursor: 'pointer',
+      color: '#999',
+      display: searchTerm ? 'block' : 'none'
+    },
+    resultsInfo: {
+      fontSize: '14px',
+      color: '#666',
+      marginBottom: '15px'
+    },
     tableContainer: {
       overflowX: 'auto',
       paddingBottom: '5px',
@@ -153,8 +218,21 @@ const Dashboard = ({ assignments }) => {
     timestamp: {
       color: '#7f8c8d',
       fontSize: '13px'
+    },
+    emptyResults: {
+      textAlign: 'center',
+      padding: '30px 20px',
+      color: '#666',
+      backgroundColor: '#f9f9f9',
+      borderRadius: '6px',
+      margin: '10px 0'
     }
   };
+  
+  // Calcular el total de asignaciones filtradas
+  const totalAsignacionesFiltradas = ordenesOrdenados.reduce((total, orden) => {
+    return total + asignacionesPorOrden[orden].length;
+  }, 0);
   
   return (
     <div style={styles.container}>
@@ -163,7 +241,7 @@ const Dashboard = ({ assignments }) => {
           <div style={styles.statCard}>
             <div style={styles.statIcon}>👥</div>
             <div style={styles.statContent}>
-              <div style={styles.statValue}>{ordenesOrdenados.length}</div>
+              <div style={styles.statValue}>{Object.keys(asignacionesPorOrden).length}</div>
               <div style={styles.statLabel}>Personas asignadas</div>
             </div>
           </div>
@@ -183,6 +261,51 @@ const Dashboard = ({ assignments }) => {
       <div style={styles.infoBox}>
         <strong>Información importante:</strong> Las plazas han sido asignadas por número de orden (a menor número, mayor prioridad) y respetando el orden de preferencia de centros indicado por cada solicitante.
       </div>
+      
+      {/* Buscador */}
+      <div style={styles.searchContainer}>
+        <span style={styles.searchIcon}>🔍</span>
+        <input
+          type="text"
+          placeholder="Buscar por número de orden, centro o municipio..."
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          style={styles.searchInput}
+        />
+        <button 
+          style={styles.clearButton}
+          onClick={() => setSearchTerm('')}
+          aria-label="Limpiar búsqueda"
+        >
+          ×
+        </button>
+      </div>
+      
+      {/* Información de resultados */}
+      <div style={styles.resultsInfo}>
+        Mostrando {totalAsignacionesFiltradas} asignaciones
+        {searchTerm && ` (filtradas de ${assignments.length})`}
+      </div>
+      
+      {ordenesOrdenados.length === 0 && searchTerm && (
+        <div style={styles.emptyResults}>
+          <p>No se encontraron asignaciones con el criterio: <strong>"{searchTerm}"</strong></p>
+          <button 
+            onClick={() => setSearchTerm('')}
+            style={{
+              padding: '6px 12px',
+              backgroundColor: '#3498db',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '14px'
+            }}
+          >
+            Limpiar filtro
+          </button>
+        </div>
+      )}
       
       <div style={styles.tableContainer}>
         <table style={styles.table}>
@@ -208,6 +331,26 @@ const Dashboard = ({ assignments }) => {
                 // Destacar órdenes bajos (alta prioridad)
                 const esPrioridad = orden <= 50;
                 
+                // Destacar coincidencias del término de búsqueda si existe
+                const destacarSiCoincide = (texto) => {
+                  if (!searchTerm || !texto) return texto;
+                  
+                  const regex = new RegExp(`(${searchTerm})`, 'gi');
+                  const partes = texto.toString().split(regex);
+                  
+                  if (partes.length <= 1) return texto;
+                  
+                  return (
+                    <span>
+                      {partes.map((parte, i) => 
+                        regex.test(parte) ? 
+                          <span key={i} style={{backgroundColor: '#ffff00', fontWeight: 'bold'}}>{parte}</span> : 
+                          parte
+                      )}
+                    </span>
+                  );
+                };
+                
                 return (
                   <tr 
                     key={`${orden}-${index}`} 
@@ -230,7 +373,7 @@ const Dashboard = ({ assignments }) => {
                   >
                     <td style={styles.td}>
                       <span style={{ fontWeight: esPrioridad ? 'bold' : 'normal' }}>
-                        {orden}
+                        {destacarSiCoincide(orden)}
                       </span>
                       {esPrioridad && (
                         <span style={styles.priorityBadge}>
@@ -239,10 +382,10 @@ const Dashboard = ({ assignments }) => {
                       )}
                     </td>
                     <td style={styles.td}>
-                      <div style={styles.centerName}>{asignacion.centro}</div>
+                      <div style={styles.centerName}>{destacarSiCoincide(asignacion.centro)}</div>
                     </td>
-                    <td style={styles.td}>{asignacion.localidad}</td>
-                    <td style={styles.td}>{asignacion.municipio}</td>
+                    <td style={styles.td}>{destacarSiCoincide(asignacion.localidad)}</td>
+                    <td style={styles.td}>{destacarSiCoincide(asignacion.municipio)}</td>
                     <td style={styles.td}>
                       <div style={styles.timestamp}>{fechaFormateada}</div>
                     </td>
