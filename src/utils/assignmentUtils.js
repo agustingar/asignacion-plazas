@@ -423,6 +423,12 @@ export const procesarSolicitud = async (solicitud, availablePlazas, assignments,
       
       const centro = availablePlazas[centroIndex];
       
+      // Verificar que el centro tenga un docId válido para evitar errores
+      if (!centro || !centro.docId) {
+        console.error(`Centro con ID ${centroId} no tiene un docId válido`);
+        continue;
+      }
+      
       // Evaluando centro para asignar
       
       // Usar transacción para verificar y asignar de forma atómica
