@@ -184,7 +184,7 @@ const PlazasDisponibles = ({
     }
     
     // Enviar centros seleccionados al componente padre
-    handleOrderSubmit(orderNumber, centrosSeleccionados);
+    handleOrderSubmit(e);
     
     // Limpiar selección después de enviar
     setOrderNumber("");
@@ -193,9 +193,9 @@ const PlazasDisponibles = ({
     // Mostrar mensaje de éxito
     setSubmitMessage({ message: "Solicitud enviada correctamente. Redirigiendo...", type: "success" });
     
-    // Redireccionar a la pestaña de asignaciones después de 2 segundos
+    // Redireccionar a la pestaña de solicitudes pendientes después de 2 segundos
     setTimeout(() => {
-      window.location.href = "#asignaciones";
+      window.location.href = "#solicitudes";
       window.location.reload(); // Recargar la página
     }, 2000);
   };

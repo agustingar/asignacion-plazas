@@ -850,9 +850,9 @@ function App() {
         // Si ya existe asignación, mostrar mensaje y no crear nueva solicitud
         showNotification(`Ya tienes una plaza asignada en ${existingAssignment.centro}. Tus preferencias se guardarán como respaldo.`, "warning");
         
-        // Redireccionar a la pestaña de asignaciones después de 2 segundos
+        // Redireccionar a la pestaña de solicitudes después de 2 segundos
         setTimeout(() => {
-          setActiveTab('asignaciones');
+          setActiveTab('solicitudes');
           window.location.reload(); // Recargar la página
         }, 2000);
       }
@@ -864,31 +864,32 @@ function App() {
         timestamp: Date.now()
       };
       
-      // Guardar la solicitud en la base de datos
-      await addDoc(collection(db, "solicitudesPendientes"), solicitudData);
+      // Verificar si ya existe una solicitud con este número de orden para evitar duplicados
+      const solicitudExistente = solicitudes.find(s => s.orden === parseInt(orderNumber));
+      
+      if (solicitudExistente) {
+        console.log(`Solicitud con orden ${orderNumber} ya existe, actualizando preferencias...`);
+        // Actualizar la solicitud existente en lugar de crear una nueva
+        const solicitudRef = doc(db, "solicitudesPendientes", solicitudExistente.docId);
+        await updateDoc(solicitudRef, solicitudData);
+        console.log(`Solicitud actualizada correctamente para orden ${orderNumber}`);
+        showNotification(`Solicitud actualizada correctamente para orden ${orderNumber}`, "success");
+      } else {
+        // Guardar nueva solicitud en la base de datos
+        await addDoc(collection(db, "solicitudesPendientes"), solicitudData);
+        console.log(`Nueva solicitud creada para orden ${orderNumber}`);
+        showNotification(`Solicitud con orden ${orderNumber} enviada correctamente.`, "success");
+      }
       
       // Limpiar el formulario
       setOrderNumber("");
       setCentrosSeleccionados([]);
       
-      // Mostrar mensaje de éxito
-      if (existingAssignment) {
-        showNotification(`Preferencias guardadas como respaldo para orden ${orderNumber}`, "success");
-      } else {
-        showNotification(`Solicitud con orden ${orderNumber} enviada correctamente. Se procesará en breve.`, "success");
-        
-        // Redireccionar a la pestaña de asignaciones después de 2 segundos
-        setTimeout(() => {
-          setActiveTab('asignaciones');
-          window.location.reload(); // Recargar la página
-        }, 2000);
-      }
-      
-      // Intentar procesar inmediatamente si no hay muchas solicitudes pendientes
-      if (solicitudes.length < 10 && !loadingProcess) {
-        console.log("Procesando solicitud recién creada...");
-        procesarTodasLasSolicitudes(true);
-      }
+      // Redireccionar a la pestaña de solicitudes después de mostrar mensaje de éxito
+      setTimeout(() => {
+        setActiveTab('solicitudes');
+        window.location.reload(); // Recargar la página
+      }, 2000);
     } catch (error) {
       console.error("Error al enviar solicitud:", error);
       showNotification(`Error al enviar solicitud: ${error.message}`, "error");
