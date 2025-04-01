@@ -20,7 +20,7 @@ function App() {
   const [loadingProcess, setLoadingProcess] = useState(false);
   const [processingMessage, setProcessingMessage] = useState('');
   const [loadingCSV, setLoadingCSV] = useState(false);
-  const [lastProcessed, setLastProcessed] = useState(null);
+  const [lastProcessed, setLastProcessed] = useState(new Date()); // Inicializar con fecha actual en lugar de null
   const [secondsUntilNextUpdate, setSecondsUntilNextUpdate] = useState(45);
   const [resetingCounters, setResetingCounters] = useState(false);
   const [isMaintenanceMode, setIsMaintenanceMode] = useState(false);
@@ -927,8 +927,21 @@ function App() {
           setMaintenanceMessage(`Error al procesar solicitudes: ${errorProceso.message}`);
         }
         
+        // Realizar una limpieza final de duplicados después de todo el proceso
+        try {
+          setMaintenanceMessage("Limpieza final de duplicados...");
+          setMaintenanceProgress(90);
+          await eliminarSolicitudesDuplicadas();
+        } catch (errorLimpiezaFinal) {
+          console.error("Error en la limpieza final:", errorLimpiezaFinal);
+        }
+        
         setMaintenanceProgress(100);
         setMaintenanceMessage("¡Sistema iniciado correctamente!");
+        
+        // Ocultar el botón de iniciar verificación después de completar
+        // Aquí usamos una variable para indicar que ya se realizó la verificación inicial
+        window.verificacionInicialCompletada = true;
         
         // Desactivar modo mantenimiento después de un breve retraso
         setTimeout(() => {
@@ -1016,268 +1029,130 @@ function App() {
   
   // Función para procesar todas las solicitudes - versión optimizada para alto volumen
   const procesarTodasLasSolicitudes = async (silencioso = false) => {
-    if (loadingProcess || isMaintenanceMode) {
+    if (loadingProcess) {
+      console.log("Ya hay un proceso en marcha");
       return;
     }
     
-    // Actualizar estado e iniciar procesamiento
-    setLoadingProcess(true);
-    lastProcessedTimestampRef.current = Date.now();
-    
     if (!silencioso) {
-      setProcessingMessage("Procesando solicitudes pendientes en cola...");
+      setLoadingProcess(true);
+      setProcessingMessage("Procesando solicitudes pendientes...");
     }
     
     try {
-      // Obtener los datos más recientes antes de procesar
-      await cargarDatosDesdeFirebase();
+      // Ordenar por orden ascendente
+      const solicitudesOrdenadas = [...solicitudes].sort((a, b) => a.orden - b.orden);
       
-      // Verificar nuevamente las solicitudes después de recargar
-      if (solicitudes.length === 0) {
-        setLastProcessed(new Date());
-        setLoadingProcess(false);
-        // Restablecer el contador a 45 segundos
-        setSecondsUntilNextUpdate(45);
-        return {
-          success: true,
-          message: "No hay solicitudes pendientes para procesar"
-        };
+      if (solicitudesOrdenadas.length === 0) {
+        if (!silencioso) {
+          setProcessingMessage("No hay solicitudes pendientes para procesar");
+          showNotification("No hay solicitudes pendientes para procesar", "info");
+        }
+        return { success: true, procesadas: 0 };
       }
       
-      // Ordenar solicitudes SIEMPRE por número de orden (menor primero)
-      const solicitudesOrdenadas = [...solicitudes].sort((a, b) => {
-        return a.orden - b.orden; // Ordenar por número de orden ascendente (prioridad absoluta)
-      });
-      
-      // OPTIMIZACIÓN: Aumentar significativamente el número de solicitudes por lote
-      const totalAProcesar = Math.min(
-        solicitudesOrdenadas.length,
-        solicitudesOrdenadas.length > 1000 ? 100 : 
-        solicitudesOrdenadas.length > 500 ? 50 : 
-        solicitudesOrdenadas.length > 200 ? 30 : 
-        solicitudesOrdenadas.length > 100 ? 20 : 10
-      );
-      
-      if (!silencioso) {
-        setProcessingMessage(`Procesando lote de ${totalAProcesar} solicitudes, comenzando con orden #${solicitudesOrdenadas[0].orden}...`);
-      }
-      
-      // OPTIMIZACIÓN: Dividir el procesamiento en lotes para evitar bloqueos
       let procesadas = 0;
+      let intentosFallidos = 0;
       let errores = 0;
       
-      // Crear un mapa de asignaciones existentes para consultas rápidas
-      const asignacionesMap = new Map();
-      assignments.forEach(a => {
-        if (a.order) {
-          asignacionesMap.set(a.order, a);
-        }
-      });
+      const BATCH_SIZE = 5; // Reducir a 5 para evitar sobrecarga de transacciones
       
-      // Procesar solicitudes en lotes más pequeños para mejor rendimiento
-      const tamañoSubLote = 5; // Reducir a 5 para evitar sobrecarga de transacciones
-      
-      for (let i = 0; i < totalAProcesar; i += tamañoSubLote) {
-        const subLote = solicitudesOrdenadas.slice(i, i + tamañoSubLote);
+      // Usar un enfoque de procesamiento por lotes para mejor rendimiento y menos bloqueo
+      for (let i = 0; i < solicitudesOrdenadas.length; i += BATCH_SIZE) {
+        const loteSolicitudes = solicitudesOrdenadas.slice(i, i + BATCH_SIZE);
         
-        // Mostrar progreso
         if (!silencioso) {
-          setProcessingMessage(`Procesando solicitudes ${i+1}-${Math.min(i+tamañoSubLote, totalAProcesar)} de ${totalAProcesar}...`);
+          setProcessingMessage(`Procesando lote ${Math.floor(i / BATCH_SIZE) + 1} de ${Math.ceil(solicitudesOrdenadas.length / BATCH_SIZE)}`);
         }
         
-        // Procesar este sublote
-        const promesas = subLote.map(async (solicitud) => {
-          try {
-            // Verificación rápida usando el mapa en lugar de consulta
-            if (asignacionesMap.has(solicitud.orden)) {
-              // Ya existe asignación, eliminar solicitud
-              try {
-                await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
-              } catch (err) {
-                console.error(`Error al eliminar solicitud duplicada ${solicitud.orden}:`, err);
-              }
-              return { success: true, eliminada: true };
-            }
+        // Procesar cada solicitud en el lote
+        const resultados = await Promise.all(
+          loteSolicitudes.map(solicitud => 
+            procesarSolicitud(solicitud, availablePlazas, db)
+          )
+        );
+        
+        // Contar resultados
+        resultados.forEach((resultado, index) => {
+          const solicitud = loteSolicitudes[index];
+          
+          if (resultado && resultado.success) {
+            procesadas++;
+          } else {
+            errores++;
+            console.error(`Error al procesar solicitud ${solicitud.orden}:`, resultado?.message || 'Error desconocido');
             
-            // Verificar en la base de datos (por si acaso, para confirmar)
-            let solicitudValida = true;
-            await runTransaction(db, async (transaction) => {
-              try {
-                // Verificar si la solicitud todavía existe
-                const solicitudRef = doc(db, "solicitudesPendientes", solicitud.docId);
-                const solicitudDoc = await transaction.get(solicitudRef);
-                
-                if (!solicitudDoc.exists()) {
-                  solicitudValida = false;
-                  return;
-                }
-                
-                // Verificar si ya existe asignación para este orden - consulta rápida
-                const existeAsignacion = asignacionesMap.has(solicitud.orden);
-                
-                if (existeAsignacion) {
-                  // Eliminar la solicitud pendiente si ya tiene asignación
-                  transaction.delete(solicitudRef);
-                  solicitudValida = false;
-                }
-              } catch (error) {
-                console.error(`Error verificando solicitud ${solicitud.orden}:`, error);
-                solicitudValida = false;
-              }
-            });
-            
-            // Si la solicitud ya no es válida, continuar con la siguiente
-            if (!solicitudValida) {
-              return { success: true, eliminada: true };
-            }
-            
-            // Procesar la solicitud si todavía es válida
-            let resultado;
+            // Incrementar intentosFallidos para esta solicitud
             try {
-              resultado = await procesarSolicitud(
-                solicitud, 
-                availablePlazas, 
-                assignments, 
-                db, 
-                solicitudesOrdenadas
-              );
-            } catch (err) {
-              console.error(`Error al procesar solicitud ${solicitud.orden}:`, err);
-              return { success: false, error: err.message };
-            }
-            
-            // Verificar que resultado no sea undefined antes de acceder a sus propiedades
-            if (!resultado) {
-              console.error(`Resultado indefinido para solicitud ${solicitud.orden}`);
-              return { success: false, error: 'Resultado indefinido' };
-            }
-            
-            if (resultado.success) {
-              // Actualizar el mapa de asignaciones
-              if (resultado.asignacion) {
-                asignacionesMap.set(solicitud.orden, resultado.asignacion);
-              }
-              return { success: true, procesada: true };
-            } else {
-              // Verificar si el mensaje indica que la plaza está reservada para un orden menor
-              if (resultado.message && (resultado.message.includes("plaza reservada para orden menor") || 
-                                      resultado.message.includes("Plazas reservadas para órdenes menores"))) {
+              runTransaction(db, async (transaction) => {
+                const solicitudRef = doc(db, "solicitudesPendientes", solicitud.docId);
+                const docSnap = await transaction.get(solicitudRef);
                 
-                // Incrementar intentos fallidos
-                try {
-                  await runTransaction(db, async (transaction) => {
-                    try {
-                      const solicitudRef = doc(db, "solicitudesPendientes", solicitud.docId);
-                      const solicitudDoc = await transaction.get(solicitudRef);
-                      
-                      if (solicitudDoc.exists()) {
-                        const datos = solicitudDoc.data();
-                        transaction.update(solicitudRef, {
-                          intentosFallidos: (datos.intentosFallidos || 0) + 1
-                        });
-                      }
-                    } catch (error) {
-                      console.error(`Error al incrementar intentos fallidos para ${solicitud.orden}:`, error);
-                    }
-                  });
-                } catch (err) {
-                  console.error(`Error en transacción para intentos fallidos ${solicitud.orden}:`, err);
+                if (docSnap.exists()) {
+                  const intentos = (docSnap.data().intentosFallidos || 0) + 1;
+                  
+                  // Si ha fallado demasiadas veces, moverla al final de la cola
+                  if (intentos >= 3) {
+                    transaction.update(solicitudRef, {
+                      timestamp: Date.now() + 1000000, // Moverla al final sumando tiempo
+                      intentosFallidos: 0 // Resetear contador
+                    });
+                    console.log(`Solicitud ${solicitud.orden} movida al final de la cola después de ${intentos} intentos fallidos`);
+                  } else {
+                    transaction.update(solicitudRef, {
+                      intentosFallidos: intentos
+                    });
+                  }
                 }
-              } else if (solicitud.intentosFallidos >= 3) {
-                // Mover al final de la cola después de 3 intentos
-                try {
-                  await runTransaction(db, async (transaction) => {
-                    try {
-                      const solicitudRef = doc(db, "solicitudesPendientes", solicitud.docId);
-                      const solicitudDoc = await transaction.get(solicitudRef);
-                      
-                      if (solicitudDoc.exists()) {
-                        transaction.update(solicitudRef, {
-                          timestamp: Date.now(),
-                          intentosFallidos: 0
-                        });
-                      }
-                    } catch (error) {
-                      console.error(`Error al mover solicitud ${solicitud.orden} al final:`, error);
-                    }
-                  });
-                } catch (err) {
-                  console.error(`Error en transacción para mover solicitud ${solicitud.orden}:`, err);
-                }
-              }
-              
-              return { success: false, error: resultado.message };
+              }).catch(err => {
+                console.error(`Error al actualizar intentosFallidos para solicitud ${solicitud.orden}:`, err);
+              });
+            } catch (e) {
+              console.error("Error al mover solicitud al final de la cola:", e);
             }
-          } catch (error) {
-            console.error(`Error al procesar solicitud ${solicitud.orden}:`, error);
-            return { success: false, error: error.message };
           }
         });
-        
-        // Usar try/catch para cada lote para que los errores no paren todo el proceso
+      }
+      
+      // Eliminar posibles duplicados que pudieran haberse creado
+      if (procesadas > 0) {
         try {
-          // Esperar a que todas las promesas del sublote se completen
-          const resultados = await Promise.all(promesas);
-          
-          // Contar resultados
-          resultados.forEach(resultado => {
-            if (resultado && resultado.success && resultado.procesada) {
-              procesadas++;
-            } else if (resultado && !resultado.success) {
-              errores++;
-            }
-          });
-        } catch (error) {
-          console.error("Error procesando lote de solicitudes:", error);
-          errores += subLote.length; // Contar todo el lote como error
-        }
-        
-        // Breve pausa entre lotes para evitar sobrecarga
-        if (i + tamañoSubLote < totalAProcesar) {
-          await new Promise(resolve => setTimeout(resolve, 250));
+          console.log("Limpiando posibles duplicados después del proceso...");
+          await eliminarSolicitudesDuplicadas();
+        } catch (errorLimpieza) {
+          console.error("Error al limpiar duplicados:", errorLimpieza);
         }
       }
       
-      // Recargar datos después del procesamiento
-      await cargarDatosDesdeFirebase();
+      // Guardar timestamp del último procesamiento
+      lastProcessedTimestampRef.current = Date.now();
+      const currentDate = new Date(); // Crear un nuevo objeto Date
+      setLastProcessed(currentDate); // Asignar el objeto Date
       
-      // Actualizar información de último procesamiento
-      const ahora = new Date();
-      setLastProcessed(ahora);
-      
-      // OPTIMIZACIÓN: Ajustar tiempo para siguiente actualización - mucho más rápido
-      // Mientras más solicitudes pendientes, menos tiempo de espera
-      const nuevoTiempo = solicitudes.length > 1000 ? 1 : 
-                         solicitudes.length > 500 ? 1 : 
-                         solicitudes.length > 200 ? 2 : 
-                         solicitudes.length > 100 ? 3 :
-                         solicitudes.length > 50 ? 5 : 10;
-      
-      setSecondsUntilNextUpdate(nuevoTiempo);
+      const mensaje = `Procesamiento completado: ${procesadas} solicitudes asignadas, ${errores} errores`;
+      console.log(mensaje);
       
       if (!silencioso) {
-        setProcessingMessage(`Procesamiento completado: ${procesadas} solicitudes procesadas (${errores} errores)`);
+        setProcessingMessage(mensaje);
+        showNotification(mensaje, procesadas > 0 ? "success" : "info");
       }
       
-      return {
-        success: true,
-        procesadas: procesadas,
-        errores: errores,
-        pendientesRestantes: solicitudes.length
-      };
+      return { success: true, procesadas, errores };
+      
     } catch (error) {
-      console.error("Error al procesar cola de solicitudes:", error);
+      console.error("Error al procesar solicitudes:", error);
+      
       if (!silencioso) {
-        showNotification(`Error al procesar cola: ${error.message}`, 'error');
+        setProcessingMessage(`Error: ${error.message}`);
+        showNotification(`Error al procesar solicitudes: ${error.message}`, "error");
       }
       
-      return {
-        success: false,
-        message: `Error al procesar cola: ${error.message}`
-      };
+      return { success: false, error: error.message };
+      
     } finally {
-      // Finalizar el procesamiento
-      setLoadingProcess(false);
+      if (!silencioso) {
+        setLoadingProcess(false);
+      }
     }
   };
 
@@ -2134,6 +2009,22 @@ function App() {
       
       console.log(`Se encontraron ${historialData.length} entradas en el historial`);
       
+      // Mostrar algunos ejemplos de datos para diagnóstico
+      const ejemplos = historialData.slice(0, 5);
+      console.log("Ejemplos de entradas en historial:", ejemplos);
+      
+      // Contar los diferentes estados
+      const conteoEstados = {};
+      historialData.forEach(entrada => {
+        const estado = entrada.estado || "SIN_ESTADO";
+        conteoEstados[estado] = (conteoEstados[estado] || 0) + 1;
+      });
+      console.log("Conteo de estados en historial:", conteoEstados);
+      
+      // Verificar cuántas entradas tienen centrosIds
+      const conCentrosIds = historialData.filter(entrada => entrada.centrosIds && entrada.centrosIds.length > 0).length;
+      console.log(`Entradas con centrosIds válidos: ${conCentrosIds} de ${historialData.length}`);
+      
       // Obtener solicitudes pendientes actuales para evitar duplicados
       const solicitudesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
       const ordenesExistentes = new Set();
@@ -2155,19 +2046,37 @@ function App() {
       
       console.log(`Se encontraron ${ordenesExistentes.size} órdenes ya existentes`);
       
-      // Filtrar entradas que no estén ya en solicitudes pendientes o asignaciones
-      const entradasAVolcar = historialData.filter(entrada => 
-        !ordenesExistentes.has(entrada.orden) && 
-        entrada.estado !== "ASIGNADA" &&
-        entrada.centrosIds && 
-        entrada.centrosIds.length > 0
-      );
+      // Filtrar entradas para volcar - modificar para incluir más casos
+      const entradasAVolcar = historialData.filter(entrada => {
+        // Si no tiene orden, no podemos procesarla
+        if (!entrada.orden) {
+          return false;
+        }
+        
+        // Si ya está en solicitudes pendientes o asignaciones, no la duplicamos
+        if (ordenesExistentes.has(entrada.orden)) {
+          return false;
+        }
+        
+        // Si no tiene centrosIds pero tiene centroId (de una asignación), lo usamos
+        if ((!entrada.centrosIds || !entrada.centrosIds.length) && entrada.centroId) {
+          // Añadir centrosIds dinámicamente si tiene centroId
+          entrada.centrosIds = [entrada.centroId];
+          return true;
+        }
+        
+        // Si tiene centrosIds válidos, la incluimos
+        return entrada.centrosIds && entrada.centrosIds.length > 0;
+      });
       
       console.log(`Se volcarán ${entradasAVolcar.length} entradas del historial`);
       
       if (entradasAVolcar.length === 0) {
         return { volcados: 0 };
       }
+      
+      // Mostrar ejemplos de las entradas que se van a volcar
+      console.log("Ejemplos de entradas a volcar:", entradasAVolcar.slice(0, 3));
       
       // Crear solicitudes pendientes en lotes
       const BATCH_SIZE = 100;
@@ -2181,7 +2090,7 @@ function App() {
           // Crear nueva solicitud pendiente con los datos del historial
           const nuevaSolicitud = {
             orden: entrada.orden,
-            centrosIds: entrada.centrosIds,
+            centrosIds: entrada.centrosIds || [entrada.centroId], // Usar centroId como fallback
             timestamp: Date.now(),
             intentosFallidos: 0
           };
@@ -2191,12 +2100,22 @@ function App() {
           Object.entries(nuevaSolicitud).forEach(([key, value]) => {
             if (value !== undefined) {
               solicitudValida[key] = value;
+            } else if (key === 'centrosIds') {
+              // Si centrosIds es undefined pero tenemos centroId
+              if (entrada.centroId) {
+                solicitudValida.centrosIds = [entrada.centroId];
+              } else {
+                console.warn(`No se pudo recuperar centrosIds para orden ${entrada.orden}`);
+              }
             }
           });
           
-          const docRef = doc(collection(db, "solicitudesPendientes"));
-          batch.set(docRef, solicitudValida);
-          volcados++;
+          // Solo añadir si tiene los campos necesarios
+          if (solicitudValida.orden && solicitudValida.centrosIds) {
+            const docRef = doc(collection(db, "solicitudesPendientes"));
+            batch.set(docRef, solicitudValida);
+            volcados++;
+          }
         }
         
         await batch.commit();
@@ -2390,7 +2309,7 @@ function App() {
             </span>
           )}
           <span style={{fontWeight: 'bold', marginRight: '5px'}}>Última actualización:</span>
-          {lastProcessed ? 
+          {lastProcessed && typeof lastProcessed.getTime === 'function' ? 
             new Intl.DateTimeFormat('es-ES', {
               hour: '2-digit',
               minute: '2-digit',
