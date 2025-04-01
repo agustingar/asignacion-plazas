@@ -800,110 +800,116 @@ function App() {
       const orderNum = parseInt(orderNumber);
       
       // Usar transacción para verificar y crear/actualizar de forma atómica
-      const resultado = await runTransaction(db, async (transaction) => {
-        try {
-          // 1. Verificar si ya existe una asignación para este orden
-          const asignacionesRef = collection(db, "asignaciones");
-          const asignacionesQuery = query(asignacionesRef);
-          const asignacionesDocs = await transaction.get(asignacionesQuery);
-          
-          // Verificar si algún documento contiene este número de orden
-          let yaExisteAsignacion = false;
-          asignacionesDocs.forEach(doc => {
-            const data = doc.data();
-            if (data && data.order === orderNum) {
-              yaExisteAsignacion = true;
+      try {
+        const resultado = await runTransaction(db, async (transaction) => {
+          try {
+            // 1. Verificar si ya existe una asignación para este orden
+            const asignacionesRef = collection(db, "asignaciones");
+            const asignacionesQuery = query(asignacionesRef);
+            const asignacionesDocs = await transaction.get(asignacionesQuery);
+            
+            // Verificar si algún documento contiene este número de orden
+            let yaExisteAsignacion = false;
+            asignacionesDocs.forEach(doc => {
+              const data = doc.data();
+              if (data && data.order === orderNum) {
+                yaExisteAsignacion = true;
+              }
+            });
+            
+            if (yaExisteAsignacion) {
+              return { 
+                success: false, 
+                error: "duplicated_assignment",
+                message: `Ya existe una asignación para el número de orden ${orderNumber}` 
+              };
             }
-          });
-          
-          if (yaExisteAsignacion) {
-            return { 
-              success: false, 
-              error: "duplicated_assignment",
-              message: `Ya existe una asignación para el número de orden ${orderNumber}` 
-            };
-          }
-          
-          // 2. Comprobar solicitudes pendientes existentes
-          const solicitudesPendientesRef = collection(db, "solicitudesPendientes");
-          const solicitudesPendientesQuery = query(solicitudesPendientesRef);
-          const solicitudesPendientesDocs = await transaction.get(solicitudesPendientesQuery);
-          
-          let existingSolicitudId = null;
-          solicitudesPendientesDocs.forEach(doc => {
-            const data = doc.data();
-            if (data && data.orden === orderNum) {
-              existingSolicitudId = doc.id;
-            }
-          });
-          
-          // 3. Preparar datos de la solicitud
-          const solicitudData = {
-            orden: orderNum,
-            centrosIds: selectedCenters,
-            timestamp: Date.now(),
-            intentosFallidos: 0
-          };
-
-          // 4. Crear o actualizar la solicitud
-          if (existingSolicitudId) {
-            // Actualizar preferencias si ya existe la solicitud
-            const solicitudRef = doc(db, "solicitudesPendientes", existingSolicitudId);
-            transaction.update(solicitudRef, {
+            
+            // 2. Comprobar solicitudes pendientes existentes
+            const solicitudesPendientesRef = collection(db, "solicitudesPendientes");
+            const solicitudesPendientesQuery = query(solicitudesPendientesRef);
+            const solicitudesPendientesDocs = await transaction.get(solicitudesPendientesQuery);
+            
+            let existingSolicitudId = null;
+            solicitudesPendientesDocs.forEach(doc => {
+              const data = doc.data();
+              if (data && data.orden === orderNum) {
+                existingSolicitudId = doc.id;
+              }
+            });
+            
+            // 3. Preparar datos de la solicitud
+            const solicitudData = {
+              orden: orderNum,
               centrosIds: selectedCenters,
               timestamp: Date.now(),
               intentosFallidos: 0
-            });
-            
-            return { 
-              success: true, 
-              updated: true,
-              message: `Solicitud actualizada correctamente para orden ${orderNumber}` 
             };
-          } else {
-            // Crear nueva solicitud - primero crear la colección y luego el documento
-            const solicitudesCol = collection(db, "solicitudesPendientes");
-            const nuevaSolicitudRef = doc(solicitudesCol);
-            transaction.set(nuevaSolicitudRef, solicitudData);
-            
-            return { 
-              success: true, 
-              updated: false,
-              message: `Nueva solicitud creada para orden ${orderNumber}` 
+
+            // 4. Crear o actualizar la solicitud
+            if (existingSolicitudId) {
+              // Actualizar preferencias si ya existe la solicitud
+              const solicitudRef = doc(db, "solicitudesPendientes", existingSolicitudId);
+              transaction.update(solicitudRef, {
+                centrosIds: selectedCenters,
+                timestamp: Date.now(),
+                intentosFallidos: 0
+              });
+              
+              return { 
+                success: true, 
+                updated: true,
+                message: `Solicitud actualizada correctamente para orden ${orderNumber}` 
+              };
+            } else {
+              // Alternativa más segura para crear un documento nuevo
+              // Usar un ID generado manualmente
+              const randomId = Date.now().toString() + Math.floor(Math.random() * 1000000).toString();
+              const nuevaSolicitudRef = doc(db, "solicitudesPendientes", randomId);
+              transaction.set(nuevaSolicitudRef, solicitudData);
+              
+              return { 
+                success: true, 
+                updated: false,
+                message: `Nueva solicitud creada para orden ${orderNumber}` 
+              };
+            }
+          } catch (transactionError) {
+            console.error("Error en la transacción:", transactionError);
+            return {
+              success: false,
+              error: "transaction_error",
+              message: `Error en la transacción: ${transactionError.message}`
             };
           }
-        } catch (transactionError) {
-          console.error("Error en la transacción:", transactionError);
-          return {
-            success: false,
-            error: "transaction_error",
-            message: `Error en la transacción: ${transactionError.message}`
-          };
+        });
+        
+        // Procesar el resultado de la transacción
+        if (resultado.success) {
+          showNotification(resultado.message, "success");
+          
+          // Limpiar campos después de enviar correctamente
+          setOrderNumber("");
+          setCentrosSeleccionados([]);
+          
+          // Recargar datos
+          await cargarDatosDesdeFirebase();
+        } else if (resultado.error === "duplicated_assignment") {
+          showNotification(resultado.message, "error");
+        } else {
+          showNotification(`Error en la transacción: ${resultado.message}`, "error");
         }
-      });
-      
-      // Procesar el resultado de la transacción
-      if (resultado.success) {
-        showNotification(resultado.message, "success");
-        
-        // Limpiar campos después de enviar correctamente
-        setOrderNumber("");
-        setCentrosSeleccionados([]);
-        
-        // Recargar datos
-        await cargarDatosDesdeFirebase();
-      } else if (resultado.error === "duplicated_assignment") {
-        showNotification(resultado.message, "error");
-      } else {
-        showNotification(`Error en la transacción: ${resultado.message}`, "error");
+      } catch (error) {
+        console.error("Error al enviar solicitud:", error);
+        showNotification(`Error al enviar solicitud: ${error.message}`, "error");
+      } finally {
+        setIsLoadingSubmit(false);
+        setIsProcessing(false);
+        setProcessingMessage("");
       }
     } catch (error) {
       console.error("Error al enviar solicitud:", error);
       showNotification(`Error al enviar solicitud: ${error.message}`, "error");
-    } finally {
-      setIsLoadingSubmit(false);
-      setIsProcessing(false);
-      setProcessingMessage("");
     }
   };
   
