@@ -447,17 +447,29 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
       });
     }
     
-    // Si todos los centros están bloqueados por órdenes menores, eliminar o mover a historial
-    if (hayOrdenMenorBloqueante && centrosInfo.every(c => !c.disponible)) {
-      // Mover la solicitud al historial como FUERA_DE_ORDEN
+    // Si todos los centros están bloqueados por órdenes menores o no disponibles, mover a historial como NO_ASIGNABLE
+    if (centrosInfo.every(c => !c.disponible)) {
+      let mensaje = "";
+      let razones = "";
+      
+      // Determinar si la causa principal es por órdenes menores o por otras razones
+      if (hayOrdenMenorBloqueante) {
+        mensaje = `Centros bloqueados por solicitudes con orden de prioridad superior: ${centrosConOrdenMenor.map(c => `${c.centro}(${c.ordenesConPrioridad.join(',')})`).join('; ')}`;
+      } else {
+        // Ningún centro disponible por otras razones
+        razones = centrosInfo.map(c => `${c.nombre || c.id}: ${c.razon}`).join(", ");
+        mensaje = `No hay plazas disponibles en ninguno de los centros solicitados. Razones: ${razones}`;
+      }
+      
+      // Mover la solicitud al historial
       try {
         // Crear entrada en historial
         const historialRef = doc(collection(db, "historialSolicitudes"));
         await setDoc(historialRef, {
           orden: solicitud.orden,
           centrosIds: solicitud.centrosIds,
-          estado: "FUERA_DE_ORDEN",
-          mensaje: `Opciones bloqueadas por órdenes: ${centrosConOrdenMenor.map(c => `${c.centro}(${c.ordenesConPrioridad.join(',')})`).join('; ')}`,
+          estado: "NO_ASIGNABLE",
+          mensaje: mensaje,
           fechaHistorico: new Date().toISOString(),
           timestamp: Date.now()
         });
@@ -469,8 +481,8 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
         
         return { 
           success: true, 
-          message: "Solicitud trasladada a historial como FUERA_DE_ORDEN por conflicto con órdenes menores",
-          fueraDeOrden: true
+          message: `Solicitud trasladada a historial como NO_ASIGNABLE. ${mensaje}`,
+          noAsignable: true
         };
       } catch (error) {
         // Error al mover al historial, mantener solicitud pendiente
@@ -484,43 +496,6 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
     
     // Filtrar solo los centros disponibles
     const centrosDisponiblesParaSolicitud = centrosInfo.filter(c => c.disponible);
-    
-    if (centrosDisponiblesParaSolicitud.length === 0) {
-      // Ninguno de los centros solicitados tiene plazas disponibles
-      const razones = centrosInfo.map(c => `${c.nombre || c.id}: ${c.razon}`).join(", ");
-      
-      // Mover la solicitud al historial como NO_ASIGNABLE en lugar de dejarla pendiente
-      try {
-        // Crear entrada en historial
-        const historialRef = doc(collection(db, "historialSolicitudes"));
-        await setDoc(historialRef, {
-          orden: solicitud.orden,
-          centrosIds: solicitud.centrosIds,
-          estado: "NO_ASIGNABLE",
-          mensaje: `No hay plazas disponibles en ninguno de los centros solicitados. Razones: ${razones}`,
-          fechaHistorico: new Date().toISOString(),
-          timestamp: Date.now()
-        });
-        
-        // Eliminar la solicitud pendiente
-        if (solicitud.docId) {
-          await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
-        }
-        
-        return { 
-          success: true, 
-          message: `Solicitud trasladada a historial como NO_ASIGNABLE. Razones: ${razones}`,
-          noAsignable: true
-        };
-      } catch (error) {
-        // Error al mover al historial, mantener solicitud pendiente
-        return { 
-          success: false, 
-          message: `No hay plazas disponibles en ninguno de los centros solicitados. Razones: ${razones}. Error al mover al historial: ${error.message}`,
-          error
-        };
-      }
-    }
     
     // Intentar asignar cada centro disponible en orden de preferencia
     let asignacionExitosa = false;
@@ -682,7 +657,7 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
     
     // Si después de intentar con todos los centros no hubo éxito
     if (!asignacionExitosa) {
-      // Si han fallado suficientes veces, moverla a historial como NO_ASIGNABLE
+      // Mover a historial como NO_ASIGNABLE
       const mensajeError = ultimoError?.message || 'Error desconocido al intentar asignar';
       
       try {

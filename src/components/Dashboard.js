@@ -246,10 +246,6 @@ const Dashboard = ({ assignments }) => {
       backgroundColor: '#fff0f0',
       borderLeft: '3px solid #e57373',
     },
-    fueraDeOrden: {
-      backgroundColor: '#fff3e0',
-      borderLeft: '3px solid #ffb74d',
-    },
     estadoBadge: {
       display: 'inline-block',
       padding: '3px 8px',
@@ -262,11 +258,6 @@ const Dashboard = ({ assignments }) => {
       backgroundColor: '#ffebee',
       color: '#c62828',
       border: '1px solid #ef9a9a'
-    },
-    badgeFueraDeOrden: {
-      backgroundColor: '#fff3e0',
-      color: '#e65100',
-      border: '1px solid #ffcc80'
     },
     badgeAsignada: {
       backgroundColor: '#e8f5e9',
@@ -315,9 +306,14 @@ const Dashboard = ({ assignments }) => {
   }, 0);
   
   // Contar los diferentes estados
-  const conteoEstados = { ASIGNADA: 0, NO_ASIGNABLE: 0, FUERA_DE_ORDEN: 0, OTROS: 0 };
+  const conteoEstados = { ASIGNADA: 0, NO_ASIGNABLE: 0, OTROS: 0 };
   assignments.forEach(asignacion => {
-    const estado = asignacion.estado || "OTROS";
+    // Unificar FUERA_DE_ORDEN como NO_ASIGNABLE
+    let estado = asignacion.estado || "ASIGNADA";
+    if (estado === "FUERA_DE_ORDEN") {
+      estado = "NO_ASIGNABLE";
+    }
+    
     if (conteoEstados.hasOwnProperty(estado)) {
       conteoEstados[estado]++;
     } else {
@@ -353,14 +349,6 @@ const Dashboard = ({ assignments }) => {
             <div style={styles.statContent}>
               <div style={styles.statValue}>{conteoEstados.NO_ASIGNABLE}</div>
               <div style={styles.statLabel}>No Asignables</div>
-            </div>
-          </div>
-          
-          <div style={styles.statCard}>
-            <div style={{...styles.statIcon, color: '#e65100'}}>⚠️</div>
-            <div style={styles.statContent}>
-              <div style={styles.statValue}>{conteoEstados.FUERA_DE_ORDEN}</div>
-              <div style={styles.statLabel}>Fuera de Orden</div>
             </div>
           </div>
         </div>
@@ -403,17 +391,6 @@ const Dashboard = ({ assignments }) => {
             onClick={() => setFiltroEstado('NO_ASIGNABLE')}
           >
             No Asignables
-          </button>
-          <button 
-            style={{
-              ...styles.botonFiltro,
-              ...(filtroEstado === 'FUERA_DE_ORDEN' ? 
-                { backgroundColor: '#e65100', color: 'white', border: '1px solid #e65100' } : 
-                {})
-            }}
-            onClick={() => setFiltroEstado('FUERA_DE_ORDEN')}
-          >
-            Fuera de Orden
           </button>
         </div>
         
@@ -496,12 +473,10 @@ const Dashboard = ({ assignments }) => {
                 let badgeEstilo = {};
                 let estadoTexto = asignacion.estado || 'ASIGNADA';
                 
-                if (asignacion.estado === 'NO_ASIGNABLE') {
+                if (asignacion.estado === 'NO_ASIGNABLE' || asignacion.estado === 'FUERA_DE_ORDEN') {
                   estiloFila = styles.noAsignable;
                   badgeEstilo = styles.badgeNoAsignable;
-                } else if (asignacion.estado === 'FUERA_DE_ORDEN') {
-                  estiloFila = styles.fueraDeOrden;
-                  badgeEstilo = styles.badgeFueraDeOrden;
+                  estadoTexto = 'NO_ASIGNABLE'; // Unificar todos los textos como NO_ASIGNABLE
                 } else if (asignacion.estado === 'ASIGNADA' || !asignacion.estado) {
                   badgeEstilo = styles.badgeAsignada;
                 }
