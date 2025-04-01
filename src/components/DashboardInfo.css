@@ -1,0 +1,89 @@
+.card-container {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+  font-size: 14px;
+  color: rgb(102, 102, 102);
+  padding: 8px 12px;
+  background-color: rgb(240, 248, 255);
+  border-radius: 6px;
+}
+
+.info-left, .info-right {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.label {
+  font-weight: bold;
+  margin-right: 5px;
+}
+
+.plazas {
+  /* Opcional: se puede ajustar la tipografía o separación */
+}
+
+.btn-recalcular {
+  background-color: rgb(52, 152, 219);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  margin-left: 10px;
+}
+
+.update-status {
+  margin-left: 5px;
+}
+
+.update-info {
+  display: flex;
+  align-items: center;
+  margin-left: 10px;
+  color: rgb(85, 85, 85);
+  font-size: 13px;
+}
+
+.pulse-indicator {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: rgb(243, 156, 18);
+  margin-right: 4px;
+  opacity: 0.7;
+  animation: pulse 1s ease infinite;
+  transition: background-color 0.3s;
+}
+
+@keyframes pulse {
+  0% { opacity: 0.4; transform: scale(0.95); }
+  50% { opacity: 1; transform: scale(1.05); }
+  100% { opacity: 0.4; transform: scale(0.95); }
+}
+
+.update-timer {
+  font-weight: bold;
+  margin-left: 3px;
+  color: rgb(230, 126, 34);
+}
+
+/* Estilos responsive para pantallas pequeñas */
+@media (max-width: 768px) {
+  .card-container {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .info-left, .info-right {
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+  }
+  .update-info {
+    margin-left: 0;
+    margin-top: 5px;
+  }
+} 
