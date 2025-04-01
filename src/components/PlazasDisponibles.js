@@ -171,6 +171,171 @@ const PlazasDisponibles = ({
     <div className="plazas-container">
       <h2>Plazas Disponibles</h2>
       
+      {/* Formulario para solicitar plaza */}
+      <div style={{ 
+        marginBottom: '25px', 
+        padding: '20px', 
+        backgroundColor: '#f8f9fa', 
+        borderRadius: '8px', 
+        border: '1px solid #e9ecef',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.05)'
+      }}>
+        <h3 style={{ 
+          fontSize: '18px', 
+          color: '#343a40', 
+          marginTop: 0, 
+          marginBottom: '15px', 
+          borderBottom: '2px solid #e9ecef', 
+          paddingBottom: '10px' 
+        }}>
+          Solicitar una plaza
+        </h3>
+        
+        <form onSubmit={handleOrderSubmit}>
+          <div style={{ marginBottom: '20px' }}>
+            <label 
+              htmlFor="orderNumber" 
+              style={{ 
+                display: 'block', 
+                marginBottom: '8px',
+                fontWeight: 'bold',
+                color: '#495057'
+              }}
+            >
+              Número de Orden:
+            </label>
+            <input
+              type="number" 
+              id="orderNumber"
+              value={orderNumber}
+              onChange={(e) => setOrderNumber(e.target.value)}
+              style={{ 
+                width: '100%', 
+                padding: '12px 15px', 
+                border: '1px solid #ddd', 
+                borderRadius: '6px',
+                fontSize: '16px',
+                boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.05)'
+              }}
+              required
+              placeholder="Introduce tu número de orden"
+            />
+          </div>
+          
+          <div style={{ 
+            padding: '10px 15px', 
+            backgroundColor: '#e9f5fe', 
+            borderRadius: '6px',
+            marginBottom: '20px',
+            fontSize: '14px',
+            borderLeft: '4px solid #3498db'
+          }}>
+            <strong>Importante:</strong> Selecciona tus centros por orden de preferencia. El primer centro que selecciones será tu primera opción.
+          </div>
+          
+          {centrosSeleccionados.length > 0 && (
+            <div style={{ 
+              marginBottom: '20px', 
+              padding: '15px', 
+              backgroundColor: '#e8f5e9', 
+              borderRadius: '6px',
+              border: '1px solid #c8e6c9'
+            }}>
+              <strong style={{ color: '#2E7D32' }}>Centros seleccionados en orden de preferencia:</strong>
+              <ol style={{ 
+                paddingLeft: '25px', 
+                marginTop: '10px', 
+                marginBottom: '0',
+                color: '#333'
+              }}>
+                {centrosSeleccionados.map((id, index) => {
+                  const centro = availablePlazas.find(p => p.id === id);
+                  return centro ? (
+                    <li key={id} style={{ marginBottom: '8px' }}>
+                      <strong>{centro.centro}</strong> 
+                      <span style={{ color: '#555' }}>({centro.municipio})</span>
+                      {index === 0 && (
+                        <span style={{
+                          display: 'inline-block',
+                          marginLeft: '8px',
+                          fontSize: '12px',
+                          color: '#d35400',
+                          backgroundColor: '#fff3cd',
+                          padding: '1px 5px',
+                          borderRadius: '10px',
+                          fontWeight: 'bold'
+                        }}>
+                          1ª opción
+                        </span>
+                      )}
+                    </li>
+                  ) : null;
+                })}
+              </ol>
+              
+              <div style={{ marginTop: '10px', textAlign: 'right' }}>
+                <button
+                  type="button"
+                  onClick={() => setCentrosSeleccionados([])}
+                  style={{
+                    padding: '6px 12px',
+                    backgroundColor: '#f8d7da',
+                    color: '#721c24',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '13px'
+                  }}
+                >
+                  Limpiar selección
+                </button>
+              </div>
+            </div>
+          )}
+          
+          <div style={{ textAlign: 'center' }}>
+            <button 
+              type="submit"
+              disabled={isProcessing || centrosSeleccionados.length === 0}
+              style={{ 
+                padding: '12px 25px', 
+                backgroundImage: isProcessing ? 
+                  'linear-gradient(to right, #cccccc, #dddddd)' : 
+                  'linear-gradient(to right, #3498db, #2980b9)',
+                color: 'white', 
+                border: 'none', 
+                borderRadius: '6px', 
+                cursor: isProcessing || centrosSeleccionados.length === 0 ? 'not-allowed' : 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '16px',
+                fontWeight: '500',
+                boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+              }}
+            >
+              {isProcessing ? (
+                <>
+                  <span style={{ 
+                    display: 'inline-block', 
+                    width: '18px', 
+                    height: '18px', 
+                    border: '3px solid rgba(255,255,255,0.3)', 
+                    borderRadius: '50%', 
+                    borderTopColor: 'white', 
+                    animation: 'spin 1s linear infinite',
+                    marginRight: '10px'
+                  }} />
+                  Procesando...
+                </>
+              ) : (
+                <>Solicitar Plaza</>
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
+      
       {/* Buscador mejorado */}
       <div className="search-container">
         <input
@@ -194,29 +359,43 @@ const PlazasDisponibles = ({
       <div className="filters-container">
         <select 
           className="filter-select" 
-          value={searchTerm} 
+          value={filterASI}
           onChange={(e) => {
-            setSearchTerm(e.target.value);
+            setFilterASI(e.target.value);
             setCurrentPage(1);
           }}
         >
-          <option value="">Todos los centros</option>
-          {availablePlazas.map(plaza => (
-            <option key={plaza.id} value={plaza.centro}>{plaza.centro}</option>
+          <option value="">Todos los ASI</option>
+          {asiOptions.map(asi => (
+            <option key={asi} value={asi}>{asi}</option>
           ))}
         </select>
         
         <select 
           className="filter-select" 
-          value={searchTerm} 
+          value={filterDepartamento}
           onChange={(e) => {
-            setSearchTerm(e.target.value);
+            setFilterDepartamento(e.target.value);
+            setCurrentPage(1);
+          }}
+        >
+          <option value="">Todos los departamentos</option>
+          {departamentoOptions.map(dep => (
+            <option key={dep} value={dep}>{dep}</option>
+          ))}
+        </select>
+        
+        <select 
+          className="filter-select" 
+          value={filterMunicipio}
+          onChange={(e) => {
+            setFilterMunicipio(e.target.value);
             setCurrentPage(1);
           }}
         >
           <option value="">Todos los municipios</option>
-          {availablePlazas.map(plaza => (
-            <option key={plaza.municipio} value={plaza.municipio}>{plaza.municipio}</option>
+          {municipioOptions.map(mun => (
+            <option key={mun} value={mun}>{mun}</option>
           ))}
         </select>
         
@@ -314,16 +493,10 @@ const PlazasDisponibles = ({
                     <td>
                       <input 
                         type="checkbox"
+                        id={`plaza-${plaza.id}`}
                         value={plaza.id}
-                        onChange={(e) => {
-                          const selectedId = Number(e.target.value);
-                          if (e.target.checked) {
-                            setCentrosSeleccionados([...centrosSeleccionados, selectedId]);
-                          } else {
-                            setCentrosSeleccionados(centrosSeleccionados.filter(id => id !== selectedId));
-                          }
-                        }}
-                        checked={seleccionado}
+                        onChange={handleCentroChange}
+                        checked={centrosSeleccionados.includes(plaza.id)}
                         style={{ 
                           width: '20px', 
                           height: '20px',
@@ -419,11 +592,11 @@ const PlazasDisponibles = ({
               <button 
                 className="select-button" 
                 onClick={() => {
-                  setCentrosSeleccionados(centrosSeleccionados.filter(id => id !== infoModal.id));
+                  handleCentroChange({ target: { value: infoModal.id } });
                   closeInfo();
                 }}
               >
-                Deseleccionar
+                {centrosSeleccionados.includes(infoModal.id) ? 'Deseleccionar' : 'Seleccionar'}
               </button>
             </div>
           </div>
