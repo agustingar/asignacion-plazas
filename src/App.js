@@ -773,8 +773,8 @@ function App() {
    * @param {number} orderNumber - Número de orden
    * @param {Array} selectedCenters - IDs de centros seleccionados
    */
-  const enviarSolicitud = async (orderNumber, selectedCenters) => {
-    if (!orderNumber || !selectedCenters.length) {
+  const enviarSolicitud = async (orderNumber, selectedCenters = []) => {
+    if (!orderNumber || !selectedCenters || selectedCenters.length === 0) {
       showNotification("Debes ingresar un número de orden y seleccionar al menos un centro", "error");
       return;
     }
@@ -784,15 +784,20 @@ function App() {
       
       // Verificar conexión con Firebase primero
       try {
-        const testRef = doc(db, "test_connection");
-        await setDoc(testRef, { timestamp: Date.now() });
-        await deleteDoc(testRef);
+        // Crear una colección y documento temporal para verificar la conexión
+        const testCollection = collection(db, "test_connection");
+        const testDocRef = doc(testCollection);
+        await setDoc(testDocRef, { timestamp: Date.now() });
+        await deleteDoc(testDocRef);
       } catch (connError) {
         console.error("Error de conexión con Firebase:", connError);
         showNotification("Error de conexión con la base de datos. Por favor, verifica tu conexión a internet e intenta nuevamente.", "error");
         setIsLoadingSubmit(false);
         return;
       }
+      
+      // Convertir orderNumber a número entero
+      const orderNum = parseInt(orderNumber);
       
       // Usar transacción para verificar y crear/actualizar de forma atómica
       const resultado = await runTransaction(db, async (transaction) => {
@@ -802,9 +807,13 @@ function App() {
           const asignacionesQuery = query(asignacionesRef);
           const asignacionesDocs = await transaction.get(asignacionesQuery);
           
-          const yaExisteAsignacion = asignacionesDocs.docs.some(doc => {
+          // Verificar si algún documento contiene este número de orden
+          let yaExisteAsignacion = false;
+          asignacionesDocs.forEach(doc => {
             const data = doc.data();
-            return data && data.order === parseInt(orderNumber);
+            if (data && data.order === orderNum) {
+              yaExisteAsignacion = true;
+            }
           });
           
           if (yaExisteAsignacion) {
@@ -821,16 +830,16 @@ function App() {
           const solicitudesPendientesDocs = await transaction.get(solicitudesPendientesQuery);
           
           let existingSolicitudId = null;
-          solicitudesPendientesDocs.docs.forEach(doc => {
+          solicitudesPendientesDocs.forEach(doc => {
             const data = doc.data();
-            if (data && data.orden === parseInt(orderNumber)) {
+            if (data && data.orden === orderNum) {
               existingSolicitudId = doc.id;
             }
           });
           
           // 3. Preparar datos de la solicitud
           const solicitudData = {
-            orden: parseInt(orderNumber),
+            orden: orderNum,
             centrosIds: selectedCenters,
             timestamp: Date.now(),
             intentosFallidos: 0
@@ -852,8 +861,9 @@ function App() {
               message: `Solicitud actualizada correctamente para orden ${orderNumber}` 
             };
           } else {
-            // Crear nueva solicitud
-            const nuevaSolicitudRef = doc(collection(db, "solicitudesPendientes"));
+            // Crear nueva solicitud - primero crear la colección y luego el documento
+            const solicitudesCol = collection(db, "solicitudesPendientes");
+            const nuevaSolicitudRef = doc(solicitudesCol);
             transaction.set(nuevaSolicitudRef, solicitudData);
             
             return { 
@@ -863,7 +873,7 @@ function App() {
             };
           }
         } catch (transactionError) {
-          console.error("Error dentro de la transacción:", transactionError);
+          console.error("Error en la transacción:", transactionError);
           return {
             success: false,
             error: "transaction_error",

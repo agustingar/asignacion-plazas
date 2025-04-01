@@ -183,15 +183,18 @@ const PlazasDisponibles = ({
       return;
     }
     
-    // Enviar centros seleccionados al componente padre
-    handleOrderSubmit(e);
+    // Indicar que estamos procesando
+    setSubmitMessage({ message: "Enviando solicitud...", type: "info" });
+    
+    // Pasar los datos explícitamente (número de orden y centros seleccionados)
+    handleOrderSubmit(orderNumber, centrosSeleccionados);
+    
+    // Mostrar mensaje de éxito (se actualizará si hay error en la función padre)
+    setSubmitMessage({ message: "Solicitud enviada correctamente. Redirigiendo...", type: "success" });
     
     // Limpiar selección después de enviar
     setOrderNumber("");
     setCentrosSeleccionados([]);
-    
-    // Mostrar mensaje de éxito
-    setSubmitMessage({ message: "Solicitud enviada correctamente. Redirigiendo...", type: "success" });
     
     // Redireccionar a la pestaña de solicitudes pendientes después de 2 segundos
     setTimeout(() => {

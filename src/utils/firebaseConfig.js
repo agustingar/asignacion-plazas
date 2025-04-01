@@ -1,7 +1,15 @@
 // Import the functions you need from the SDKs you need
 import { initializeApp } from "firebase/app";
-import { getFirestore, enableIndexedDbPersistence } from "firebase/firestore";
-import { getAnalytics } from "firebase/analytics";
+import { 
+  getFirestore, 
+  enableIndexedDbPersistence, 
+  CACHE_SIZE_UNLIMITED,
+  collection,
+  doc,
+  setDoc,
+  deleteDoc
+} from "firebase/firestore";
+// import { getAnalytics } from "firebase/analytics";
 // TODO: Add SDKs for Firebase products that you want to use
 // https://firebase.google.com/docs/web/setup#available-libraries
 
@@ -21,20 +29,47 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 // Comentar analytics para evitar errores en entorno de producción
 // const analytics = getAnalytics(app);
+
+// Configuración mejorada para Firestore
 const db = getFirestore(app);
+
+// Configurar parámetros adicionales para mejorar la estabilidad
+const firestoreSettings = {
+  cacheSizeBytes: CACHE_SIZE_UNLIMITED,
+  ignoreUndefinedProperties: true, // Ignora propiedades undefined al guardar documentos
+};
 
 // Habilitar persistencia para que funcione offline
 try {
   enableIndexedDbPersistence(db)
+    .then(() => {
+      console.log("Persistencia offline habilitada correctamente");
+    })
     .catch((err) => {
       if (err.code === 'failed-precondition') {
         console.warn('La persistencia falló: múltiples pestañas abiertas');
       } else if (err.code === 'unimplemented') {
         console.warn('El navegador no soporta persistencia');
+      } else {
+        console.error('Error al configurar persistencia:', err);
       }
     });
 } catch (error) {
   console.warn('Error al configurar persistencia:', error);
 }
+
+// Función para verificar la conexión a Firestore
+export const verificarConexion = async () => {
+  try {
+    const testCollection = collection(db, "test_connection");
+    const testDocRef = doc(testCollection);
+    await setDoc(testDocRef, { timestamp: Date.now() });
+    await deleteDoc(testDocRef);
+    return { success: true };
+  } catch (error) {
+    console.error("Error de conexión con Firebase:", error);
+    return { success: false, error };
+  }
+};
 
 export { db, app }; 
