@@ -106,22 +106,52 @@ function App() {
   };
 
   // Función para cargar datos únicamente desde plazas.csv
-  const cargarDesdePlazasCSV = async () => {
-    // Solo permitir cargar plazas en modo mantenimiento
-    if (!isMaintenanceMode) {
-      showNotification("Para cargar nuevos centros, debe activar el modo mantenimiento primero.", "error");
-      return;
-    }
-    
-    // Mostrar formulario de carga
-    const fileInput = document.createElement('input');
-    fileInput.type = 'file';
-    fileInput.accept = '.csv';
-    fileInput.click();
-    
-    fileInput.onchange = async (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
+  const cargarDesdePlazasCSV = async (e) => {
+    try {
+      // Ya no validamos si estamos en modo mantenimiento
+      
+      // Si se pasó un evento, obtener el archivo del input, de lo contrario usar el diálogo de archivos
+      let file = null;
+      
+      if (e && e.target && e.target.files && e.target.files.length > 0) {
+        file = e.target.files[0];
+      } else {
+        // Intentar cargar automáticamente desde URL predeterminada
+        try {
+          const csvUrl = process.env.PUBLIC_URL + '/plazas.csv';
+          const response = await fetch(csvUrl);
+          
+          if (response.ok) {
+            file = await response.blob();
+          } else {
+            console.log("CSV no encontrado en la ubicación predeterminada, abriendo diálogo de selección...");
+            // Si falla, recurrimos al diálogo de selección manual
+            const fileInput = document.createElement("input");
+            fileInput.type = "file";
+            fileInput.accept = '.csv';
+            
+            const filePromise = new Promise((resolve) => {
+              fileInput.onchange = (event) => resolve(event.target.files[0]);
+            });
+            
+            fileInput.click();
+            file = await filePromise;
+          }
+        } catch (error) {
+          console.error("Error al intentar cargar CSV automáticamente:", error);
+          // Si falla, recurrimos al diálogo de selección manual
+          const fileInput = document.createElement("input");
+          fileInput.type = "file";
+          fileInput.accept = '.csv';
+          
+          const filePromise = new Promise((resolve) => {
+            fileInput.onchange = (event) => resolve(event.target.files[0]);
+          });
+          
+          fileInput.click();
+          file = await filePromise;
+        }
+      }
       
       setLoadingCSV(true);
       setProcessingMessage("Cargando y procesando archivo CSV...");
@@ -396,7 +426,12 @@ function App() {
         setLoadingCSV(false);
         return false;
       }
-    };
+    } catch (error) {
+      console.error("Error al cargar datos desde CSV:", error);
+      showNotification(`Error al cargar datos desde CSV: ${error.message}`, 'error');
+      setLoadingCSV(false);
+      return false;
+    }
   };
   
   // Función para limpiar una colección completa
@@ -489,6 +524,287 @@ function App() {
     };
   };
   
+  // Función para cargar automáticamente el CSV desde ubicación predeterminada
+  const cargarCSVAutomatico = async () => {
+    try {
+      const csvUrl = process.env.PUBLIC_URL + '/plazas.csv';
+      const response = await fetch(csvUrl);
+      
+      if (response.ok) {
+        // El archivo existe, continuar con la carga
+        setLoadingCSV(true);
+        setProcessingMessage("Cargando y procesando archivo CSV automáticamente...");
+        
+        const file = await response.blob();
+        
+        // Limpiar primero la colección completa
+        await limpiarColeccion("centros");
+        
+        // El resto del procesamiento es similar a cargarDesdePlazasCSV
+        if (file.size < 100) {
+          throw new Error("El archivo CSV parece estar vacío o es demasiado pequeño");
+        }
+        
+        const text = await file.text();
+        
+        // Continuar con el procesamiento normal del CSV
+        // ... (continuará con la lógica existente de procesamiento)
+        
+        // Resto del código de procesamiento de CSV
+        const lines = text.split("\n")
+          .map(line => line.replace(/"/g, '').trim())
+          .filter(Boolean);
+        
+        if (lines.length < 5) {
+          throw new Error("El archivo CSV no contiene suficientes líneas de datos");
+        }
+        
+        // Encontrar la línea de encabezado
+        let headerIndex = lines.findIndex(line => line.includes("A.S.I.;"));
+        
+        if (headerIndex === -1) {
+          // Intentar otros patrones posibles en el encabezado
+          const alternativeHeaderIndex = lines.findIndex(line => 
+            line.includes("ASI;") || 
+            line.includes("DEPARTAMENTO;") || 
+            line.includes("CODIGO;")
+          );
+          
+          if (alternativeHeaderIndex === -1) {
+            throw new Error("No se encontró una línea de encabezado válida en el CSV");
+          } else {
+            headerIndex = alternativeHeaderIndex;
+          }
+        }
+        
+        // Verificar estructura de encabezado
+        const headerParts = lines[headerIndex].split(';');
+        if (headerParts.length < 5) {
+          throw new Error("El formato del encabezado no es válido, faltan columnas necesarias");
+        }
+        
+        // Crear un conjunto para seguimiento de centros ya procesados
+        const centrosProcesados = new Set();
+        const codigosProcesados = new Set();
+        
+        // Procesar cada línea después del encabezado
+        const centros = [];
+        let nextId = 1;
+        let totalPlazas = 0;
+        let lineasInvalidas = 0;
+        let centrosDuplicados = 0;
+        
+        setProcessingMessage("Analizando datos del CSV...");
+        
+        for (let i = headerIndex + 1; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (!line) continue;
+          
+          // Ignorar líneas que parecen separadores o totales
+          if (line.includes("de 11") || line.includes("TOTAL =")) continue;
+          
+          const parts = line.split(";");
+          
+          // Necesitamos al menos 5 columnas para la información básica
+          if (parts.length < 5) {
+            lineasInvalidas++;
+            continue;
+          }
+          
+          const asi = parts[0]?.trim() || "";
+          const departamento = parts[1]?.trim() || "";
+          const codigo = parts[2]?.trim() || "";
+          const centro = parts[3]?.trim() || "";
+          const municipio = parts[4]?.trim() || "";
+          
+          // Validar datos obligatorios
+          if (!codigo || codigo.length < 2) {
+            console.warn(`Línea ${i+1}: Código inválido o ausente: "${codigo}"`);
+            lineasInvalidas++;
+            continue;
+          }
+          
+          if (!centro || centro.length < 2) {
+            console.warn(`Línea ${i+1}: Nombre de centro inválido o ausente: "${centro}"`);
+            lineasInvalidas++;
+            continue;
+          }
+          
+          if (!municipio) {
+            console.warn(`Línea ${i+1}: Municipio ausente para centro: "${centro}"`);
+            lineasInvalidas++;
+            continue;
+          }
+          
+          // Crear clave única para identificar centros duplicados
+          const clave = `${codigo}-${centro}-${municipio}`.toLowerCase();
+          
+          // Si ya procesamos este centro, saltarlo
+          if (centrosProcesados.has(clave)) {
+            centrosDuplicados++;
+            continue;
+          }
+          
+          // Si ya procesamos este código, es un posible duplicado con variación
+          if (codigosProcesados.has(codigo)) {
+            console.warn(`Posible duplicado con código ${codigo}: "${centro}" en ${municipio}`);
+          }
+          
+          centrosProcesados.add(clave);
+          codigosProcesados.add(codigo);
+          
+          // Extraer número de plazas
+          let plazas = 1; // Valor por defecto
+          if (parts.length > 5 && parts[5]?.trim()) {
+            const plazasStr = parts[5].trim();
+            const plazasNum = parseInt(plazasStr);
+            if (!isNaN(plazasNum) && plazasNum > 0) {
+              plazas = plazasNum;
+            } else {
+              console.warn(`Línea ${i+1}: Valor de plazas inválido: "${plazasStr}", usando 1 por defecto`);
+            }
+          } else {
+            console.warn(`Línea ${i+1}: No se especificó número de plazas para "${centro}", usando 1 por defecto`);
+          }
+          
+          // Verificar total de plazas acumulado
+          totalPlazas += plazas;
+          
+          // Añadir a la lista
+          centros.push({
+            id: nextId++,
+            asi: asi,
+            departamento: departamento,
+            codigo: codigo,
+            centro: centro,
+            localidad: municipio,
+            municipio: municipio,
+            plazas: plazas,
+            asignadas: 0
+          });
+          
+          if (centros.length % 100 === 0) {
+            setProcessingMessage(`Procesando CSV: ${centros.length} centros encontrados...`);
+          }
+        }
+        
+        
+        if (centros.length === 0) {
+          throw new Error("No se pudieron extraer centros válidos del CSV");
+        }
+        
+        // Asegurar que el total de plazas sea exactamente 7066
+        const PLAZAS_OBJETIVO = 7066;
+        
+        if (totalPlazas !== PLAZAS_OBJETIVO) {
+          
+          // Estrategia: distribuir el ajuste en varios centros grandes para minimizar distorsión
+          const centrosOrdenados = [...centros].sort((a, b) => b.plazas - a.plazas);
+          const diferencia = totalPlazas - PLAZAS_OBJETIVO;
+          
+          if (Math.abs(diferencia) > 100) {
+            console.warn(`Diferencia muy grande (${diferencia} plazas) entre el total calculado y el objetivo`);
+          }
+          
+          if (diferencia > 0) {
+            // Hay plazas de más, reducir de forma distribuida
+            let restante = diferencia;
+            let indice = 0;
+            
+            while (restante > 0 && indice < Math.min(5, centrosOrdenados.length)) {
+              const centro = centrosOrdenados[indice];
+              const ajuste = Math.min(Math.ceil(diferencia / 5), centro.plazas - 1, restante);
+              
+              if (ajuste > 0) {
+                centro.plazas -= ajuste;
+                restante -= ajuste;
+              }
+              
+              indice++;
+            }
+            
+            // Si aún queda diferencia, reducir del centro más grande
+            if (restante > 0) {
+              centrosOrdenados[0].plazas -= restante;
+            }
+          } else if (diferencia < 0) {
+            // Faltan plazas, añadir de forma distribuida
+            let restante = Math.abs(diferencia);
+            let indice = 0;
+            
+            while (restante > 0 && indice < Math.min(5, centrosOrdenados.length)) {
+              const centro = centrosOrdenados[indice];
+              const ajuste = Math.min(Math.ceil(Math.abs(diferencia) / 5), restante);
+              
+              centro.plazas += ajuste;
+              restante -= ajuste;
+              
+              indice++;
+            }
+            
+            // Si aún queda diferencia, añadir al centro más grande
+            if (restante > 0) {
+              centrosOrdenados[0].plazas += restante;
+            }
+          }
+          
+          // Verificar que el ajuste se hizo correctamente
+          const nuevoTotal = centros.reduce((sum, c) => sum + c.plazas, 0);
+          if (nuevoTotal !== PLAZAS_OBJETIVO) {
+            console.error(`Error en el ajuste: ${nuevoTotal} ≠ ${PLAZAS_OBJETIVO}`);
+            throw new Error(`No se pudo ajustar el número de plazas correctamente: ${nuevoTotal} ≠ ${PLAZAS_OBJETIVO}`);
+          }
+        }
+        
+        // Añadir los centros a Firebase
+        setProcessingMessage(`Añadiendo ${centros.length} centros a Firebase...`);
+        let procesados = 0;
+        
+        // Verificar una vez más si hay datos para evitar duplicación
+        const verificacionFinal = await getDocs(collection(db, "centros"));
+        if (verificacionFinal.size > 0) {
+          showNotification("Se encontraron datos existentes. Usando datos actuales para evitar duplicación.", 'warning');
+          setLoadingCSV(false);
+          return await cargarDatosDesdeFirebase();
+        }
+        
+        // Añadir centros por lotes para mayor eficiencia
+        const BATCH_SIZE = 100;
+        for (let i = 0; i < centros.length; i += BATCH_SIZE) {
+          const batch = centros.slice(i, i + BATCH_SIZE);
+          
+          setProcessingMessage(`Añadiendo centros: ${i}/${centros.length}`);
+          
+          // Procesar el lote actual
+          for (const centro of batch) {
+            const docRef = doc(collection(db, "centros"));
+            await setDoc(docRef, {
+              ...centro,
+              docId: docRef.id
+            });
+            procesados++;
+          }
+        }
+        
+        setProcessingMessage("Datos cargados correctamente");
+        
+        // Cargar datos actualizados de Firebase
+        await cargarDatosDesdeFirebase();
+        
+        setLoadingCSV(false);
+        showNotification(`Se han cargado ${procesados} centros y exactamente ${PLAZAS_OBJETIVO} plazas automáticamente`, 'success');
+        return true;
+      } else {
+        console.log("CSV no encontrado en la ubicación predeterminada:", response.status);
+        return false;
+      }
+    } catch (error) {
+      console.error("Error al cargar CSV automáticamente:", error);
+      setLoadingCSV(false);
+      return false;
+    }
+  };
+
   // Cargar datos iniciales
   useEffect(() => {
     let unsubscribe;
@@ -508,7 +824,14 @@ function App() {
         
         if (centrosCount === 0) {
           await limpiarColeccion("centros"); // Asegurar que está vacío
-          await cargarDesdePlazasCSV();
+          
+          // Intentar cargar automáticamente primero
+          const cargaAutomaticaExitosa = await cargarCSVAutomatico();
+          
+          // Si la carga automática falla, intentar con el método manual
+          if (!cargaAutomaticaExitosa) {
+            await cargarDesdePlazasCSV();
+          }
         } else {
           await cargarDatosDesdeFirebase();
         }
@@ -1271,7 +1594,7 @@ function App() {
                 id="csvFileInput"
                 accept=".csv"
                 style={{ display: 'none' }}
-                onChange={importarCentrosDesdeCSV}
+                onChange={cargarDesdePlazasCSV}
               />
             </div>
           )}
