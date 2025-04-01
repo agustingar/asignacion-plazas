@@ -542,8 +542,8 @@ function App() {
         if (solicitudes.length > 0 && !loadingProcess) {
           console.log("Procesando solicitudes al iniciar la aplicación...");
           await procesarTodasLasSolicitudes(true);
-          // Iniciar el contador en 10 segundos
-          setSecondsUntilNextUpdate(10);
+          // Iniciar el contador en 30 segundos
+          setSecondsUntilNextUpdate(30);
         }
       };
       
@@ -566,14 +566,14 @@ function App() {
     // Iniciar el contador de cuenta regresiva
     countdownTimerRef.current = setInterval(() => {
       setSecondsUntilNextUpdate(prevSeconds => {
-        // Si llegamos a 0, volver a 10 y forzar el procesamiento
+        // Si llegamos a 0, volver a 30 (en vez de 10) y forzar el procesamiento
         if (prevSeconds <= 1) {
           console.log("Contador llegó a 0, iniciando procesamiento automático...");
           // Solo iniciar el procesamiento si no está ya en proceso y hay solicitudes
           if (!loadingProcess && solicitudes.length > 0) {
             procesarTodasLasSolicitudes(true);
           }
-          return 10;
+          return 30; // Aumentado a 30 segundos (antes era 10)
         }
         return prevSeconds - 1;
       });
@@ -599,7 +599,7 @@ function App() {
     lastProcessedTimestampRef.current = Date.now();
     
     if (!silencioso) {
-      setProcessingMessage("Procesando solicitudes pendientes...");
+      setProcessingMessage("Procesando solicitudes pendientes en cola...");
     }
     
     try {
@@ -611,215 +611,153 @@ function App() {
         console.log("No hay solicitudes pendientes después de recargar datos");
         setLastProcessed(new Date());
         setLoadingProcess(false);
-        // Restablecer el contador a 10 segundos
-        setSecondsUntilNextUpdate(10);
+        // Restablecer el contador a 30 segundos
+        setSecondsUntilNextUpdate(30);
         return {
           success: true,
           message: "No hay solicitudes pendientes para procesar"
         };
       }
       
-      console.log(`Procesando ${solicitudes.length} solicitudes pendientes...`);
+      console.log(`Procesando ${solicitudes.length} solicitudes pendientes en cola...`);
       
       // Obtener la lista actualizada de solicitudes y ordenarla por número de orden (menor primero)
-      const solicitudesOrdenadas = [...solicitudes].sort((a, b) => a.orden - b.orden);
-      console.log(`Solicitudes ordenadas por prioridad: ${solicitudesOrdenadas.map(s => s.orden).join(', ')}`);
+      const solicitudesOrdenadas = [...solicitudes].sort((a, b) => {
+        // Primero ordenar por timestamp (las más antiguas primero)
+        if (a.timestamp !== b.timestamp) {
+          return a.timestamp - b.timestamp;
+        }
+        // Si tienen el mismo timestamp, ordenar por número de orden
+        return a.orden - b.orden;
+      });
       
-      // MEJORA: Usar lotes más pequeños y forzar recargas más frecuentes
-      const BATCH_SIZE = 1; // Reducido a 1 solicitud a la vez para evitar procesamiento paralelo
-      let procesadas = 0;
-      let exitosas = 0;
-      let intentosFallidos = 0;
-      let solicitudesBloqueadasPorOrdenMenor = [];
+      console.log(`Cola de solicitudes (orden de procesamiento): ${solicitudesOrdenadas.map(s => `${s.orden} (${new Date(s.timestamp).toLocaleTimeString()})`).join(', ')}`);
       
-      // Crear una copia que usaremos para verificar que todas se procesen
-      const solicitudesPendientesCopia = [...solicitudesOrdenadas];
-      
-      // Procesar por lotes con retries para solicitudes problemáticas
-      for (let i = 0; i < solicitudesOrdenadas.length; i += BATCH_SIZE) {
-        const lote = solicitudesOrdenadas.slice(i, i + BATCH_SIZE);
+      // SOLO PROCESAR LA PRIMERA SOLICITUD DE LA COLA
+      // Esto garantiza que incluso con múltiples usuarios, las solicitudes se procesan una a una
+      if (solicitudesOrdenadas.length > 0) {
+        const primeraSolicitud = solicitudesOrdenadas[0];
         
         if (!silencioso) {
-          setProcessingMessage(`Procesando lote ${Math.ceil((i+1)/BATCH_SIZE)}/${Math.ceil(solicitudesOrdenadas.length/BATCH_SIZE)}...`);
+          setProcessingMessage(`Procesando solicitud #${primeraSolicitud.orden} (enviada a las ${new Date(primeraSolicitud.timestamp).toLocaleTimeString()})...`);
         }
         
-        // Procesar cada solicitud del lote individualmente
-        for (const solicitud of lote) {
-          try {
-            console.log(`Procesando solicitud con orden ${solicitud.orden}...`);
-            
-            // RECARGAR DATOS ANTES DE PROCESAR CADA SOLICITUD
-            const datosActualizados = await cargarDatosDesdeFirebase();
-            console.log(`Datos recargados antes de procesar la solicitud ${solicitud.orden}`);
-            
-            // Verificar si esta solicitud aún existe después de recargar
-            if (!solicitudes.some(s => s.docId === solicitud.docId)) {
-              console.log(`La solicitud ${solicitud.orden} ya no existe en la base de datos, omitiendo...`);
-              continue;
-            }
-            
-            // Verificar si ya existe una asignación para este número de orden
-            if (assignments.some(a => a.order === solicitud.orden)) {
-              console.log(`Ya existe una asignación para el orden ${solicitud.orden}, omitiendo procesamiento...`);
-              
-              // Actualizar stats
-              procesadas++;
-              exitosas++;
-              
-              // Eliminar de nuestra lista de verificación
-              const index = solicitudesPendientesCopia.findIndex(s => s.docId === solicitud.docId);
-              if (index !== -1) {
-                solicitudesPendientesCopia.splice(index, 1);
-              }
-              
-              continue;
-            }
-            
-            const resultado = await procesarSolicitud(
-              solicitud, 
-              availablePlazas, 
-              assignments, 
-              db, 
-              solicitudesOrdenadas
-            );
-            
-            procesadas++;
-            
-            // MEJORA: Verificar y registrar cada solicitud procesada
-            if (resultado.success) {
-              exitosas++;
-              console.log(`✅ Procesamiento exitoso para orden ${solicitud.orden}: ${resultado.message}`);
-              
-              // Eliminar de nuestra lista de verificación
-              const index = solicitudesPendientesCopia.findIndex(s => s.docId === solicitud.docId);
-              if (index !== -1) {
-                solicitudesPendientesCopia.splice(index, 1);
-              }
-            } else {
-              console.log(`❌ No se pudo procesar orden ${solicitud.orden}: ${resultado.message}`);
-              intentosFallidos++;
-              
-              // Registrar si la razón fue por números de orden menores
-              if (resultado.razon === "COMPLETO_POR_ORDENES_MENORES") {
-                solicitudesBloqueadasPorOrdenMenor.push(solicitud.orden);
-              }
-            }
-          } catch (error) {
-            console.error(`Error al procesar solicitud ${solicitud.orden}:`, error);
-            intentosFallidos++;
+        console.log(`Procesando primera solicitud de la cola: orden ${primeraSolicitud.orden}...`);
+        
+        try {
+          // Verificar si esta solicitud aún existe
+          const solicitudActualizada = solicitudes.find(s => s.docId === primeraSolicitud.docId);
+          if (!solicitudActualizada) {
+            console.log(`La solicitud ${primeraSolicitud.orden} ya no existe en la base de datos, omitiendo...`);
+            setLoadingProcess(false);
+            setSecondsUntilNextUpdate(5); // Verificar rápidamente la siguiente en cola
+            return { success: true, message: "Solicitud ya no existe" };
           }
           
-          // Hacer una pequeña pausa entre solicitudes (100ms) para permitir actualizaciones
-          await new Promise(resolve => setTimeout(resolve, 100));
-        }
-        
-        // Recargar datos después de cada lote para tener actualizaciones
-        console.log("Recargando datos después del lote...");
-        await cargarDatosDesdeFirebase();
-      }
-      
-      // MEJORA: Segundo intento para las solicitudes que pudieron haberse quedado sin procesar
-      if (solicitudesPendientesCopia.length > 0) {
-        console.log(`⚠️ Quedan ${solicitudesPendientesCopia.length} solicitudes sin procesar. Haciendo segundo intento...`);
-        
-        for (const solicitudPendiente of solicitudesPendientesCopia) {
-          try {
-            console.log(`Segundo intento para solicitud orden ${solicitudPendiente.orden}...`);
+          // Verificar si ya existe una asignación para este número de orden
+          if (assignments.some(a => a.order === primeraSolicitud.orden)) {
+            console.log(`Ya existe una asignación para el orden ${primeraSolicitud.orden}, eliminando solicitud de la cola...`);
             
-            // Obtener datos actualizados antes de cada intento
-            await cargarDatosDesdeFirebase();
-            
-            // Verificar si la solicitud aún existe (podría haberse procesado por otra instancia)
-            const todaviaExiste = solicitudes.some(s => s.docId === solicitudPendiente.docId);
-            if (!todaviaExiste) {
-              console.log(`La solicitud orden ${solicitudPendiente.orden} ya no existe en la base de datos`);
-              continue;
+            // Eliminar la solicitud de la cola ya que ya tiene asignación
+            try {
+              await deleteDoc(doc(db, "solicitudesPendientes", primeraSolicitud.docId));
+              console.log(`Solicitud ${primeraSolicitud.orden} eliminada de la cola porque ya tiene asignación`);
+            } catch (error) {
+              console.error(`Error al eliminar solicitud ${primeraSolicitud.orden} de la cola:`, error);
             }
             
-            // Intentar procesarla individualmente
-            const resultado = await procesarSolicitud(
-              solicitudPendiente, 
-              availablePlazas, 
-              assignments, 
-              db, 
-              solicitudes
-            );
-            
-            if (resultado.success) {
-              exitosas++;
-              console.log(`✅ Segundo intento exitoso para orden ${solicitudPendiente.orden}`);
-            } else {
-              console.log(`❌ Segundo intento fallido para orden ${solicitudPendiente.orden}: ${resultado.message}`);
-              
-              // Registrar si la razón fue por números de orden menores
-              if (resultado.razon === "COMPLETO_POR_ORDENES_MENORES") {
-                if (!solicitudesBloqueadasPorOrdenMenor.includes(solicitudPendiente.orden)) {
-                  solicitudesBloqueadasPorOrdenMenor.push(solicitudPendiente.orden);
-                }
-              }
-            }
-          } catch (error) {
-            console.error(`Error en segundo intento para solicitud ${solicitudPendiente.orden}:`, error);
+            setLoadingProcess(false);
+            setSecondsUntilNextUpdate(5); // Verificar rápidamente la siguiente en cola
+            return { success: true, message: "Solicitud ya procesada" };
           }
           
-          // Pausa más larga entre reintentos (200ms)
-          await new Promise(resolve => setTimeout(resolve, 200));
+          // Procesar esta única solicitud
+          const resultado = await procesarSolicitud(
+            primeraSolicitud, 
+            availablePlazas, 
+            assignments, 
+            db, 
+            solicitudesOrdenadas
+          );
+          
+          if (resultado.success) {
+            console.log(`✅ Procesamiento exitoso para la solicitud ${primeraSolicitud.orden} en cola: ${resultado.message}`);
+          } else {
+            console.log(`❌ No se pudo procesar la solicitud ${primeraSolicitud.orden} en cola: ${resultado.message}`);
+            
+            // Si después de 3 intentos fallidos no se puede procesar, moverla al final de la cola
+            if (primeraSolicitud.intentosFallidos >= 3) {
+              console.log(`La solicitud ${primeraSolicitud.orden} ha fallado ${primeraSolicitud.intentosFallidos} veces, actualizando timestamp para moverla al final de la cola`);
+              
+              try {
+                // Actualizar el timestamp para moverla al final de la cola
+                const docRef = doc(db, "solicitudesPendientes", primeraSolicitud.docId);
+                await updateDoc(docRef, {
+                  timestamp: Date.now(),
+                  intentosFallidos: 0 // Reiniciar contador de intentos
+                });
+              } catch (error) {
+                console.error(`Error al mover solicitud ${primeraSolicitud.orden} al final de la cola:`, error);
+              }
+            } else {
+              // Incrementar contador de intentos fallidos
+              try {
+                const docRef = doc(db, "solicitudesPendientes", primeraSolicitud.docId);
+                await updateDoc(docRef, {
+                  intentosFallidos: (primeraSolicitud.intentosFallidos || 0) + 1
+                });
+              } catch (error) {
+                console.error(`Error al incrementar intentos fallidos para ${primeraSolicitud.orden}:`, error);
+              }
+            }
+          }
+        } catch (error) {
+          console.error(`Error al procesar solicitud ${primeraSolicitud.orden} de la cola:`, error);
         }
       }
       
       // Recargar datos después del procesamiento
-      console.log("Procesamiento terminado, recargando datos finales...");
       await cargarDatosDesdeFirebase();
       
       // Actualizar información de último procesamiento
       const ahora = new Date();
       setLastProcessed(ahora);
       
-      // Restablecer el contador a 10 segundos
-      setSecondsUntilNextUpdate(10);
+      // Si quedan solicitudes pendientes, reducir el tiempo para el siguiente procesamiento
+      const nuevoTiempo = solicitudes.length > 0 ? 5 : 30;
+      setSecondsUntilNextUpdate(nuevoTiempo);
       
       if (!silencioso) {
-        // Mostrar notificación detallada
-        const mensaje = exitosas > 0 
-          ? `Se procesaron ${exitosas} de ${procesadas} solicitudes (${intentosFallidos} intentos fallidos).` 
-          : "No se pudieron procesar las solicitudes pendientes.";
-        
-        showNotification(mensaje, exitosas > 0 ? 'success' : 'warning');
-        setProcessingMessage("Procesamiento completado");
+        setProcessingMessage("Procesamiento de cola completado");
       }
       
-      // Verificación final de solicitudes pendientes
+      // Verificación final
       if (solicitudes.length > 0) {
-        console.log(`⚠️ Después del procesamiento aún quedan ${solicitudes.length} solicitudes pendientes.`);
+        console.log(`⚠️ Después del procesamiento aún quedan ${solicitudes.length} solicitudes pendientes en cola.`);
       } else {
-        console.log("✅ Todas las solicitudes han sido procesadas correctamente.");
+        console.log("✅ Cola de solicitudes vacía.");
       }
       
-      // Devolver resultado con información adicional
       return {
         success: true,
-        procesadas: procesadas,
-        exitosas: exitosas,
-        intentosFallidos: intentosFallidos,
-        pendientesRestantes: solicitudes.length,
-        solicitudesBloqueadasPorOrdenMenor: solicitudesBloqueadasPorOrdenMenor,
-        razon: solicitudesBloqueadasPorOrdenMenor.length > 0 ? "COMPLETO_POR_ORDENES_MENORES" : null
+        procesadas: 1,
+        pendientesRestantes: solicitudes.length
       };
       
     } catch (error) {
-      console.error("Error al procesar solicitudes:", error);
+      console.error("Error al procesar cola de solicitudes:", error);
       if (!silencioso) {
-        showNotification(`Error al procesar solicitudes: ${error.message}`, 'error');
+        showNotification(`Error al procesar cola: ${error.message}`, 'error');
       }
       
       return {
         success: false,
-        message: `Error al procesar solicitudes: ${error.message}`
+        message: `Error al procesar cola: ${error.message}`
       };
     } finally {
       // Finalizar el procesamiento
       setLoadingProcess(false);
-      console.log("Procesamiento finalizado");
+      console.log("Procesamiento de cola finalizado");
     }
   };
 
@@ -1094,8 +1032,7 @@ function App() {
       }}>
         <div>
           <span style={{fontWeight: 'bold', marginRight: '5px'}}>Plazas disponibles:</span>
-          {availablePlazas.reduce((total, plaza) => total + plaza.plazas, 0) - 
-           availablePlazas.reduce((total, plaza) => total + (plaza.asignadas || 0), 0)} de 7066
+          {7066 - assignments.length} de 7066
            {' '}
           <button 
             onClick={resetearContadores}
