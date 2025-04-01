@@ -374,7 +374,7 @@ const Dashboard = ({ assignments }) => {
             style={{
               ...styles.botonFiltro,
               ...(filtroEstado === 'ASIGNADA' ? 
-                { backgroundColor: '#2e7d32', color: 'white', border: '1px solid #2e7d32' } : 
+                { backgroundColor: '#2e7d32', color: 'white', borderWidth: '1px', borderStyle: 'solid', borderColor: '#2e7d32' } : 
                 {})
             }}
             onClick={() => setFiltroEstado('ASIGNADA')}
@@ -385,7 +385,7 @@ const Dashboard = ({ assignments }) => {
             style={{
               ...styles.botonFiltro,
               ...(filtroEstado === 'NO_ASIGNABLE' ? 
-                { backgroundColor: '#c62828', color: 'white', border: '1px solid #c62828' } : 
+                { backgroundColor: '#c62828', color: 'white', borderWidth: '1px', borderStyle: 'solid', borderColor: '#c62828' } : 
                 {})
             }}
             onClick={() => setFiltroEstado('NO_ASIGNABLE')}

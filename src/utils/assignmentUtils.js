@@ -319,6 +319,8 @@ export const borrarAsignacion = async (asignacion, docId, availablePlazas) => {
  */
 export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
   try {
+    console.log(`Procesando solicitud ${solicitud.orden}`);
+    
     // Primero verificar si ya existe una asignación para esta solicitud
     const asignacionesRef = collection(db, "asignaciones");
     const asignacionesQuery = query(asignacionesRef, 
@@ -328,8 +330,12 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
     
     if (!asignacionesSnapshot.empty) {
       // Ya existe una asignación, mover la solicitud pendiente al historial como completada
+      console.log(`Solicitud ${solicitud.orden} ya tiene asignación existente`);
       if (solicitud.docId) {
         try {
+          // Obtener detalles de la asignación existente
+          const asignacionExistente = asignacionesSnapshot.docs[0].data();
+          
           // Crear entrada en historial
           const historialRef = doc(collection(db, "historialSolicitudes"));
           await setDoc(historialRef, {
@@ -337,14 +343,19 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
             centrosIds: solicitud.centrosIds,
             estado: "ASIGNADA",
             mensaje: "Ya existía una asignación previa",
+            centroAsignado: asignacionExistente.centro,
+            centroId: asignacionExistente.id,
+            localidad: asignacionExistente.localidad, 
+            municipio: asignacionExistente.municipio,
             fechaHistorico: new Date().toISOString(),
             timestamp: Date.now()
           });
           
           // Eliminar la solicitud pendiente
           await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
+          console.log(`Solicitud ${solicitud.orden} eliminada y movida a historial como ASIGNADA`);
         } catch (error) {
-          // Error al mover al historial
+          console.error(`Error al mover solicitud ${solicitud.orden} al historial:`, error);
         }
       }
       return { success: true, message: "Ya existía una asignación" };
@@ -455,14 +466,17 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
       // Determinar si la causa principal es por órdenes menores o por otras razones
       if (hayOrdenMenorBloqueante) {
         mensaje = `Centros bloqueados por solicitudes con orden de prioridad superior: ${centrosConOrdenMenor.map(c => `${c.centro}(${c.ordenesConPrioridad.join(',')})`).join('; ')}`;
+        console.log(`Solicitud ${solicitud.orden} con centros bloqueados por órdenes menores`);
       } else {
         // Ningún centro disponible por otras razones
         razones = centrosInfo.map(c => `${c.nombre || c.id}: ${c.razon}`).join(", ");
         mensaje = `No hay plazas disponibles en ninguno de los centros solicitados. Razones: ${razones}`;
+        console.log(`Solicitud ${solicitud.orden} sin centros disponibles`);
       }
       
       // Mover la solicitud al historial
       try {
+        console.log(`Moviendo solicitud ${solicitud.orden} a historial como NO_ASIGNABLE`);
         // Crear entrada en historial
         const historialRef = doc(collection(db, "historialSolicitudes"));
         await setDoc(historialRef, {
@@ -477,6 +491,7 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
         // Eliminar la solicitud pendiente
         if (solicitud.docId) {
           await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
+          console.log(`Solicitud ${solicitud.orden} eliminada tras mover a historial`);
         }
         
         return { 
@@ -485,6 +500,7 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
           noAsignable: true
         };
       } catch (error) {
+        console.error(`Error al mover solicitud ${solicitud.orden} a historial:`, error);
         // Error al mover al historial, mantener solicitud pendiente
         return {
           success: false,
@@ -586,6 +602,9 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
               estado: "ASIGNADA",
               centroAsignado: centroAsignado.centro,
               centroId: centroAsignado.id,
+              centro: centroAsignado.centro,
+              localidad: centroAsignado.localidad,
+              municipio: centroAsignado.municipio,
               fechaHistorico: new Date().toISOString(),
               timestamp: Date.now()
             };
