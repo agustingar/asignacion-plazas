@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import DashboardInfo from './DashboardInfo';
 
 /**
  * Componente que muestra el historial de asignaciones
@@ -237,8 +236,6 @@ const Dashboard = ({ assignments }) => {
   
   return (
     <div style={styles.container}>
-      <DashboardInfo plazasDisponibles={6949} plazasTotal={7066} />
-      
       <div style={styles.infoContainer}>
         <div style={styles.statsContainer}>
           <div style={styles.statCard}>

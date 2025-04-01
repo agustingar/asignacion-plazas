@@ -1,15 +1,14 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
-import { collection, onSnapshot, addDoc, updateDoc, doc, getDocs, query, deleteDoc, setDoc, getDoc, where } from "firebase/firestore";
+import { collection, onSnapshot, addDoc, updateDoc, doc, getDocs, query, deleteDoc, setDoc, runTransaction } from "firebase/firestore";
 import { db } from './utils/firebaseConfig';
-import { procesarSolicitudes, procesarSolicitud, resetearContadoresAsignaciones, procesarSolicitudEnCola } from './utils/assignmentUtils';
+import { procesarSolicitudes, procesarSolicitud, resetearContadoresAsignaciones } from './utils/assignmentUtils';
 
 // Importar componentes
 import Dashboard from './components/Dashboard';
 import PlazasDisponibles from './components/PlazasDisponibles';
 import SolicitudesPendientes from './components/SolicitudesPendientes';
 import Footer from './components/Footer';
-import DashboardInfo from './components/DashboardInfo';
 
 function App() {
   // Estados principales
@@ -45,6 +44,9 @@ function App() {
   const lastProcessedTimestampRef = useRef(0);
   const countdownTimerRef = useRef(null);
   const lastCounterResetRef = useRef(0);
+
+  // Cerca del inicio del componente App
+  const [isLoadingSubmit, setIsLoadingSubmit] = useState(false);
 
   // Función para mostrar un popup con mensaje
   const showNotification = (message, type = 'success') => {
@@ -588,7 +590,6 @@ function App() {
         };
       }
       
-      
       // Obtener la lista actualizada de solicitudes y ordenarla por número de orden (menor primero)
       const solicitudesOrdenadas = [...solicitudes].sort((a, b) => {
         // Primero ordenar por timestamp (las más antiguas primero)
@@ -599,7 +600,6 @@ function App() {
         return a.orden - b.orden;
       });
       
-      
       // SOLO PROCESAR LA PRIMERA SOLICITUD DE LA COLA
       // Esto garantiza que incluso con múltiples usuarios, las solicitudes se procesan una a una
       if (solicitudesOrdenadas.length > 0) {
@@ -609,29 +609,42 @@ function App() {
           setProcessingMessage(`Procesando solicitud #${primeraSolicitud.orden} (enviada a las ${new Date(primeraSolicitud.timestamp).toLocaleTimeString()})...`);
         }
         
-        
         try {
-          // Verificar si esta solicitud aún existe
+          // Verificar dentro de una transacción para asegurar consistencia
+          await runTransaction(db, async (transaction) => {
+            // Obtener la solicitud directamente de la base de datos (para garantizar que esté actualizada)
+            const solicitudRef = doc(db, "solicitudesPendientes", primeraSolicitud.docId);
+            const solicitudDoc = await transaction.get(solicitudRef);
+            
+            // Verificar si todavía existe
+            if (!solicitudDoc.exists()) {
+              return; // La solicitud ya no existe, salir de la transacción
+            }
+            
+            // Verificar si ya existe una asignación para este orden
+            const asignacionesRef = collection(db, "asignaciones");
+            const asignacionesQuery = query(asignacionesRef);
+            const asignacionesDocs = await transaction.get(asignacionesQuery);
+            
+            const yaExisteAsignacion = asignacionesDocs.docs.some(doc => 
+              doc.data().order === primeraSolicitud.orden
+            );
+            
+            if (yaExisteAsignacion) {
+              // Ya existe asignación, eliminar la solicitud
+              transaction.delete(solicitudRef);
+              return;
+            }
+            
+            // Si no hay asignación y la solicitud existe, se procesará después de la transacción
+          });
+          
+          // Verificar nuevamente después de la transacción
           const solicitudActualizada = solicitudes.find(s => s.docId === primeraSolicitud.docId);
           if (!solicitudActualizada) {
             setLoadingProcess(false);
             setSecondsUntilNextUpdate(5); // Verificar rápidamente la siguiente en cola
-            return { success: true, message: "Solicitud ya no existe" };
-          }
-          
-          // Verificar si ya existe una asignación para este número de orden
-          if (assignments.some(a => a.order === primeraSolicitud.orden)) {
-            
-            // Eliminar la solicitud de la cola ya que ya tiene asignación
-            try {
-              await deleteDoc(doc(db, "solicitudesPendientes", primeraSolicitud.docId));
-            } catch (error) {
-              console.error(`Error al eliminar solicitud ${primeraSolicitud.orden} de la cola:`, error);
-            }
-            
-            setLoadingProcess(false);
-            setSecondsUntilNextUpdate(5); // Verificar rápidamente la siguiente en cola
-            return { success: true, message: "Solicitud ya procesada" };
+            return { success: true, message: "Solicitud ya no existe o ya fue procesada" };
           }
           
           // Procesar esta única solicitud
@@ -644,27 +657,39 @@ function App() {
           );
           
           if (resultado.success) {
+            // La solicitud se procesó exitosamente
           } else {
-            
             // Si después de 3 intentos fallidos no se puede procesar, moverla al final de la cola
             if (primeraSolicitud.intentosFallidos >= 3) {
-              
               try {
-                // Actualizar el timestamp para moverla al final de la cola
-                const docRef = doc(db, "solicitudesPendientes", primeraSolicitud.docId);
-                await updateDoc(docRef, {
-                  timestamp: Date.now(),
-                  intentosFallidos: 0 // Reiniciar contador de intentos
+                // Actualizar el timestamp para moverla al final de la cola dentro de una transacción
+                await runTransaction(db, async (transaction) => {
+                  const solicitudRef = doc(db, "solicitudesPendientes", primeraSolicitud.docId);
+                  const solicitudDoc = await transaction.get(solicitudRef);
+                  
+                  if (solicitudDoc.exists()) {
+                    transaction.update(solicitudRef, {
+                      timestamp: Date.now(),
+                      intentosFallidos: 0 // Reiniciar contador de intentos
+                    });
+                  }
                 });
               } catch (error) {
                 console.error(`Error al mover solicitud ${primeraSolicitud.orden} al final de la cola:`, error);
               }
             } else {
-              // Incrementar contador de intentos fallidos
+              // Incrementar contador de intentos fallidos dentro de una transacción
               try {
-                const docRef = doc(db, "solicitudesPendientes", primeraSolicitud.docId);
-                await updateDoc(docRef, {
-                  intentosFallidos: (primeraSolicitud.intentosFallidos || 0) + 1
+                await runTransaction(db, async (transaction) => {
+                  const solicitudRef = doc(db, "solicitudesPendientes", primeraSolicitud.docId);
+                  const solicitudDoc = await transaction.get(solicitudRef);
+                  
+                  if (solicitudDoc.exists()) {
+                    const datos = solicitudDoc.data();
+                    transaction.update(solicitudRef, {
+                      intentosFallidos: (datos.intentosFallidos || 0) + 1
+                    });
+                  }
                 });
               } catch (error) {
                 console.error(`Error al incrementar intentos fallidos para ${primeraSolicitud.orden}:`, error);
@@ -691,17 +716,11 @@ function App() {
         setProcessingMessage("Procesamiento de cola completado");
       }
       
-      // Verificación final
-      if (solicitudes.length > 0) {
-      } else {
-      }
-      
       return {
         success: true,
         procesadas: 1,
         pendientesRestantes: solicitudes.length
       };
-      
     } catch (error) {
       console.error("Error al procesar cola de solicitudes:", error);
       if (!silencioso) {
@@ -718,74 +737,105 @@ function App() {
     }
   };
 
-  // Manejar envío de solicitud de orden
-  const handleOrderSubmit = async (e) => {
-    e.preventDefault();
-    
-    // Validar el número de orden
-    if (!orderNumber) {
-      showNotification("Por favor, introduce un número de orden válido", "error");
+  /**
+   * Enviar una solicitud de plaza
+   * @param {number} orderNumber - Número de orden
+   * @param {Array} selectedCenters - IDs de centros seleccionados
+   */
+  const enviarSolicitud = async (orderNumber, selectedCenters) => {
+    if (!orderNumber || !selectedCenters.length) {
+      showNotification("Debes ingresar un número de orden y seleccionar al menos un centro", "error");
       return;
     }
-    
-    // Validar que se hayan seleccionado centros
-    if (centrosSeleccionados.length === 0) {
-      showNotification("Por favor, selecciona al menos un centro", "error");
-      return;
-    }
-    
-    setIsProcessing(true);
-    setProcessingMessage("Enviando solicitud...");
-    
+
     try {
-      // Comprobar si ya existe una asignación para este número de orden
-      const existingAssignment = assignments.find(a => a.order === parseInt(orderNumber));
+      setIsLoadingSubmit(true);
       
-      if (existingAssignment) {
-        // Si ya existe asignación, mostrar mensaje y no crear nueva solicitud
-        showNotification(`Ya tienes una plaza asignada en ${existingAssignment.centro}. Tus preferencias se guardarán como respaldo.`, "warning");
+      // Usar transacción para verificar y crear/actualizar de forma atómica
+      const resultado = await runTransaction(db, async (transaction) => {
+        // 1. Verificar si ya existe una asignación para este orden
+        const asignacionesRef = collection(db, "asignaciones");
+        const asignacionesQuery = query(asignacionesRef);
+        const asignacionesDocs = await transaction.get(asignacionesQuery);
         
-        // Redireccionar a la pestaña de solicitudes después de 2 segundos
-        setTimeout(() => {
-          setActiveTab('solicitudes');
-          window.location.reload(); // Recargar la página
-        }, 2000);
-      }
+        const yaExisteAsignacion = asignacionesDocs.docs.some(doc => doc.data().order === orderNumber);
+        if (yaExisteAsignacion) {
+          return { 
+            success: false, 
+            error: "duplicated_assignment",
+            message: `Ya existe una asignación para el número de orden ${orderNumber}` 
+          };
+        }
+        
+        // 2. Comprobar solicitudes pendientes existentes
+        const solicitudesPendientesRef = collection(db, "solicitudesPendientes");
+        const solicitudesPendientesQuery = query(solicitudesPendientesRef);
+        const solicitudesPendientesDocs = await transaction.get(solicitudesPendientesQuery);
+        
+        let existingSolicitudId = null;
+        solicitudesPendientesDocs.docs.forEach(doc => {
+          const data = doc.data();
+          if (data.orden === orderNumber) {
+            existingSolicitudId = doc.id;
+          }
+        });
+        
+        // 3. Preparar datos de la solicitud
+        const solicitudData = {
+          orden: orderNumber,
+          centrosIds: selectedCenters,
+          timestamp: Date.now(),
+          intentosFallidos: 0
+        };
+
+        // 4. Crear o actualizar la solicitud
+        if (existingSolicitudId) {
+          // Actualizar preferencias si ya existe la solicitud
+          const solicitudRef = doc(db, "solicitudesPendientes", existingSolicitudId);
+          transaction.update(solicitudRef, {
+            centrosIds: selectedCenters,
+            timestamp: Date.now(),
+            intentosFallidos: 0
+          });
+          
+          return { 
+            success: true, 
+            updated: true,
+            message: `Solicitud actualizada correctamente para orden ${orderNumber}` 
+          };
+        } else {
+          // Crear nueva solicitud
+          const nuevaSolicitudRef = doc(collection(db, "solicitudesPendientes"));
+          transaction.set(nuevaSolicitudRef, solicitudData);
+          
+          return { 
+            success: true, 
+            updated: false,
+            message: `Nueva solicitud creada para orden ${orderNumber}` 
+          };
+        }
+      });
       
-      // Crear la nueva solicitud
-      const solicitudData = {
-        orden: parseInt(orderNumber),
-        centrosIds: centrosSeleccionados,
-        timestamp: Date.now()
-      };
-      
-      // Verificar si ya existe una solicitud con este número de orden para evitar duplicados
-      const solicitudExistente = solicitudes.find(s => s.orden === parseInt(orderNumber));
-      
-      if (solicitudExistente) {
-        // Actualizar la solicitud existente en lugar de crear una nueva
-        const solicitudRef = doc(db, "solicitudesPendientes", solicitudExistente.docId);
-        await updateDoc(solicitudRef, solicitudData);
-        showNotification(`Solicitud actualizada correctamente para orden ${orderNumber}`, "success");
+      // Procesar el resultado de la transacción
+      if (resultado.success) {
+        showNotification(resultado.message, "success");
+        
+        // Limpiar campos después de enviar correctamente
+        setOrderNumber("");
+        setCentrosSeleccionados([]);
+        
+        // Recargar datos
+        await cargarDatosDesdeFirebase();
+      } else if (resultado.error === "duplicated_assignment") {
+        showNotification(resultado.message, "error");
       } else {
-        // Guardar nueva solicitud en la base de datos
-        await addDoc(collection(db, "solicitudesPendientes"), solicitudData);
-        showNotification(`Solicitud con orden ${orderNumber} enviada correctamente.`, "success");
+        showNotification(`Error en la transacción: ${resultado.message}`, "error");
       }
-      
-      // Limpiar el formulario
-      setOrderNumber("");
-      setCentrosSeleccionados([]);
-      
-      // Redireccionar a la pestaña de solicitudes después de mostrar mensaje de éxito
-      setTimeout(() => {
-        setActiveTab('solicitudes');
-        window.location.reload(); // Recargar la página
-      }, 2000);
     } catch (error) {
       console.error("Error al enviar solicitud:", error);
       showNotification(`Error al enviar solicitud: ${error.message}`, "error");
     } finally {
+      setIsLoadingSubmit(false);
       setIsProcessing(false);
       setProcessingMessage("");
     }
@@ -807,13 +857,10 @@ function App() {
       borderBottom: '1px solid #e7e7e7',
       paddingBottom: '15px'
     },
-    headerTitle: {
+    title: {
       color: '#2c3e50',
       fontSize: '28px',
       margin: '0 0 10px 0'
-    },
-    primaryColor: {
-      color: '#3498db'
     },
     subtitle: {
       color: '#7f8c8d',
@@ -821,7 +868,7 @@ function App() {
       fontWeight: 'normal',
       margin: 0
     },
-    tabContainer: {
+    tabs: {
       display: 'flex',
       gap: '2px',
       marginBottom: '20px',
@@ -939,14 +986,12 @@ function App() {
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <h1 style={styles.headerTitle}>
-          <span style={styles.primaryColor}>i</span>Asignación de Plazas
-        </h1>
+        <h1 style={styles.title}>Sistema de Asignación de Plazas</h1>
         <h2 style={styles.subtitle}>Gestión y seguimiento de solicitudes y asignaciones</h2>
       </div>
       
-      {/* Pestañas */}
-      <div style={styles.tabContainer}>
+      {/* Tabs de navegación */}
+      <div style={styles.tabs}>
         <div 
           style={{
             ...styles.tab,
@@ -976,13 +1021,118 @@ function App() {
         </div>
       </div>
       
-      {/* Panel de información */}
-      <DashboardInfo 
-        plazasDisponibles={7066 - assignments.length} 
-        plazasTotal={7066} 
-        onRecalcular={resetearContadores}
-        isRecalculando={resetingCounters}
-      />
+      {/* Información de última actualización */}
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: '15px',
+        fontSize: '14px',
+        color: '#666',
+        padding: '8px 12px',
+        backgroundColor: '#f0f8ff',
+        borderRadius: '6px'
+      }}>
+        <div>
+          <span style={{fontWeight: 'bold', marginRight: '5px'}}>Plazas disponibles:</span>
+          {7066 - assignments.length} de 7066
+           {' '}
+          <button 
+            onClick={resetearContadores}
+            disabled={resetingCounters}
+            style={{
+              backgroundColor: resetingCounters ? '#ccc' : '#3498db',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              padding: '3px 8px',
+              fontSize: '12px',
+              cursor: resetingCounters ? 'not-allowed' : 'pointer',
+              marginLeft: '10px'
+            }}
+          >
+            {resetingCounters ? 'Recalculando...' : 'Recalcular contadores'}
+          </button>
+        </div>
+        <div style={{display: 'flex', alignItems: 'center',flexWrap: 'wrap'}}>
+          {solicitudes.length > 0 && (
+            <span style={{marginRight: '10px', color: loadingProcess ? '#e74c3c' : '#2ecc71'}}>
+              {loadingProcess ? (
+                <>
+                  <span style={{
+                    display: 'inline-block', 
+                    width: '12px', 
+                    height: '12px', 
+                    border: '2px solid rgba(231,76,60,0.3)', 
+                    borderRadius: '50%', 
+                    borderTopColor: '#e74c3c', 
+                    animation: 'spin 1s linear infinite',
+                    marginRight: '5px',
+                    verticalAlign: 'middle'
+                  }}></span>
+                  Procesando {solicitudes.length} solicitudes...
+                </>
+              ) : (
+                <>
+                  <span style={{color: '#2ecc71', marginRight: '5px'}}>●</span>
+                  {solicitudes.length} solicitudes pendientes 
+                </>
+              )}
+            </span>
+          )}
+          <span style={{fontWeight: 'bold', marginRight: '5px'}}>Última actualización:</span>
+          {lastProcessed ? 
+            new Intl.DateTimeFormat('es-ES', {
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+              hour12: false
+            }).format(lastProcessed) 
+            : 'No disponible'}
+          
+          {!loadingProcess && (
+            <span style={{
+              marginLeft: '10px', 
+              color: '#555', 
+              fontSize: '13px', 
+              display: 'flex', 
+              alignItems: 'center'
+            }}>
+              <span style={{
+                display: 'inline-block',
+                width: '10px',
+                height: '10px',
+                borderRadius: '50%',
+                backgroundColor: secondsUntilNextUpdate <= 10 ? '#f39c12' : '#3498db',
+                marginRight: '4px',
+                opacity: secondsUntilNextUpdate % 2 === 0 ? 0.7 : 1,
+                animation: 'pulse 1s infinite',
+                transition: 'background-color 0.3s'
+              }}></span>
+              
+              <span style={{marginRight: '3px'}}>
+                {secondsUntilNextUpdate <= 5 ? 'Actualizando pronto...' : 'Próxima actualización en:'}
+              </span>
+              
+              <span style={{
+                fontWeight: 'bold', 
+                marginLeft: '3px',
+                color: secondsUntilNextUpdate <= 10 ? '#e67e22' : '#2980b9'
+              }}>
+                {secondsUntilNextUpdate}s
+              </span>
+              
+              <style>{`
+                @keyframes pulse {
+                  0% { opacity: 0.4; transform: scale(0.95); }
+                  50% { opacity: 1; transform: scale(1.05); }
+                  100% { opacity: 0.4; transform: scale(0.95); }
+                }
+              `}</style>
+            </span>
+          )}
+        </div>
+      </div>
       
       {/* Contenido según la pestaña activa */}
       {activeTab === 'asignaciones' && (
@@ -1016,7 +1166,7 @@ function App() {
               setOrderNumber={setOrderNumber}
               centrosSeleccionados={centrosSeleccionados}
               setCentrosSeleccionados={setCentrosSeleccionados}
-              handleOrderSubmit={handleOrderSubmit}
+              handleOrderSubmit={enviarSolicitud}
               isProcessing={isProcessing}
             />
           ) : (
