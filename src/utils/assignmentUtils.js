@@ -341,9 +341,18 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
       return { success: false, message: "Solicitud sin centros válidos" };
     }
     
+    // Obtener todas las solicitudes pendientes para verificar órdenes menores
+    const solicitudesPendientesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
+    const todasSolicitudesPendientes = solicitudesPendientesSnapshot.docs.map(doc => ({
+      ...doc.data(),
+      docId: doc.id
+    }));
+    
     // Examinar TODOS los centros disponibles en la lista de solicitudes
     // y guardar información sobre por qué no se pueden asignar
     const centrosInfo = [];
+    let hayOrdenMenorBloqueante = false;
+    let centrosConOrdenMenor = [];
     
     for (let i = 0; i < solicitud.centrosIds.length; i++) {
       const centroId = solicitud.centrosIds[i];
@@ -368,12 +377,72 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
         continue;
       }
       
+      // Verificar si hay solicitudes con número de orden menor para este centro
+      const solicitudesConOrdenMenor = todasSolicitudesPendientes.filter(s => 
+        s.orden < solicitud.orden && // Número de orden menor
+        s.centrosIds && s.centrosIds.includes(centroId) && // Incluye este centro
+        s.docId !== solicitud.docId // No es la misma solicitud
+      );
+      
+      // Si hay solicitudes con orden menor y pocas plazas disponibles
+      const plazasDisponibles = centro.plazas - centro.asignadas;
+      if (solicitudesConOrdenMenor.length >= plazasDisponibles) {
+        centrosInfo.push({
+          id: centroId,
+          nombre: centro.centro,
+          razon: `Plazas reservadas para órdenes menores (${solicitudesConOrdenMenor.map(s => s.orden).join(', ')})`,
+          disponible: false,
+          ordenMenor: true
+        });
+        
+        hayOrdenMenorBloqueante = true;
+        centrosConOrdenMenor.push({
+          centroId,
+          centro: centro.centro,
+          ordenesConPrioridad: solicitudesConOrdenMenor.map(s => s.orden)
+        });
+        
+        continue;
+      }
+      
       centrosInfo.push({
         id: centroId,
         nombre: centro.centro,
         centro: centro,
         disponible: true
       });
+    }
+    
+    // Si todos los centros están bloqueados por órdenes menores, eliminar o mover a historial
+    if (hayOrdenMenorBloqueante && centrosInfo.every(c => !c.disponible)) {
+      console.log(`Solicitud ${solicitud.orden} no puede ser procesada porque todas sus opciones están reservadas para órdenes menores`);
+      
+      // Mover la solicitud al historial como FUERA_DE_ORDEN
+      try {
+        // Crear entrada en historial
+        const historialRef = doc(collection(db, "historialSolicitudes"));
+        await setDoc(historialRef, {
+          orden: solicitud.orden,
+          centrosIds: solicitud.centrosIds,
+          estado: "FUERA_DE_ORDEN",
+          mensaje: `Opciones bloqueadas por órdenes: ${centrosConOrdenMenor.map(c => `${c.centro}(${c.ordenesConPrioridad.join(',')})`).join('; ')}`,
+          fechaHistorico: new Date().toISOString(),
+          timestamp: Date.now()
+        });
+        
+        // Eliminar la solicitud pendiente
+        if (solicitud.docId) {
+          await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
+        }
+        
+        return { 
+          success: true, 
+          message: "Solicitud trasladada a historial como FUERA_DE_ORDEN por conflicto con órdenes menores",
+          fueraDeOrden: true
+        };
+      } catch (error) {
+        console.error("Error al mover solicitud fuera de orden a historial:", error);
+      }
     }
     
     // Filtrar solo los centros disponibles
