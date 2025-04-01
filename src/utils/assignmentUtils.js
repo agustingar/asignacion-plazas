@@ -327,18 +327,52 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
     const asignacionesSnapshot = await getDocs(asignacionesQuery);
     
     if (!asignacionesSnapshot.empty) {
-      // console.warn(`Ya existe una asignación para la solicitud con orden ${solicitud.orden}. Eliminando solicitud pendiente.`);
-      // Si ya existe una asignación, solo eliminar la solicitud pendiente
+      // Ya existe una asignación, mover la solicitud pendiente al historial como completada
       if (solicitud.docId) {
-        await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
+        try {
+          // Crear entrada en historial
+          const historialRef = doc(collection(db, "historialSolicitudes"));
+          await setDoc(historialRef, {
+            orden: solicitud.orden,
+            centrosIds: solicitud.centrosIds,
+            estado: "ASIGNADA",
+            mensaje: "Ya existía una asignación previa",
+            fechaHistorico: new Date().toISOString(),
+            timestamp: Date.now()
+          });
+          
+          // Eliminar la solicitud pendiente
+          await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
+        } catch (error) {
+          // Error al mover al historial
+        }
       }
       return { success: true, message: "Ya existía una asignación" };
     }
     
     // Verificar que la solicitud tiene centros solicitados válidos
     if (!solicitud.centrosIds || !Array.isArray(solicitud.centrosIds) || solicitud.centrosIds.length === 0) {
-      // console.error("Solicitud sin centros válidos:", solicitud);
-      return { success: false, message: "Solicitud sin centros válidos" };
+      // Solicitud sin centros válidos, mover al historial
+      try {
+        // Crear entrada en historial
+        const historialRef = doc(collection(db, "historialSolicitudes"));
+        await setDoc(historialRef, {
+          orden: solicitud.orden,
+          centrosIds: solicitud.centrosIds || [],
+          estado: "NO_ASIGNABLE",
+          mensaje: "Solicitud sin centros válidos",
+          fechaHistorico: new Date().toISOString(),
+          timestamp: Date.now()
+        });
+        
+        // Eliminar la solicitud pendiente
+        if (solicitud.docId) {
+          await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
+        }
+      } catch (error) {
+        // Error al mover al historial
+      }
+      return { success: false, message: "Solicitud sin centros válidos", noAsignable: true };
     }
     
     // Obtener todas las solicitudes pendientes para verificar órdenes menores
@@ -415,8 +449,6 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
     
     // Si todos los centros están bloqueados por órdenes menores, eliminar o mover a historial
     if (hayOrdenMenorBloqueante && centrosInfo.every(c => !c.disponible)) {
-      // console.log(`Solicitud ${solicitud.orden} no puede ser procesada porque todas sus opciones están reservadas para órdenes menores`);
-      
       // Mover la solicitud al historial como FUERA_DE_ORDEN
       try {
         // Crear entrada en historial
@@ -441,7 +473,12 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
           fueraDeOrden: true
         };
       } catch (error) {
-        // console.error("Error al mover solicitud fuera de orden a historial:", error);
+        // Error al mover al historial, mantener solicitud pendiente
+        return {
+          success: false,
+          message: `Error al mover a historial: ${error.message}`,
+          error
+        };
       }
     }
     
@@ -476,10 +513,11 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
           noAsignable: true
         };
       } catch (error) {
-        // Error al mover al historial
+        // Error al mover al historial, mantener solicitud pendiente
         return { 
           success: false, 
-          message: `No hay plazas disponibles en ninguno de los centros solicitados. Razones: ${razones}. Error al mover al historial: ${error.message}`
+          message: `No hay plazas disponibles en ninguno de los centros solicitados. Razones: ${razones}. Error al mover al historial: ${error.message}`,
+          error
         };
       }
     }
@@ -528,15 +566,24 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
             const asignacionesDocsSnapshot = await getDocs(asignacionesQueryFinal);
             
             if (!asignacionesDocsSnapshot.empty) {
-              // console.warn(`Se detectó una asignación ya existente para orden ${solicitud.orden} durante la transacción`);
-              
-              // Si ya existe una asignación, no crear otra, solo eliminar la solicitud
+              // Ya existe una asignación, no crear otra, mover a historial
               const solicitudRef = doc(db, "solicitudesPendientes", solicitud.docId);
               transaction.delete(solicitudRef);
               
               // Como ya había una asignación, revertir el contador del centro
               transaction.update(centroRef, {
                 asignadas: centroData.asignadas
+              });
+              
+              // Crear entrada en historial
+              const historialRef = doc(collection(db, "historialSolicitudes"));
+              transaction.set(historialRef, {
+                orden: solicitud.orden,
+                centrosIds: solicitud.centrosIds,
+                estado: "ASIGNADA",
+                mensaje: "Ya existía una asignación previa (verificado en transacción)",
+                fechaHistorico: new Date().toISOString(),
+                timestamp: Date.now()
               });
               
               return { success: true, message: "Ya existía una asignación (verificado en transacción)" };
@@ -556,12 +603,6 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
             
             transaction.set(nuevaAsignacionRef, datosAsignacion);
             
-            // Eliminar la solicitud pendiente
-            if (solicitud.docId) {
-              const solicitudRef = doc(db, "solicitudesPendientes", solicitud.docId);
-              transaction.delete(solicitudRef);
-            }
-            
             // Mover a historial como asignada
             const historialRef = doc(collection(db, "historialSolicitudes"));
             const historialData = {
@@ -577,13 +618,18 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
             // Eliminar valores undefined para evitar errores en Firebase
             Object.keys(historialData).forEach(key => {
               if (historialData[key] === undefined) {
-                // console.warn(`Campo ${key} undefined en historialData`);
                 delete historialData[key];
               }
             });
             
             if (historialData.orden && historialData.centroId) {
               transaction.set(historialRef, historialData);
+            }
+            
+            // Eliminar la solicitud pendiente
+            if (solicitud.docId) {
+              const solicitudRef = doc(db, "solicitudesPendientes", solicitud.docId);
+              transaction.delete(solicitudRef);
             }
             
             return { success: true };
@@ -593,7 +639,6 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
           if (resultado && resultado.success) {
             exito = true;
             asignacionExitosa = true;
-            // console.log(`Asignación exitosa para solicitud ${solicitud.orden}, centro ${centroAsignado.centro}`);
             
             return {
               success: true,
@@ -615,18 +660,15 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
           
         } catch (e) {
           ultimoError = e;
-          // console.error(`Error en intento ${intento}/${maxIntentos} para solicitud ${solicitud.orden} en centro ${centroAsignado.centro}:`, e);
           
           // Si es un error de precondición, esperar un tiempo aleatorio antes de reintentar
           if (e.code === 'failed-precondition') {
             const tiempoEspera = Math.floor(Math.random() * 500) + 100; // Entre 100 y 600ms
-            // console.log(`Reintentando en ${tiempoEspera}ms (error de precondición)`);
             await new Promise(resolve => setTimeout(resolve, tiempoEspera));
           }
           
           // Si agotamos los intentos con este centro, intentar con el siguiente
           if (intento >= maxIntentos) {
-            // console.log(`Agotados los intentos para el centro ${centroAsignado.centro}, probando con siguiente opción`);
             break; // Salir del bucle de intentos para este centro
           }
         }
@@ -640,63 +682,67 @@ export const procesarSolicitud = async (solicitud, centrosDisponibles, db) => {
     
     // Si después de intentar con todos los centros no hubo éxito
     if (!asignacionExitosa) {
-      // En lugar de solo incrementar intentos fallidos, si han fallado demasiadas veces,
-      // moverla a historial como NO_ASIGNABLE
-      if (solicitud.intentosFallidos && solicitud.intentosFallidos >= 2) {
-        try {
-          // Crear entrada en historial
-          const historialRef = doc(collection(db, "historialSolicitudes"));
-          await setDoc(historialRef, {
-            orden: solicitud.orden,
-            centrosIds: solicitud.centrosIds,
-            estado: "NO_ASIGNABLE",
-            mensaje: `No se pudo asignar después de múltiples intentos: ${ultimoError?.message || 'Error desconocido'}`,
-            fechaHistorico: new Date().toISOString(),
-            timestamp: Date.now()
-          });
-          
-          // Eliminar la solicitud pendiente
-          if (solicitud.docId) {
-            await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
-          }
-          
-          return { 
-            success: true, 
-            message: "Solicitud trasladada a historial como NO_ASIGNABLE después de múltiples intentos fallidos",
-            noAsignable: true
-          };
-        } catch (deleteError) {
-          // Error al mover al historial
-          return {
-            success: false,
-            message: `Error al mover solicitud a historial: ${deleteError.message}`,
-            error: deleteError
-          };
-        }
-      } else {
-        // Si aún no ha fallado suficientes veces, incrementar el contador de intentos
-        try {
-          if (solicitud.docId) {
-            const solicitudRef = doc(db, "solicitudesPendientes", solicitud.docId);
-            await updateDoc(solicitudRef, {
-              intentosFallidos: (solicitud.intentosFallidos || 0) + 1
-            });
-          }
-        } catch (updateError) {
-          // Error al actualizar contador de intentos, no es crítico
-        }
-      }
+      // Si han fallado suficientes veces, moverla a historial como NO_ASIGNABLE
+      const mensajeError = ultimoError?.message || 'Error desconocido al intentar asignar';
       
-      return {
-        success: false,
-        message: `No se pudo asignar ninguno de los centros solicitados después de varios intentos: ${ultimoError?.message || 'Error desconocido'}`,
-        error: ultimoError
-      };
+      try {
+        // Crear entrada en historial
+        const historialRef = doc(collection(db, "historialSolicitudes"));
+        await setDoc(historialRef, {
+          orden: solicitud.orden,
+          centrosIds: solicitud.centrosIds,
+          estado: "NO_ASIGNABLE",
+          mensaje: `No se pudo asignar después de múltiples intentos: ${mensajeError}`,
+          fechaHistorico: new Date().toISOString(),
+          timestamp: Date.now()
+        });
+        
+        // Eliminar la solicitud pendiente
+        if (solicitud.docId) {
+          await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
+        }
+        
+        return { 
+          success: true, 
+          message: "Solicitud trasladada a historial como NO_ASIGNABLE después de múltiples intentos fallidos",
+          noAsignable: true
+        };
+      } catch (deleteError) {
+        // Error al mover al historial
+        return {
+          success: false,
+          message: `Error al mover solicitud a historial: ${deleteError.message}`,
+          error: deleteError
+        };
+      }
     }
     
   } catch (error) {
-    // console.error("Error general en procesarSolicitud:", error);
-    return { success: false, message: error.message, error };
+    // Error general - intentar mover a historial como NO_ASIGNABLE
+    try {
+      const historialRef = doc(collection(db, "historialSolicitudes"));
+      await setDoc(historialRef, {
+        orden: solicitud.orden,
+        centrosIds: solicitud.centrosIds || [],
+        estado: "NO_ASIGNABLE",
+        mensaje: `Error general: ${error.message || 'Desconocido'}`,
+        fechaHistorico: new Date().toISOString(),
+        timestamp: Date.now()
+      });
+      
+      // Eliminar la solicitud pendiente
+      if (solicitud.docId) {
+        await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
+      }
+      
+      return { 
+        success: false, 
+        message: `Error general movido a historial: ${error.message}`,
+        noAsignable: true
+      };
+    } catch (historialError) {
+      return { success: false, message: error.message, error };
+    }
   }
 };
 
