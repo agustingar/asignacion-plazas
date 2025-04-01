@@ -491,18 +491,37 @@ const PlazasDisponibles = ({
                     }}
                   >
                     <td>
-                      <input 
-                        type="checkbox"
-                        id={`plaza-${plaza.id}`}
-                        value={plaza.id}
-                        onChange={handleCentroChange}
-                        checked={centrosSeleccionados.includes(plaza.id)}
-                        style={{ 
-                          width: '20px', 
-                          height: '20px',
-                          cursor: 'pointer'
-                        }}
-                      />
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', justifyContent: 'center' }}>
+                        <input 
+                          type="checkbox"
+                          id={`plaza-${plaza.id}`}
+                          value={plaza.id}
+                          onChange={handleCentroChange}
+                          checked={centrosSeleccionados.includes(plaza.id)}
+                          style={{ 
+                            width: '20px', 
+                            height: '20px',
+                            cursor: 'pointer'
+                          }}
+                        />
+                        {centrosSeleccionados.includes(plaza.id) && (
+                          <span style={{
+                            backgroundImage: 'linear-gradient(135deg, #1976D2, #2196F3)',
+                            color: 'white',
+                            borderRadius: '50%',
+                            width: '28px',
+                            height: '28px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontWeight: 'bold',
+                            fontSize: '14px',
+                            boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+                          }}>
+                            {centrosSeleccionados.indexOf(plaza.id) + 1}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td>{plaza.codigo}</td>
                     <td className="centro-column" title={plaza.centro}>

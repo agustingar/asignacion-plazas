@@ -18,6 +18,7 @@ function App() {
   const [loadingProcess, setLoadingProcess] = useState(false);
   const [processingMessage, setProcessingMessage] = useState('');
   const [loadingCSV, setLoadingCSV] = useState(false);
+  const [lastProcessed, setLastProcessed] = useState(null);
   
   // Estados para el formulario de solicitud
   const [orderNumber, setOrderNumber] = useState('');
@@ -37,6 +38,8 @@ function App() {
   // Refs para controlar el estado de carga
   const cargandoRef = useRef(false);
   const cargaCompletadaRef = useRef(false);
+  const processingTimerRef = useRef(null);
+  const lastProcessedTimestampRef = useRef(0);
 
   // Función para mostrar un popup con mensaje
   const showNotification = (message, type = 'success') => {
@@ -489,6 +492,117 @@ function App() {
     };
   }, []);
 
+  // Configurar procesamiento automático de solicitudes
+  useEffect(() => {
+    // Solo iniciar si los datos están cargados
+    if (availablePlazas.length > 0) {
+      // Procesar inmediatamente al cargar
+      if (solicitudes.length > 0 && !loadingProcess) {
+        procesarTodasLasSolicitudes(true);
+      }
+      
+      // Configurar intervalo de procesamiento cada 60 segundos
+      processingTimerRef.current = setInterval(() => {
+        if (solicitudes.length > 0 && !loadingProcess) {
+          // Verificar que haya pasado al menos 45 segundos desde el último procesamiento
+          // Esto evita procesamiento excesivo si el anterior tardó mucho
+          const ahora = Date.now();
+          if (ahora - lastProcessedTimestampRef.current >= 45000) {
+            console.log("Iniciando procesamiento automático de solicitudes...");
+            procesarTodasLasSolicitudes(true);
+          }
+        }
+      }, 60000); // 60 segundos = 1 minuto
+      
+      // Limpiar el intervalo al desmontar
+      return () => {
+        if (processingTimerRef.current) {
+          clearInterval(processingTimerRef.current);
+        }
+      };
+    }
+  }, [availablePlazas.length, solicitudes.length]);
+  
+  // Función para procesar todas las solicitudes - versión optimizada para alto volumen
+  const procesarTodasLasSolicitudes = async (silencioso = false) => {
+    if (loadingProcess) return;
+    
+    // Actualizar estado e iniciar procesamiento
+    setLoadingProcess(true);
+    lastProcessedTimestampRef.current = Date.now();
+    
+    if (!silencioso) {
+      setProcessingMessage("Procesando solicitudes pendientes...");
+    }
+    
+    try {
+      console.log(`Procesando ${solicitudes.length} solicitudes pendientes...`);
+      
+      // Si no hay solicitudes, terminar rápido
+      if (solicitudes.length === 0) {
+        setLastProcessed(new Date());
+        setLoadingProcess(false);
+        return;
+      }
+      
+      // Optimización: procesar en lotes para evitar sobrecarga
+      const BATCH_SIZE = 25; // Procesar 25 solicitudes a la vez
+      const solicitudesOrdenadas = [...solicitudes].sort((a, b) => a.orden - b.orden);
+      let procesadas = 0;
+      let exitosas = 0;
+      
+      // Procesar por lotes
+      for (let i = 0; i < solicitudesOrdenadas.length; i += BATCH_SIZE) {
+        const lote = solicitudesOrdenadas.slice(i, i + BATCH_SIZE);
+        
+        if (!silencioso) {
+          setProcessingMessage(`Procesando lote ${Math.ceil((i+1)/BATCH_SIZE)}/${Math.ceil(solicitudesOrdenadas.length/BATCH_SIZE)}...`);
+        }
+        
+        // Procesar cada solicitud del lote en paralelo
+        const resultados = await Promise.all(lote.map(solicitud => 
+          procesarSolicitud(solicitud, availablePlazas, assignments, db)
+            .catch(error => {
+              console.error(`Error al procesar solicitud ${solicitud.orden}:`, error);
+              return { success: false, error: error.message };
+            })
+        ));
+        
+        // Contar resultados exitosos
+        for (const resultado of resultados) {
+          procesadas++;
+          if (resultado.success) exitosas++;
+        }
+      }
+      
+      // Recargar datos después del procesamiento
+      await cargarDatosDesdeFirebase();
+      
+      // Actualizar información de último procesamiento
+      const ahora = new Date();
+      setLastProcessed(ahora);
+      
+      if (!silencioso) {
+        // Mostrar notificación si no es silencioso
+        const mensaje = exitosas > 0 
+          ? `Se han procesado ${exitosas} de ${procesadas} solicitudes correctamente.` 
+          : "No se pudieron procesar las solicitudes pendientes.";
+        
+        showNotification(mensaje, exitosas > 0 ? 'success' : 'warning');
+        setProcessingMessage("Procesamiento completado");
+      }
+      
+    } catch (error) {
+      console.error("Error al procesar solicitudes:", error);
+      if (!silencioso) {
+        showNotification(`Error al procesar solicitudes: ${error.message}`, 'error');
+      }
+    } finally {
+      // Finalizar el procesamiento
+      setLoadingProcess(false);
+    }
+  };
+
   // Manejar envío de solicitud de orden
   const handleOrderSubmit = async (e) => {
     e.preventDefault();
@@ -570,71 +684,6 @@ function App() {
       // Mostrar error pero mantener el formulario para permitir intentar de nuevo
       showNotification("Error al guardar la solicitud: " + error.message, 'error');
       setIsProcessing(false);
-    }
-  };
-  
-  // Función para procesar todas las solicitudes
-  const procesarTodasLasSolicitudes = async () => {
-    if (loadingProcess) return;
-    
-    setLoadingProcess(true);
-    setProcessingMessage("Procesando solicitudes pendientes...");
-    
-    try {
-      console.log("Procesando todas las solicitudes...");
-      
-      // Verificar que tenemos solicitudes pendientes
-      if (solicitudes.length === 0) {
-        console.log("No hay solicitudes pendientes para procesar.");
-        setProcessingMessage("No hay solicitudes pendientes.");
-        setTimeout(() => setLoadingProcess(false), 1000);
-        return;
-      }
-      
-      // Procesamiento de solicitudes con retroalimentación
-      const solicitudesOrdenadas = [...solicitudes].sort((a, b) => a.orden - b.orden);
-      let procesadas = 0;
-      
-      for (const solicitud of solicitudesOrdenadas) {
-        setProcessingMessage(`Procesando solicitud con orden ${solicitud.orden} (${procesadas + 1}/${solicitudesOrdenadas.length})...`);
-        
-        const result = await procesarSolicitud(
-          solicitud, 
-          availablePlazas, 
-          assignments, 
-          db
-        );
-        
-        if (result.success) {
-          procesadas++;
-          console.log(`Solicitud ${solicitud.orden} procesada correctamente: ${result.message}`);
-        } else {
-          console.warn(`No se pudo procesar la solicitud ${solicitud.orden}: ${result.message}`);
-        }
-        
-        // Breve pausa para evitar sobrecarga
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
-      
-      // Refrescar datos después del procesamiento
-      await cargarDatosDesdeFirebase();
-      
-      const mensaje = procesadas > 0 
-        ? `Se han procesado ${procesadas} solicitudes correctamente.` 
-        : "No se pudieron procesar las solicitudes pendientes.";
-      
-      setProcessingMessage("Procesamiento completado");
-      showNotification(mensaje, procesadas > 0 ? 'success' : 'warning');
-      
-      // Breve pausa antes de ocultar el indicador de carga
-      setTimeout(() => {
-        setLoadingProcess(false);
-      }, 1500);
-      
-    } catch (error) {
-      console.error("Error al procesar solicitudes:", error);
-      showNotification(`Error al procesar solicitudes: ${error.message}`, 'error');
-      setLoadingProcess(false);
     }
   };
   
@@ -792,34 +841,77 @@ function App() {
         </div>
       </div>
       
-      {/* Botón para procesar todas las solicitudes */}
-      {solicitudes.length > 0 && (
-        <div style={{textAlign: 'center', marginBottom: '20px'}}>
-          <button 
-            onClick={procesarTodasLasSolicitudes}
-            disabled={loadingProcess || solicitudes.length === 0}
-            style={styles.processingButton}
-          >
-            {loadingProcess ? (
-              <>
-                <span style={{ 
-                  display: 'inline-block', 
-                  width: '18px', 
-                  height: '18px', 
-                  border: '3px solid rgba(255,255,255,0.3)', 
-                  borderRadius: '50%', 
-                  borderTopColor: 'white', 
-                  animation: 'spin 1s linear infinite',
-                  marginRight: '10px'
-                }} />
-                Procesando...
-              </>
-            ) : (
-              'Procesar todas las solicitudes'
-            )}
-          </button>
+      {/* Información de última actualización */}
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: '15px',
+        fontSize: '14px',
+        color: '#666',
+        padding: '8px 12px',
+        backgroundColor: '#f0f8ff',
+        borderRadius: '6px'
+      }}>
+        <div>
+          <span style={{fontWeight: 'bold', marginRight: '5px'}}>Plazas disponibles:</span>
+          {availablePlazas.reduce((total, plaza) => total + plaza.plazas, 0) - 
+           availablePlazas.reduce((total, plaza) => total + (plaza.asignadas || 0), 0)} de 7066
         </div>
-      )}
+        <div style={{display: 'flex', alignItems: 'center'}}>
+          {solicitudes.length > 0 && (
+            <span style={{marginRight: '10px', color: loadingProcess ? '#e74c3c' : '#2ecc71'}}>
+              {loadingProcess ? (
+                <>
+                  <span style={{
+                    display: 'inline-block', 
+                    width: '12px', 
+                    height: '12px', 
+                    border: '2px solid rgba(231,76,60,0.3)', 
+                    borderRadius: '50%', 
+                    borderTopColor: '#e74c3c', 
+                    animation: 'spin 1s linear infinite',
+                    marginRight: '5px',
+                    verticalAlign: 'middle'
+                  }}></span>
+                  Procesando {solicitudes.length} solicitudes...
+                </>
+              ) : (
+                <>
+                  <span style={{color: '#2ecc71', marginRight: '5px'}}>●</span>
+                  {solicitudes.length} solicitudes pendientes
+                </>
+              )}
+            </span>
+          )}
+          <span style={{fontWeight: 'bold', marginRight: '5px'}}>Última actualización:</span>
+          {lastProcessed ? 
+            new Intl.DateTimeFormat('es-ES', {
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+              hour12: false
+            }).format(lastProcessed) 
+            : 'No disponible'}
+          {!loadingProcess && solicitudes.length > 0 && (
+            <button
+              onClick={() => procesarTodasLasSolicitudes()}
+              style={{
+                marginLeft: '10px',
+                padding: '2px 6px',
+                fontSize: '12px',
+                background: 'none',
+                border: '1px solid #3498db',
+                borderRadius: '4px',
+                color: '#3498db',
+                cursor: 'pointer'
+              }}
+            >
+              Actualizar ahora
+            </button>
+          )}
+        </div>
+      </div>
       
       {/* Contenido según la pestaña activa */}
       {activeTab === 'asignaciones' && (
