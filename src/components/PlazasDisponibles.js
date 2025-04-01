@@ -35,6 +35,7 @@ const PlazasDisponibles = ({
   const [filterASI, setFilterASI] = useState('');
   const [filterDepartamento, setFilterDepartamento] = useState('');
   const [filterMunicipio, setFilterMunicipio] = useState('');
+  const [submitMessage, setSubmitMessage] = useState(null);
   
   // Efecto para manejar el cambio de tamaño de ventana
   useEffect(() => {
@@ -167,6 +168,38 @@ const PlazasDisponibles = ({
     }
   };
 
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    
+    // Validar número de orden
+    if (!orderNumber || isNaN(parseInt(orderNumber))) {
+      setSubmitMessage({ message: "Por favor, ingresa un número de orden válido", type: "error" });
+      return;
+    }
+    
+    // Validar que haya centros seleccionados
+    if (centrosSeleccionados.length === 0) {
+      setSubmitMessage({ message: "Por favor, selecciona al menos un centro", type: "error" });
+      return;
+    }
+    
+    // Enviar centros seleccionados al componente padre
+    handleOrderSubmit(orderNumber, centrosSeleccionados);
+    
+    // Limpiar selección después de enviar
+    setOrderNumber("");
+    setCentrosSeleccionados([]);
+    
+    // Mostrar mensaje de éxito
+    setSubmitMessage({ message: "Solicitud enviada correctamente. Redirigiendo...", type: "success" });
+    
+    // Redireccionar a la pestaña de asignaciones después de 2 segundos
+    setTimeout(() => {
+      window.location.href = "#asignaciones";
+      window.location.reload(); // Recargar la página
+    }, 2000);
+  };
+
   return (
     <div className="plazas-container">
       <h2>Plazas Disponibles</h2>
@@ -191,7 +224,7 @@ const PlazasDisponibles = ({
           Solicitar una plaza
         </h3>
         
-        <form onSubmit={handleOrderSubmit}>
+        <form onSubmit={handleSubmit}>
           <div style={{ marginBottom: '20px' }}>
             <label 
               htmlFor="orderNumber" 

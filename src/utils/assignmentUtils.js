@@ -1,4 +1,4 @@
-import { collection, doc, setDoc, updateDoc, getDocs, query, deleteDoc, addDoc } from "firebase/firestore";
+import { collection, doc, setDoc, updateDoc, getDocs, query, deleteDoc, addDoc, getDoc } from "firebase/firestore";
 import { db } from "./firebaseConfig";
 
 /**
@@ -125,9 +125,26 @@ export const procesarSolicitudes = async (solicitudes, assignments, availablePla
             centro.asignadas++;
             
             // Actualizar en Firebase
-            await updateDoc(doc(db, "centros", centro.docId), {
-              asignadas: centro.asignadas
-            });
+            const centroRef = doc(db, "centros", centro.docId);
+            
+            // OBTENER VALOR ACTUAL DEL CONTADOR ANTES DE ACTUALIZAR
+            const centroSnapshot = await getDoc(centroRef);
+            if (centroSnapshot.exists()) {
+              const datosActuales = centroSnapshot.data();
+              const contadorActual = datosActuales.asignadas || 0;
+              
+              // Actualizar asignadas solo si es necesario
+              await updateDoc(centroRef, {
+                asignadas: contadorActual + 1
+              });
+              
+              console.log(`Centro ${centro.centro}: Contador actualizado de ${contadorActual} a ${contadorActual + 1}`);
+            } else {
+              console.error(`No se encontró el centro con ID ${centro.docId} para actualizar contador`);
+              await updateDoc(centroRef, {
+                asignadas: 1
+              });
+            }
             
             // Añadir a las nuevas asignaciones
             nuevasAsignaciones.push(nuevaAsignacion);
@@ -306,6 +323,48 @@ export const procesarSolicitud = async (solicitud, availablePlazas, assignments,
     
     console.log(`Procesando solicitud para orden ${solicitud.orden} con prioridad de centros: ${centrosSolicitadosIds.join(', ')}`);
     
+    // VERIFICACIÓN ADICIONAL para evitar asignaciones duplicadas
+    // Verificar nuevamente si se creó una asignación para este orden en otro proceso paralelo
+    const asignacionesActualizadas = await getDocs(collection(db, "asignaciones"));
+    const nuevasAsignaciones = asignacionesActualizadas.docs.map(doc => ({
+      ...doc.data(),
+      docId: doc.id
+    }));
+    
+    const asignacionParaEsteOrden = nuevasAsignaciones.find(a => a.order === solicitud.orden);
+    if (asignacionParaEsteOrden) {
+      console.log(`Detectada asignación reciente para el orden ${solicitud.orden} en ${asignacionParaEsteOrden.centro}`);
+      
+      // Guardar en historial y eliminar de pendientes
+      try {
+        const historialData = {
+          ...solicitud,
+          estado: "ASIGNADA_POR_OTRO_PROCESO",
+          centroAsignado: asignacionParaEsteOrden.centro,
+          centroId: asignacionParaEsteOrden.centroId,
+          fechaHistorico: new Date().toISOString(),
+          timestamp: Date.now()
+        };
+        
+        // Eliminar docId para no duplicarlo
+        delete historialData.docId;
+        
+        // Guardar en historial
+        await addDoc(collection(db, "historialSolicitudes"), historialData);
+        console.log(`Solicitud ${solicitud.orden} guardada en historial (asignada por otro proceso)`);
+        
+        // Eliminar la solicitud pendiente
+        await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
+      } catch (error) {
+        console.error(`Error al procesar solicitud ${solicitud.orden} ya asignada por otro proceso:`, error);
+      }
+      
+      return {
+        success: true,
+        message: `La solicitud ${solicitud.orden} ya fue asignada a ${asignacionParaEsteOrden.centro} por otro proceso`
+      };
+    }
+    
     // Verificar cada centro solicitado en orden de preferencia
     for (const centroId of centrosSolicitadosIds) {
       // Buscar el centro en las plazas disponibles
@@ -325,6 +384,25 @@ export const procesarSolicitud = async (solicitud, availablePlazas, assignments,
         // Hay plazas disponibles - asignar directamente
         console.log(`✅ Hay ${plazasDisponibles} plazas disponibles en ${centro.centro} para orden ${solicitud.orden}`);
         
+        // VERIFICACIÓN FINAL para evitar duplicados antes de asignar
+        const verificacionFinalAsignaciones = await getDocs(collection(db, "asignaciones"));
+        const todasLasAsignaciones = verificacionFinalAsignaciones.docs.map(doc => ({
+          ...doc.data(),
+          docId: doc.id
+        }));
+        
+        if (todasLasAsignaciones.some(a => a.order === solicitud.orden)) {
+          console.log(`⚠️ Se detectó que el orden ${solicitud.orden} ya fue asignado durante el procesamiento. Saltando asignación.`);
+          
+          // Limpiar la solicitud pendiente
+          await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
+          
+          return {
+            success: true,
+            message: `El orden ${solicitud.orden} ya fue asignado durante el procesamiento`
+          };
+        }
+        
         // Crear la asignación
         const asignacionData = {
           order: solicitud.orden,
@@ -335,43 +413,60 @@ export const procesarSolicitud = async (solicitud, availablePlazas, assignments,
           timestamp: Date.now()
         };
         
-        // Guardar la asignación en la colección "asignaciones"
+        // Como estamos reasignando una plaza existente, NO INCREMENTAMOS el contador
+        // La plaza ya estaba ocupada, solo cambiamos quién la ocupa
+        console.log(`Reasignando plaza en ${centro.centro} sin incrementar contador (desplazamiento)`);
+        
         const docRef = await addDoc(collection(db, "asignaciones"), asignacionData);
-        console.log(`Asignación directa creada con ID: ${docRef.id}`);
+        console.log(`Nueva asignación creada con ID: ${docRef.id}`);
         
-        // Actualizar el contador de plazas asignadas en el centro
-        const centroRef = doc(db, "centros", centro.docId);
-        await updateDoc(centroRef, {
-          asignadas: (centro.asignadas || 0) + 1
-        });
+        // 4. Guardar la solicitud actual en el historial
+        const historialSolicitudActual = {
+          ...solicitud,
+          centroAsignado: centro.centro,
+          centroId: centro.id,
+          estado: "ASIGNADA",
+          fechaHistorico: new Date().toISOString(),
+          timestamp: Date.now()
+        };
         
-        // Guardar la solicitud en el historial antes de eliminarla
-        try {
-          const historialData = {
-            ...solicitud,
-            centroAsignado: centro.centro,
-            centroId: centro.id,
-            estado: "ASIGNADA",
-            fechaHistorico: new Date().toISOString(),
-            timestamp: Date.now()
-          };
-          
-          // Eliminar docId para no duplicarlo
-          delete historialData.docId;
-          
-          // Guardar en historial
-          await addDoc(collection(db, "historialSolicitudes"), historialData);
-          console.log(`Solicitud ${solicitud.orden} guardada en historial con asignación a ${centro.centro}`);
-        } catch (error) {
-          console.error(`Error al guardar historial para solicitud ${solicitud.orden}:`, error);
-        }
+        // Eliminar docId para no duplicarlo
+        delete historialSolicitudActual.docId;
         
-        // Eliminar la solicitud de las pendientes
+        // Guardar en historial
+        await addDoc(collection(db, "historialSolicitudes"), historialSolicitudActual);
+        console.log(`Solicitud ${solicitud.orden} guardada en historial con asignación a ${centro.centro}`);
+        
+        // 5. Crear una nueva solicitud pendiente para el orden desplazado
+        const nuevaSolicitudPendiente = {
+          orden: solicitud.orden,
+          centrosIds: solicitud.centrosIds,
+          timestamp: Date.now(),
+          desplazadoPor: solicitud.orden
+        };
+        
+        await addDoc(collection(db, "solicitudesPendientes"), nuevaSolicitudPendiente);
+        console.log(`Nueva solicitud pendiente creada para orden ${solicitud.orden} con ${solicitud.centrosIds.length} centros preferidos`);
+        
+        // 6. Guardar también un registro en historial para el desplazado
+        const historialDesplazado = {
+          ...nuevaSolicitudPendiente,
+          estado: "DESPLAZADO",
+          centroDesplazado: centro.centro,
+          fechaHistorico: new Date().toISOString()
+        };
+        
+        await addDoc(collection(db, "historialSolicitudes"), historialDesplazado);
+        console.log(`Registro de desplazamiento guardado en historial para orden ${solicitud.orden}`);
+        
+        // 7. Eliminar nuestra solicitud de las pendientes
         await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
         
         return {
           success: true,
-          message: `Plaza asignada en ${centro.centro} para orden ${solicitud.orden}`
+          message: `Plaza reasignada en ${centro.centro}. Se desplazó al usuario con orden ${solicitud.orden} (menor prioridad).`,
+          desplazamiento: true,
+          ordenDesplazado: solicitud.orden
         };
       } else {
         // No hay plazas disponibles - verificar si podemos desplazar a alguien
@@ -448,6 +543,10 @@ export const procesarSolicitud = async (solicitud, availablePlazas, assignments,
             timestamp: Date.now()
           };
           
+          // Como estamos reasignando una plaza existente, NO INCREMENTAMOS el contador
+          // La plaza ya estaba ocupada, solo cambiamos quién la ocupa
+          console.log(`Reasignando plaza en ${centro.centro} sin incrementar contador (desplazamiento)`);
+          
           const docRef = await addDoc(collection(db, "asignaciones"), asignacionData);
           console.log(`Nueva asignación creada con ID: ${docRef.id}`);
           
@@ -458,8 +557,7 @@ export const procesarSolicitud = async (solicitud, availablePlazas, assignments,
             centroId: centro.id,
             estado: "ASIGNADA",
             fechaHistorico: new Date().toISOString(),
-            timestamp: Date.now(),
-            desplazoA: asignacionADesplazar.order
+            timestamp: Date.now()
           };
           
           // Eliminar docId para no duplicarlo
@@ -567,6 +665,93 @@ export const procesarSolicitud = async (solicitud, availablePlazas, assignments,
     return {
       success: false,
       message: `Error al procesar: ${error.message}`
+    };
+  }
+};
+
+/**
+ * Reinicia y recalcula todos los contadores de asignaciones basado en las asignaciones existentes
+ * @param {Array} centros - Lista de centros disponibles
+ * @param {Array} asignaciones - Lista de asignaciones existentes
+ * @param {Object} db - Referencia a la base de datos Firestore
+ * @returns {Promise<Object>} - Resultado de la operación
+ */
+export const resetearContadoresAsignaciones = async (centros, asignaciones, db) => {
+  try {
+    console.log("Iniciando reseteo de contadores de asignaciones...");
+    
+    // 1. Primero resetear todos los contadores a cero
+    console.log(`Reseteando contadores de ${centros.length} centros a cero...`);
+    
+    for (const centro of centros) {
+      if (centro.docId) {
+        try {
+          await updateDoc(doc(db, "centros", centro.docId), {
+            asignadas: 0
+          });
+        } catch (error) {
+          console.error(`Error al resetear contador para centro ${centro.centro}:`, error);
+        }
+      }
+    }
+    
+    // 2. Construir mapa de conteo por centroId
+    const contadoresPorCentro = {};
+    
+    // Contar asignaciones actuales
+    for (const asignacion of asignaciones) {
+      const centroId = asignacion.centroId || asignacion.id; // Asegurarnos de obtener el ID correcto
+      
+      if (centroId) {
+        if (!contadoresPorCentro[centroId]) {
+          contadoresPorCentro[centroId] = 1;
+        } else {
+          contadoresPorCentro[centroId]++;
+        }
+      }
+    }
+    
+    console.log("Recuentos calculados:", contadoresPorCentro);
+    
+    // 3. Actualizar contadores en la base de datos con los valores recalculados
+    let actualizados = 0;
+    let errores = 0;
+    
+    for (const centro of centros) {
+      const centroId = centro.id;
+      
+      if (centroId && contadoresPorCentro[centroId] && centro.docId) {
+        const nuevoContador = contadoresPorCentro[centroId];
+        
+        try {
+          // Actualizar el contador en la base de datos
+          await updateDoc(doc(db, "centros", centro.docId), {
+            asignadas: nuevoContador
+          });
+          
+          console.log(`Centro ${centro.centro}: Contador actualizado a ${nuevoContador}`);
+          actualizados++;
+        } catch (error) {
+          console.error(`Error al actualizar contador para centro ${centro.centro}:`, error);
+          errores++;
+        }
+      }
+    }
+    
+    console.log(`Recalculo completado: ${actualizados} centros actualizados, ${errores} errores`);
+    
+    return {
+      success: true,
+      actualizados,
+      errores,
+      message: `Contadores de asignaciones reiniciados y recalculados correctamente. ${actualizados} centros actualizados.`
+    };
+  } catch (error) {
+    console.error("Error al resetear contadores de asignaciones:", error);
+    return {
+      success: false,
+      error: error.message,
+      message: "Error al resetear contadores de asignaciones: " + error.message
     };
   }
 };

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 import { collection, onSnapshot, addDoc, updateDoc, doc, getDocs, query, deleteDoc, setDoc } from "firebase/firestore";
 import { db } from './utils/firebaseConfig';
-import { procesarSolicitudes, procesarSolicitud } from './utils/assignmentUtils';
+import { procesarSolicitudes, procesarSolicitud, resetearContadoresAsignaciones } from './utils/assignmentUtils';
 
 // Importar componentes
 import Dashboard from './components/Dashboard';
@@ -20,6 +20,7 @@ function App() {
   const [loadingCSV, setLoadingCSV] = useState(false);
   const [lastProcessed, setLastProcessed] = useState(null);
   const [secondsUntilNextUpdate, setSecondsUntilNextUpdate] = useState(10);
+  const [resetingCounters, setResetingCounters] = useState(false);
   
   // Estados para el formulario de solicitud
   const [orderNumber, setOrderNumber] = useState('');
@@ -42,6 +43,7 @@ function App() {
   const processingTimerRef = useRef(null);
   const lastProcessedTimestampRef = useRef(0);
   const countdownTimerRef = useRef(null);
+  const lastCounterResetRef = useRef(0);
 
   // Función para mostrar un popup con mensaje
   const showNotification = (message, type = 'success') => {
@@ -54,6 +56,43 @@ function App() {
       setTimeout(() => {
         setShowPopup(false);
       }, 5000);
+    }
+  };
+
+  // Función para resetear los contadores de asignaciones
+  const resetearContadores = async () => {
+    if (resetingCounters) {
+      console.log("Ya hay un reseteo de contadores en curso");
+      return;
+    }
+    
+    setResetingCounters(true);
+    setProcessingMessage("Reseteando y recalculando contadores de asignaciones...");
+    
+    try {
+      // Obtener los datos más recientes
+      await cargarDatosDesdeFirebase();
+      
+      // Ejecutar la función de reseteo
+      const resultado = await resetearContadoresAsignaciones(availablePlazas, assignments, db);
+      
+      // Actualizar último tiempo de reseteo
+      lastCounterResetRef.current = Date.now();
+      
+      // Recargar datos después del reseteo
+      await cargarDatosDesdeFirebase();
+      
+      if (resultado.success) {
+        showNotification(`Contadores recalculados correctamente: ${resultado.actualizados} centros actualizados.`, 'success');
+      } else {
+        showNotification(`Error al recalcular contadores: ${resultado.message}`, 'error');
+      }
+    } catch (error) {
+      console.error("Error al resetear contadores:", error);
+      showNotification(`Error al resetear contadores: ${error.message}`, 'error');
+    } finally {
+      setResetingCounters(false);
+      setProcessingMessage("");
     }
   };
 
@@ -587,7 +626,7 @@ function App() {
       console.log(`Solicitudes ordenadas por prioridad: ${solicitudesOrdenadas.map(s => s.orden).join(', ')}`);
       
       // MEJORA: Usar lotes más pequeños y forzar recargas más frecuentes
-      const BATCH_SIZE = 5; // Reducido a 5 solicitudes a la vez para mayor precisión
+      const BATCH_SIZE = 1; // Reducido a 1 solicitud a la vez para evitar procesamiento paralelo
       let procesadas = 0;
       let exitosas = 0;
       let intentosFallidos = 0;
@@ -608,6 +647,34 @@ function App() {
         for (const solicitud of lote) {
           try {
             console.log(`Procesando solicitud con orden ${solicitud.orden}...`);
+            
+            // RECARGAR DATOS ANTES DE PROCESAR CADA SOLICITUD
+            const datosActualizados = await cargarDatosDesdeFirebase();
+            console.log(`Datos recargados antes de procesar la solicitud ${solicitud.orden}`);
+            
+            // Verificar si esta solicitud aún existe después de recargar
+            if (!solicitudes.some(s => s.docId === solicitud.docId)) {
+              console.log(`La solicitud ${solicitud.orden} ya no existe en la base de datos, omitiendo...`);
+              continue;
+            }
+            
+            // Verificar si ya existe una asignación para este número de orden
+            if (assignments.some(a => a.order === solicitud.orden)) {
+              console.log(`Ya existe una asignación para el orden ${solicitud.orden}, omitiendo procesamiento...`);
+              
+              // Actualizar stats
+              procesadas++;
+              exitosas++;
+              
+              // Eliminar de nuestra lista de verificación
+              const index = solicitudesPendientesCopia.findIndex(s => s.docId === solicitud.docId);
+              if (index !== -1) {
+                solicitudesPendientesCopia.splice(index, 1);
+              }
+              
+              continue;
+            }
+            
             const resultado = await procesarSolicitud(
               solicitud, 
               availablePlazas, 
@@ -759,94 +826,75 @@ function App() {
   // Manejar envío de solicitud de orden
   const handleOrderSubmit = async (e) => {
     e.preventDefault();
-    const numOrden = parseInt(orderNumber, 10);
-    if (isNaN(numOrden) || numOrden <= 0) {
-      showNotification('Por favor, introduce un número de orden válido', 'error');
+    
+    // Validar el número de orden
+    if (!orderNumber) {
+      showNotification("Por favor, introduce un número de orden válido", "error");
       return;
     }
     
+    // Validar que se hayan seleccionado centros
     if (centrosSeleccionados.length === 0) {
-      showNotification('Por favor, selecciona al menos un centro de trabajo', 'error');
+      showNotification("Por favor, selecciona al menos un centro", "error");
       return;
     }
-
-    // Verificar si este número de orden ya tiene asignación
-    const existingAssignment = assignments.find(a => a.order === numOrden);
-    if (existingAssignment) {
-      setAssignment(existingAssignment);
-      showNotification(`Ya tienes una plaza asignada en: ${existingAssignment.centro}. Puedes seguir enviando solicitudes para otras plazas que te interesen aunque ya tengas una asignada.`, 'warning');
-      // Permitimos continuar para que el usuario pueda añadir más solicitudes si lo desea
-    }
     
-    // Mostrar el indicador de carga
     setIsProcessing(true);
+    setProcessingMessage("Enviando solicitud...");
     
     try {
-      // Convertir todos los IDs a números para asegurar compatibilidad
-      const centrosIdsNumericos = centrosSeleccionados.map(id => Number(id));
+      // Comprobar si ya existe una asignación para este número de orden
+      const existingAssignment = assignments.find(a => a.order === parseInt(orderNumber));
       
-      console.log("Intentando guardar solicitud con centros:", centrosIdsNumericos);
+      if (existingAssignment) {
+        // Si ya existe asignación, mostrar mensaje y no crear nueva solicitud
+        showNotification(`Ya tienes una plaza asignada en ${existingAssignment.centro}. Tus preferencias se guardarán como respaldo.`, "warning");
+        
+        // Redireccionar a la pestaña de asignaciones después de 2 segundos
+        setTimeout(() => {
+          setActiveTab('asignaciones');
+          window.location.reload(); // Recargar la página
+        }, 2000);
+      }
       
-      // Verificar si ya existe una solicitud para este número de orden
-      const solicitudExistente = solicitudes.find(s => s.orden === numOrden);
-      
-      // Datos a guardar - el orden de los centros seleccionados determina la prioridad
-      const datosParaGuardar = {
-        orden: numOrden,
-        centrosIds: centrosIdsNumericos,
+      // Crear la nueva solicitud
+      const solicitudData = {
+        orden: parseInt(orderNumber),
+        centrosIds: centrosSeleccionados,
         timestamp: Date.now()
       };
       
-      if (solicitudExistente) {
-        // Actualizar la solicitud existente con los nuevos centros seleccionados
-        console.log("Actualizando solicitud existente:", solicitudExistente.docId);
-        const solicitudRef = doc(db, "solicitudesPendientes", solicitudExistente.docId);
-        await updateDoc(solicitudRef, datosParaGuardar);
-        console.log("Solicitud actualizada correctamente");
-        
-        // Limpiar formulario
-        setOrderNumber('');
-        setCentrosSeleccionados([]);
-        
-        // Mostrar confirmación después de iniciar el procesamiento
-        showNotification(`Tu solicitud ha sido actualizada con ${centrosIdsNumericos.length} centros seleccionados. Se procesará automáticamente. Recuerda: menor número de orden = mayor prioridad.`, 'success');
-        
-        // Procesar todas las solicitudes automáticamente después de actualizar
-        const resultadoProcesamiento = await procesarTodasLasSolicitudes();
-        
-        // Verificar si hubo solicitudes que no se procesaron por números de orden menores
-        if (resultadoProcesamiento && resultadoProcesamiento.razon === "COMPLETO_POR_ORDENES_MENORES") {
-          showNotification(`No se pudieron asignar plazas para la solicitud con número ${numOrden} porque las plazas solicitadas ya están ocupadas por solicitudes con números de orden menores (mayor prioridad).`, 'warning');
-        }
+      // Guardar la solicitud en la base de datos
+      await addDoc(collection(db, "solicitudesPendientes"), solicitudData);
+      
+      // Limpiar el formulario
+      setOrderNumber("");
+      setCentrosSeleccionados([]);
+      
+      // Mostrar mensaje de éxito
+      if (existingAssignment) {
+        showNotification(`Preferencias guardadas como respaldo para orden ${orderNumber}`, "success");
       } else {
-        // Crear nueva solicitud en Firebase
-        console.log("Creando nueva solicitud");
-        const docRef = await addDoc(collection(db, "solicitudesPendientes"), datosParaGuardar);
-        console.log("Nueva solicitud creada con ID:", docRef.id);
+        showNotification(`Solicitud con orden ${orderNumber} enviada correctamente. Se procesará en breve.`, "success");
         
-        // Limpiar formulario
-        setOrderNumber('');
-        setCentrosSeleccionados([]);
-        
-        // Mostrar confirmación después de iniciar el procesamiento
-        showNotification(`Tu solicitud con ${centrosIdsNumericos.length} centros ha sido registrada. Se procesará automáticamente cada 10 segundos priorizando por número de orden.`, 'success');
-        
-        // Procesar todas las solicitudes automáticamente después de guardar
-        const resultadoProcesamiento = await procesarTodasLasSolicitudes();
-        
-        // Verificar si hubo solicitudes que no se procesaron por números de orden menores
-        if (resultadoProcesamiento && resultadoProcesamiento.razon === "COMPLETO_POR_ORDENES_MENORES") {
-          showNotification(`No se pudieron asignar plazas para la solicitud con número ${numOrden} porque las plazas solicitadas ya están ocupadas por solicitudes con números de orden menores (mayor prioridad).`, 'warning');
-        }
+        // Redireccionar a la pestaña de asignaciones después de 2 segundos
+        setTimeout(() => {
+          setActiveTab('asignaciones');
+          window.location.reload(); // Recargar la página
+        }, 2000);
       }
       
-      // Finalizar el estado de procesamiento solo después de que todo esté completo
-      setIsProcessing(false);
+      // Intentar procesar inmediatamente si no hay muchas solicitudes pendientes
+      if (solicitudes.length < 10 && !loadingProcess) {
+        console.log("Procesando solicitud recién creada...");
+        procesarTodasLasSolicitudes(true);
+      }
     } catch (error) {
-      console.error("Error al guardar solicitud:", error);
-      // Mostrar error pero mantener el formulario para permitir intentar de nuevo
-      showNotification("Error al guardar la solicitud: " + error.message, 'error');
+      console.error("Error al enviar solicitud:", error);
+      showNotification(`Error al enviar solicitud: ${error.message}`, "error");
+    } finally {
       setIsProcessing(false);
+      setProcessingMessage("");
     }
   };
   
@@ -966,6 +1014,33 @@ function App() {
     }
   };
 
+  // Añadir un efecto para el reseteo automático de contadores
+  useEffect(() => {
+    // Verificar si es hora de resetear los contadores automáticamente
+    const checkContadoresReset = () => {
+      const ahora = Date.now();
+      const ultimoReset = lastCounterResetRef.current;
+      
+      // Resetear contadores cada 60 minutos (3600000 ms) o si nunca se ha hecho
+      if (ultimoReset === 0 || (ahora - ultimoReset) > 3600000) {
+        console.log("Ejecutando reseteo automático de contadores...");
+        resetearContadores();
+      }
+    };
+    
+    // Verificar cuando cambia assignments por primera vez o cuando hay más de 10 asignaciones
+    if (assignments.length > 10) {
+      checkContadoresReset();
+    }
+    
+    // También configurar un intervalo para verificar cada 15 minutos
+    const intervalId = setInterval(() => {
+      checkContadoresReset();
+    }, 900000); // 15 minutos
+    
+    return () => clearInterval(intervalId);
+  }, [assignments.length]);
+
   return (
     <div style={styles.container}>
       <div style={styles.header}>
@@ -1020,6 +1095,23 @@ function App() {
           <span style={{fontWeight: 'bold', marginRight: '5px'}}>Plazas disponibles:</span>
           {availablePlazas.reduce((total, plaza) => total + plaza.plazas, 0) - 
            availablePlazas.reduce((total, plaza) => total + (plaza.asignadas || 0), 0)} de 7066
+           {' '}
+          <button 
+            onClick={resetearContadores}
+            disabled={resetingCounters}
+            style={{
+              backgroundColor: resetingCounters ? '#ccc' : '#3498db',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              padding: '3px 8px',
+              fontSize: '12px',
+              cursor: resetingCounters ? 'not-allowed' : 'pointer',
+              marginLeft: '10px'
+            }}
+          >
+            {resetingCounters ? 'Recalculando...' : 'Recalcular contadores'}
+          </button>
         </div>
         <div style={{display: 'flex', alignItems: 'center'}}>
           {solicitudes.length > 0 && (
@@ -1249,7 +1341,7 @@ function App() {
               }}></div>
             </div>
           </div>
-        </div>
+    </div>
       )}
       
       {/* Estilos CSS */}
