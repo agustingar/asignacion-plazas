@@ -23,9 +23,9 @@ function App() {
   const [resetingCounters, setResetingCounters] = useState(false);
   const [isMaintenanceMode, setIsMaintenanceMode] = useState(false);
   // Agregar estado para mostrar pantalla de mantenimiento durante verificación
-  const [isVerificationMaintenance, setIsVerificationMaintenance] = useState(false);
-  const [maintenanceMessage, setMaintenanceMessage] = useState('');
-  const [maintenanceProgress, setMaintenanceProgress] = useState(0);
+  const [isVerificationMaintenance, setIsVerificationMaintenance] = useState(true); // Iniciar con true para mostrar pantalla mantenimiento al cargar
+  const [maintenanceMessage, setMaintenanceMessage] = useState('Iniciando sistema y verificando datos...');
+  const [maintenanceProgress, setMaintenanceProgress] = useState(10);
   
   // Estados para el formulario de solicitud
   const [orderNumber, setOrderNumber] = useState('');
@@ -822,11 +822,18 @@ function App() {
       cargandoRef.current = true;
       
       try {
+        // Activar modo mantenimiento durante la carga inicial
+        setIsVerificationMaintenance(true);
+        setMaintenanceMessage("Iniciando sistema y verificando datos...");
+        setMaintenanceProgress(10);
+        
         // Comprobar si ya hay datos en Firebase
         const centrosSnapshot = await getDocs(collection(db, "centros"));
         const centrosCount = centrosSnapshot.size;
         
         if (centrosCount === 0) {
+          setMaintenanceMessage("Cargando datos iniciales...");
+          setMaintenanceProgress(20);
           await limpiarColeccion("centros"); // Asegurar que está vacío
           
           // Intentar cargar automáticamente primero
@@ -837,26 +844,36 @@ function App() {
             await cargarDesdePlazasCSV();
           }
         } else {
+          setMaintenanceMessage("Cargando datos existentes...");
+          setMaintenanceProgress(30);
           await cargarDatosDesdeFirebase();
         }
         
         // Una vez cargados los datos, configurar listeners para actualizaciones
         unsubscribe = setupFirebaseListeners();
-        cargaCompletadaRef.current = true;
+        
+        setMaintenanceMessage("Limpiando duplicados iniciales...");
+        setMaintenanceProgress(50);
         
         // Ejecutar una verificación inicial para eliminar duplicados
-        // pero esperar unos segundos para asegurar que todo esté cargado
-        setTimeout(async () => {
-          if (!isProcessing && !loadingProcess) {
-            console.log("Ejecutando limpieza inicial de duplicados");
-            await eliminarSolicitudesDuplicadas();
-          }
-        }, 5000); // 5 segundos después de la carga inicial
+        console.log("Ejecutando limpieza inicial de duplicados");
+        await eliminarSolicitudesDuplicadas();
+        
+        setMaintenanceMessage("Verificando y corrigiendo asignaciones...");
+        setMaintenanceProgress(70);
+        
+        // Ejecutar verificación inicial completa
+        await verificarYCorregirAsignaciones();
+        
+        cargaCompletadaRef.current = true;
+        
       } catch (error) {
         console.error("Error al inicializar app:", error);
         showNotification(`Error al inicializar: ${error.message}`, 'error');
+        setMaintenanceMessage(`Error al inicializar: ${error.message}`);
       } finally {
         cargandoRef.current = false;
+        // Mantener el modo mantenimiento activo hasta que verificarYCorregirAsignaciones lo desactive
       }
     };
     
@@ -867,37 +884,6 @@ function App() {
       if (unsubscribe) unsubscribe();
     };
   }, []);
-
-  // Agregar un useEffect adicional para realizar un proceso inicial después del despliegue
-  useEffect(() => {
-    // Este efecto se ejecutará solo una vez cuando la aplicación se cargue
-    // y después de que se hayan cargado los datos (cuando availablePlazas tenga elementos)
-    if (availablePlazas.length > 0 && !cargaInicialCompletadaRef.current) {
-      const ejecutarVerificacionInicialDeployment = async () => {
-        try {
-          // Marca para no volver a ejecutar
-          cargaInicialCompletadaRef.current = true;
-          
-          console.log("Ejecutando verificación inicial después del despliegue");
-          
-          // Esperar a que todo esté cargado
-          await new Promise(resolve => setTimeout(resolve, 5000)); // 5 segundos
-          
-          // Ejecutar verificación completa con pantalla de mantenimiento
-          await eliminarSolicitudesDuplicadas();
-          
-          console.log("Verificación inicial completada");
-        } catch (error) {
-          console.error("Error en verificación inicial:", error);
-        }
-      };
-      
-      ejecutarVerificacionInicialDeployment();
-    }
-  }, [availablePlazas]);
-
-  // Añadir ref para controlar si ya se ha hecho la verificación inicial
-  const cargaInicialCompletadaRef = useRef(false);
 
   // Configurar procesamiento automático de solicitudes
   useEffect(() => {
@@ -1567,27 +1553,52 @@ function App() {
       for (let i = 0; i < asignacionesActuales.length; i++) {
         const asignacion = asignacionesActuales[i];
         
-        // Datos para solicitud pendiente
-        pendientesData.push({
-          orden: asignacion.order,
-          centrosIds: [asignacion.id],
-          timestamp: Date.now(),
-          intentosFallidos: 0
-        });
-        
-        // Datos para historial
-        historialData.push({
-          orden: asignacion.order,
-          centrosIds: [asignacion.id],
-          estado: "REINICIADA_POR_SISTEMA",
-          centroAsignado: asignacion.centro,
-          centroId: asignacion.id,
-          fechaHistorico: new Date().toISOString(),
-          timestamp: asignacion.timestamp || Date.now()
-        });
-        
-        // ID de documento para eliminar
-        docIdsToDelete.push(asignacion.docId);
+        // Comprobar que tenemos el orden y centrosIds válidos
+        if (asignacion.order && asignacion.id) {
+          // Datos para solicitud pendiente - filtramos valores undefined
+          const pendienteObj = {
+            orden: asignacion.order,
+            centrosIds: [asignacion.id],
+            timestamp: Date.now(),
+            intentosFallidos: 0
+          };
+          
+          // Verificar que no hay valores undefined
+          Object.keys(pendienteObj).forEach(key => {
+            if (pendienteObj[key] === undefined) {
+              console.warn(`Valor undefined encontrado en solicitud pendiente para clave ${key}, asignación ${asignacion.docId}`);
+              pendienteObj[key] = null; // Reemplazar undefined con null
+            }
+          });
+          
+          pendientesData.push(pendienteObj);
+          
+          // Datos para historial - filtramos valores undefined
+          const historialObj = {
+            orden: asignacion.order,
+            centrosIds: [asignacion.id],
+            estado: "REINICIADA_POR_SISTEMA",
+            centroAsignado: asignacion.centro || "Sin información",
+            centroId: asignacion.id,
+            fechaHistorico: new Date().toISOString(),
+            timestamp: asignacion.timestamp || Date.now()
+          };
+          
+          // Verificar que no hay valores undefined
+          Object.keys(historialObj).forEach(key => {
+            if (historialObj[key] === undefined) {
+              console.warn(`Valor undefined encontrado en historial para clave ${key}, asignación ${asignacion.docId}`);
+              historialObj[key] = null; // Reemplazar undefined con null
+            }
+          });
+          
+          historialData.push(historialObj);
+          
+          // ID de documento para eliminar
+          docIdsToDelete.push(asignacion.docId);
+        } else {
+          console.warn(`Asignación ${asignacion.docId} tiene datos incompletos: orden=${asignacion.order}, id=${asignacion.id}`);
+        }
         
         // Actualizar progreso
         if (i % 10 === 0) {
@@ -1622,8 +1633,18 @@ function App() {
         const pendientesBatch = pendientesDataFiltrado.slice(i, i + BATCH_SIZE);
         
         for (const pendiente of pendientesBatch) {
+          // Verificar que todos los campos tengan valores válidos para Firebase
+          const validPendiente = {};
+          Object.entries(pendiente).forEach(([key, value]) => {
+            if (value !== undefined) {
+              validPendiente[key] = value;
+            } else {
+              console.warn(`Campo ${key} undefined encontrado, ignorando`);
+            }
+          });
+          
           const newDocRef = doc(collection(db, "solicitudesPendientes"));
-          batch.set(newDocRef, pendiente);
+          batch.set(newDocRef, validPendiente);
         }
         
         await batch.commit();
@@ -1638,8 +1659,18 @@ function App() {
         const historialBatch = historialData.slice(i, i + BATCH_SIZE);
         
         for (const historial of historialBatch) {
+          // Verificar que todos los campos tengan valores válidos para Firebase
+          const validHistorial = {};
+          Object.entries(historial).forEach(([key, value]) => {
+            if (value !== undefined) {
+              validHistorial[key] = value;
+            } else {
+              console.warn(`Campo ${key} undefined encontrado en historial, ignorando`);
+            }
+          });
+          
           const newDocRef = doc(collection(db, "historialSolicitudes"));
-          batch.set(newDocRef, historial);
+          batch.set(newDocRef, validHistorial);
         }
         
         await batch.commit();
@@ -1706,17 +1737,11 @@ function App() {
       
       // Programar la verificación a medianoche
       const timeoutId = setTimeout(() => {
-        if (!isProcessing && !loadingProcess) {
-          console.log('Ejecutando verificación diaria programada');
-          verificarYCorregirAsignaciones().then(() => {
-            // Reprogramar para la próxima medianoche después de completar
-            programarVerificacionDiaria();
-          });
-        } else {
-          // Si estaba ocupado, intentar dentro de 5 minutos
-          console.log('Sistema ocupado, reprogramando verificación en 5 minutos');
-          setTimeout(programarVerificacionDiaria, 5 * 60 * 1000);
-        }
+        console.log('Ejecutando verificación diaria programada');
+        verificarYCorregirAsignaciones().then(() => {
+          // Reprogramar para la próxima medianoche después de completar
+          programarVerificacionDiaria();
+        });
       }, tiempoHastaMedianoche);
       
       return timeoutId;
@@ -1729,44 +1754,7 @@ function App() {
     return () => {
       clearTimeout(timeoutId);
     };
-  }, [verificarYCorregirAsignaciones, isProcessing, loadingProcess]);
-
-  // Agregar un efecto para ejecutar verificación inicial una vez que la función esté definida
-  useEffect(() => {
-    if (availablePlazas.length > 0 && !cargaInicialCompletadaRef.current) {
-      const programarVerificacionInicial = async () => {
-        // Marca para no volver a ejecutar
-        cargaInicialCompletadaRef.current = true;
-        
-        console.log("Programando verificación inicial después del despliegue");
-        
-        // Esperar a que todo esté cargado
-        await new Promise(resolve => setTimeout(resolve, 10000)); // 10 segundos
-        
-        // Ejecutar verificación completa con pantalla de mantenimiento
-        await verificarYCorregirAsignaciones();
-      };
-      
-      programarVerificacionInicial();
-    }
-  }, [availablePlazas, verificarYCorregirAsignaciones]);
-
-  // Eliminar el intervalo anterior que ejecutaba la verificación cada 3 minutos
-  // useEffect(() => {
-  //   // Solo configurar este intervalo si no estamos en modo mantenimiento
-  //   if (!isMaintenanceMode) {
-  //     const verificacionInterval = setInterval(async () => {
-  //       // La verificación y corrección se ejecuta cada 3 minutos sin afectar el contador visual
-  //       if (!isProcessing && !loadingProcess) {
-  //         await verificarYCorregirAsignaciones();
-  //       }
-  //     }, 180000); // 3 minutos
-  //     
-  //     return () => {
-  //       clearInterval(verificacionInterval);
-  //     };
-  //   }
-  // }, [isMaintenanceMode, verificarYCorregirAsignaciones, isProcessing, loadingProcess]);
+  }, [verificarYCorregirAsignaciones]);
 
   // Función para eliminar solicitudes duplicadas
   const eliminarSolicitudesDuplicadas = async () => {
