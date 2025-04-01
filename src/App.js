@@ -612,31 +612,42 @@ function App() {
         try {
           // Verificar dentro de una transacción para asegurar consistencia
           await runTransaction(db, async (transaction) => {
-            // Obtener la solicitud directamente de la base de datos (para garantizar que esté actualizada)
-            const solicitudRef = doc(db, "solicitudesPendientes", primeraSolicitud.docId);
-            const solicitudDoc = await transaction.get(solicitudRef);
-            
-            // Verificar si todavía existe
-            if (!solicitudDoc.exists()) {
-              return; // La solicitud ya no existe, salir de la transacción
+            try {
+              // Verificar que primeraSolicitud tiene un docId válido antes de continuar
+              if (!primeraSolicitud || !primeraSolicitud.docId) {
+                console.warn("No se puede procesar la solicitud: docId no disponible", primeraSolicitud);
+                return;
+              }
+              
+              // Obtener la solicitud directamente de la base de datos (para garantizar que esté actualizada)
+              const solicitudRef = doc(db, "solicitudesPendientes", primeraSolicitud.docId);
+              const solicitudDoc = await transaction.get(solicitudRef);
+              
+              // Verificar si todavía existe
+              if (!solicitudDoc.exists()) {
+                return; // La solicitud ya no existe, salir de la transacción
+              }
+              
+              // Verificar si ya existe una asignación para este orden
+              const asignacionesRef = collection(db, "asignaciones");
+              const asignacionesQuery = query(asignacionesRef);
+              const asignacionesDocs = await transaction.get(asignacionesQuery);
+              
+              const yaExisteAsignacion = asignacionesDocs.docs.some(doc => 
+                doc.data().order === primeraSolicitud.orden
+              );
+              
+              if (yaExisteAsignacion) {
+                // Ya existe asignación, eliminar la solicitud
+                transaction.delete(solicitudRef);
+                return;
+              }
+              
+              // Si no hay asignación y la solicitud existe, se procesará después de la transacción
+            } catch (transactionError) {
+              console.error("Error en la transacción de verificación:", transactionError);
+              // No propagar el error para permitir que el proceso continúe
             }
-            
-            // Verificar si ya existe una asignación para este orden
-            const asignacionesRef = collection(db, "asignaciones");
-            const asignacionesQuery = query(asignacionesRef);
-            const asignacionesDocs = await transaction.get(asignacionesQuery);
-            
-            const yaExisteAsignacion = asignacionesDocs.docs.some(doc => 
-              doc.data().order === primeraSolicitud.orden
-            );
-            
-            if (yaExisteAsignacion) {
-              // Ya existe asignación, eliminar la solicitud
-              transaction.delete(solicitudRef);
-              return;
-            }
-            
-            // Si no hay asignación y la solicitud existe, se procesará después de la transacción
           });
           
           // Verificar nuevamente después de la transacción
@@ -664,14 +675,24 @@ function App() {
               try {
                 // Actualizar el timestamp para moverla al final de la cola dentro de una transacción
                 await runTransaction(db, async (transaction) => {
-                  const solicitudRef = doc(db, "solicitudesPendientes", primeraSolicitud.docId);
-                  const solicitudDoc = await transaction.get(solicitudRef);
-                  
-                  if (solicitudDoc.exists()) {
-                    transaction.update(solicitudRef, {
-                      timestamp: Date.now(),
-                      intentosFallidos: 0 // Reiniciar contador de intentos
-                    });
+                  try {
+                    // Verificar que docId existe
+                    if (!primeraSolicitud.docId) {
+                      console.warn("No se puede mover solicitud al final: docId no disponible", primeraSolicitud);
+                      return;
+                    }
+                    
+                    const solicitudRef = doc(db, "solicitudesPendientes", primeraSolicitud.docId);
+                    const solicitudDoc = await transaction.get(solicitudRef);
+                    
+                    if (solicitudDoc.exists()) {
+                      transaction.update(solicitudRef, {
+                        timestamp: Date.now(),
+                        intentosFallidos: 0 // Reiniciar contador de intentos
+                      });
+                    }
+                  } catch (transactionError) {
+                    console.error("Error en transacción al mover solicitud:", transactionError);
                   }
                 });
               } catch (error) {
@@ -681,14 +702,24 @@ function App() {
               // Incrementar contador de intentos fallidos dentro de una transacción
               try {
                 await runTransaction(db, async (transaction) => {
-                  const solicitudRef = doc(db, "solicitudesPendientes", primeraSolicitud.docId);
-                  const solicitudDoc = await transaction.get(solicitudRef);
-                  
-                  if (solicitudDoc.exists()) {
-                    const datos = solicitudDoc.data();
-                    transaction.update(solicitudRef, {
-                      intentosFallidos: (datos.intentosFallidos || 0) + 1
-                    });
+                  try {
+                    // Verificar que docId existe
+                    if (!primeraSolicitud.docId) {
+                      console.warn("No se puede incrementar intentos: docId no disponible", primeraSolicitud);
+                      return;
+                    }
+                    
+                    const solicitudRef = doc(db, "solicitudesPendientes", primeraSolicitud.docId);
+                    const solicitudDoc = await transaction.get(solicitudRef);
+                    
+                    if (solicitudDoc.exists()) {
+                      const datos = solicitudDoc.data();
+                      transaction.update(solicitudRef, {
+                        intentosFallidos: (datos.intentosFallidos || 0) + 1
+                      });
+                    }
+                  } catch (transactionError) {
+                    console.error("Error en transacción al incrementar intentos:", transactionError);
                   }
                 });
               } catch (error) {

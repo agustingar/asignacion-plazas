@@ -525,9 +525,52 @@ export const procesarSolicitud = async (solicitud, availablePlazas, assignments,
             plazasActualizadas: availablePlazas
           };
         } else if (resultado.message.includes("No hay plazas disponibles")) {
-          // Continuar con la lógica de verificar si se puede desplazar una asignación
-          // ... existing code para desplazamiento ...
-          continue;
+          // Incrementar contador de intentos fallidos
+          const intentosFallidos = (solicitud.intentosFallidos || 0) + 1;
+          
+          // Verificar si todos los centros no tienen plazas
+          const plazasDisponiblesMap = {};
+          let ningunCentroConPlazas = true;
+          
+          // Revisar cada centro seleccionado para ver si hay plazas disponibles
+          for (const centroId of centrosSolicitadosIds) {
+            const centro = availablePlazas.find(p => p.id === centroId);
+            if (centro) {
+              const plazasDisponibles = centro.plazas - (centro.asignadas || 0);
+              plazasDisponiblesMap[centroId] = {
+                nombre: centro.centro,
+                plazasDisponibles: plazasDisponibles
+              };
+              
+              if (plazasDisponibles > 0) {
+                ningunCentroConPlazas = false;
+              }
+            }
+          }
+          
+          // Actualizar la solicitud con los intentos fallidos y motivo
+          if (solicitud.docId) {
+            try {
+              const solicitudRef = doc(db, "solicitudesPendientes", solicitud.docId);
+              await updateDoc(solicitudRef, {
+                intentosFallidos: intentosFallidos,
+                ultimoIntentoFallido: Date.now(),
+                estadoAsignacion: ningunCentroConPlazas ? "SIN_PLAZAS_DISPONIBLES" : "FALLO_ASIGNACION",
+                detalleDisponibilidad: plazasDisponiblesMap
+              });
+            } catch (error) {
+              console.error(`Error al actualizar solicitud ${solicitud.orden} tras intento fallido:`, error);
+            }
+          }
+          
+          return {
+            success: false,
+            message: ningunCentroConPlazas 
+              ? `No se pudo asignar la solicitud ${solicitud.orden}. No hay plazas disponibles en ninguno de los centros seleccionados.` 
+              : `No se pudo asignar la solicitud ${solicitud.orden} en este intento.`,
+            plazasDisponiblesMap: plazasDisponiblesMap,
+            ningunCentroConPlazas: ningunCentroConPlazas
+          };
         } else {
           // Si ya está asignado o hay otro error, terminar el procesamiento
           return {
@@ -542,7 +585,52 @@ export const procesarSolicitud = async (solicitud, availablePlazas, assignments,
     }
     
     // Si llegamos aquí, es porque no se pudo asignar a ningún centro
-    // ... existing code ...
+    // Incrementar contador de intentos fallidos
+    const intentosFallidos = (solicitud.intentosFallidos || 0) + 1;
+    
+    // Verificar si todos los centros no tienen plazas
+    const plazasDisponiblesMap = {};
+    let ningunCentroConPlazas = true;
+    
+    // Revisar cada centro seleccionado para ver si hay plazas disponibles
+    for (const centroId of centrosSolicitadosIds) {
+      const centro = availablePlazas.find(p => p.id === centroId);
+      if (centro) {
+        const plazasDisponibles = centro.plazas - (centro.asignadas || 0);
+        plazasDisponiblesMap[centroId] = {
+          nombre: centro.centro,
+          plazasDisponibles: plazasDisponibles
+        };
+        
+        if (plazasDisponibles > 0) {
+          ningunCentroConPlazas = false;
+        }
+      }
+    }
+    
+    // Actualizar la solicitud con los intentos fallidos y motivo
+    if (solicitud.docId) {
+      try {
+        const solicitudRef = doc(db, "solicitudesPendientes", solicitud.docId);
+        await updateDoc(solicitudRef, {
+          intentosFallidos: intentosFallidos,
+          ultimoIntentoFallido: Date.now(),
+          estadoAsignacion: ningunCentroConPlazas ? "SIN_PLAZAS_DISPONIBLES" : "FALLO_ASIGNACION",
+          detalleDisponibilidad: plazasDisponiblesMap
+        });
+      } catch (error) {
+        console.error(`Error al actualizar solicitud ${solicitud.orden} tras intento fallido:`, error);
+      }
+    }
+    
+    return {
+      success: false,
+      message: ningunCentroConPlazas 
+        ? `No se pudo asignar la solicitud ${solicitud.orden}. No hay plazas disponibles en ninguno de los centros seleccionados.` 
+        : `No se pudo asignar la solicitud ${solicitud.orden} en este intento.`,
+      plazasDisponiblesMap: plazasDisponiblesMap,
+      ningunCentroConPlazas: ningunCentroConPlazas
+    };
   } catch (error) {
     console.error(`Error al procesar solicitud ${solicitud.orden}:`, error);
     return {

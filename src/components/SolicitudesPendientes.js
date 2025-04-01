@@ -230,10 +230,14 @@ const SolicitudesPendientes = ({ solicitudes, assignments, availablePlazas }) =>
               // Obtener el centro asignado si existe
               const asignacion = assignments.find(a => a.order === solicitud.orden);
               
+              // Verificar el estado especial de la solicitud
+              const estadoEspecial = solicitud.estadoAsignacion === "SIN_PLAZAS_DISPONIBLES";
+              const detalleDisponibilidad = solicitud.detalleDisponibilidad || {};
+              
               // Color de fondo según tiene asignación y alternancia de filas
               const backgroundColor = tieneAsignacion 
                 ? '#e8f5e9' 
-                : (index % 2 === 0 ? 'white' : '#fef9f4');
+                : (estadoEspecial ? '#fcf0f0' : (index % 2 === 0 ? 'white' : '#fef9f4'));
               
               return (
                 <tr key={index} style={{ 
@@ -267,72 +271,35 @@ const SolicitudesPendientes = ({ solicitudes, assignments, availablePlazas }) =>
                   <td style={{ border: '1px solid #ddd', padding: '12px 15px' }}>
                     <ol style={{ margin: '0', paddingLeft: '20px' }}>
                       {solicitud.centrosIds.map((centroId, idx) => {
-                        // Buscar detalles del centro
                         const centro = availablePlazas.find(p => p.id === centroId);
+                        // Obtener información de disponibilidad
+                        const infoCentro = detalleDisponibilidad[centroId] || {};
+                        const plazasDisponibles = infoCentro.plazasDisponibles;
                         
-                        // Buscar si este centro concreto tiene asignación para este orden
-                        const asignadoAEsteCentro = asignacion && asignacion.id === centroId;
-                          
-                        return (
+                        return centro ? (
                           <li key={idx} style={{ 
-                            marginBottom: '8px',
-                            backgroundColor: asignadoAEsteCentro ? '#e8f5e9' : 'inherit',
-                            padding: asignadoAEsteCentro ? '6px 8px' : '0',
-                            borderRadius: asignadoAEsteCentro ? '4px' : '0',
-                            border: asignadoAEsteCentro ? '1px solid #c8e6c9' : 'none'
+                            marginBottom: '5px',
+                            color: plazasDisponibles === 0 ? '#e74c3c' : 'inherit',
+                            fontWeight: plazasDisponibles === 0 ? 'bold' : 'normal'
                           }}>
-                            {centro ? (
-                              <>
-                                <strong style={{ color: idx === 0 ? '#d35400' : 'inherit' }}>
-                                  {centro.centro}
-                                </strong> 
-                                <span style={{ fontSize: '14px', color: '#666' }}>
-                                  - {centro.localidad} ({centro.municipio})
-                                </span>
-                                {idx === 0 && (
-                                  <span style={{
-                                    display: 'inline-block',
-                                    marginLeft: '8px',
-                                    fontSize: '12px',
-                                    color: '#d35400',
-                                    backgroundColor: '#fff3cd',
-                                    padding: '1px 5px',
-                                    borderRadius: '10px',
-                                    fontWeight: 'bold'
-                                  }}>
-                                    1ª opción
-                                  </span>
-                                )}
-                                {(centro.plazas - centro.asignadas) <= 0 && !asignadoAEsteCentro && (
-                                  <span style={{ 
-                                    color: '#e74c3c', 
-                                    marginLeft: '10px', 
-                                    fontSize: '12px', 
-                                    fontWeight: 'bold',
-                                    backgroundColor: '#ffebee',
-                                    padding: '1px 6px',
-                                    borderRadius: '10px'
-                                  }}>
-                                    Completo
-                                  </span>
-                                )}
-                                {asignadoAEsteCentro && (
-                                  <span style={{ 
-                                    color: '#2E7D32', 
-                                    marginLeft: '10px', 
-                                    fontSize: '12px', 
-                                    fontWeight: 'bold',
-                                    backgroundColor: '#e8f5e9',
-                                    padding: '1px 6px',
-                                    borderRadius: '10px'
-                                  }}>
-                                    ✓ Asignado
-                                  </span>
-                                )}
-                              </>
-                            ) : (
-                              <span style={{ color: '#999' }}>Centro no disponible (ID: {centroId})</span>
+                            {centro.centro} - {centro.localidad || centro.municipio || 'Sin localidad'}
+                            {plazasDisponibles !== undefined && plazasDisponibles === 0 && (
+                              <span style={{ 
+                                color: '#e74c3c', 
+                                backgroundColor: '#fcf0f0',
+                                padding: '2px 6px',
+                                borderRadius: '4px',
+                                marginLeft: '8px',
+                                fontSize: '12px',
+                                fontWeight: 'bold'
+                              }}>
+                                No hay plazas disponibles
+                              </span>
                             )}
+                          </li>
+                        ) : (
+                          <li key={idx} style={{ color: '#999' }}>
+                            Centro ID: {centroId} (no encontrado)
                           </li>
                         );
                       })}
@@ -342,28 +309,44 @@ const SolicitudesPendientes = ({ solicitudes, assignments, availablePlazas }) =>
                     {tieneAsignacion ? (
                       <div style={{ 
                         backgroundColor: '#e8f5e9', 
-                        color: '#2E7D32', 
-                        padding: '8px 12px', 
-                        borderRadius: '6px',
-                        fontSize: '14px',
-                        fontWeight: 'bold',
-                        border: '1px solid #c8e6c9',
+                        color: '#2e7d32',
+                        padding: '5px 10px',
+                        borderRadius: '4px',
+                        display: 'inline-block',
+                        fontWeight: 'bold'
+                      }}>
+                        ✅ Asignada a {asignacion.centro}
+                      </div>
+                    ) : estadoEspecial ? (
+                      <div style={{ 
+                        backgroundColor: '#fcf0f0', 
+                        color: '#e74c3c',
+                        padding: '5px 10px',
+                        borderRadius: '4px',
+                        display: 'inline-block',
+                        fontWeight: 'bold'
+                      }}>
+                        ❌ Sin plazas disponibles
+                      </div>
+                    ) : solicitud.intentosFallidos > 3 ? (
+                      <div style={{ 
+                        backgroundColor: '#fff3cd', 
+                        color: '#856404',
+                        padding: '5px 10px',
+                        borderRadius: '4px',
                         display: 'inline-block'
                       }}>
-                        ✓ Asignado
+                        ⚠️ Pendiente ({solicitud.intentosFallidos} intentos)
                       </div>
                     ) : (
                       <div style={{ 
-                        backgroundColor: '#fff7e6', 
-                        color: '#f39c12', 
-                        padding: '8px 12px', 
-                        borderRadius: '6px',
-                        fontSize: '14px',
-                        fontWeight: 'bold',
-                        border: '1px solid #ffeeba',
+                        backgroundColor: '#f1f8fe', 
+                        color: '#0d6efd',
+                        padding: '5px 10px',
+                        borderRadius: '4px',
                         display: 'inline-block'
                       }}>
-                        Pendiente
+                        ⏳ Pendiente
                       </div>
                     )}
                   </td>
