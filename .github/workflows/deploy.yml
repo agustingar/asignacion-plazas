@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # Obtener historial completo para asegurar que todo está actualizado
 
       - name: Set up Node.js
         uses: actions/setup-node@v3
@@ -33,6 +35,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Create build directory
+        run: mkdir -p build
 
       - name: Create .nojekyll file
         run: touch build/.nojekyll
@@ -47,4 +52,5 @@ jobs:
         with:
           folder: build
           branch: gh-pages
-          clean: true # Limpiar la rama gh-pages antes de desplegar 
+          clean: true # Limpiar la rama gh-pages antes de desplegar
+          force: true # Forzar el despliegue incluso si no hay cambios 
