@@ -32,6 +32,9 @@ const PlazasDisponibles = ({
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1200);
   const [infoModal, setInfoModal] = useState(null);
+  const [filterASI, setFilterASI] = useState('');
+  const [filterDepartamento, setFilterDepartamento] = useState('');
+  const [filterMunicipio, setFilterMunicipio] = useState('');
   
   // Efecto para manejar el cambio de tamaño de ventana
   useEffect(() => {
@@ -48,20 +51,19 @@ const PlazasDisponibles = ({
   // Determinar si estamos en móvil
   const isMobile = windowWidth < 768;
   
-  // Filtrar plazas por término de búsqueda
-  const filteredPlazas = availablePlazas.filter(plaza => {
-    if (!searchTerm) return true;
-    
-    const searchTermLower = searchTerm.toLowerCase();
-    return (
-      plaza.centro?.toLowerCase().includes(searchTermLower) ||
-      plaza.localidad?.toLowerCase().includes(searchTermLower) ||
-      plaza.municipio?.toLowerCase().includes(searchTermLower) ||
-      plaza.codigo?.toLowerCase().includes(searchTermLower) ||
-      plaza.asi?.toLowerCase().includes(searchTermLower) ||
-      plaza.departamento?.toLowerCase().includes(searchTermLower)
-    );
-  });
+  // Función para obtener opciones únicas para los filtros
+  const getUniqueOptions = (field) => {
+    const options = new Set();
+    availablePlazas.forEach(plaza => {
+      if (plaza[field]) options.add(plaza[field]);
+    });
+    return Array.from(options).sort();
+  };
+  
+  // Obtener opciones únicas para los filtros
+  const asiOptions = getUniqueOptions('asi');
+  const departamentoOptions = getUniqueOptions('departamento');
+  const municipioOptions = getUniqueOptions('municipio');
   
   // Filtrar y ordenar plazas
   const getFilteredPlazas = () => {
@@ -122,26 +124,7 @@ const PlazasDisponibles = ({
   const totalAsignadas = availablePlazas.reduce((sum, plaza) => sum + (plaza.asignadas || 0), 0);
   const totalDisponibles = totalPlazas - totalAsignadas;
   
-  // Función para obtener opciones únicas para los filtros
-  const getUniqueOptions = (field) => {
-    const options = new Set();
-    availablePlazas.forEach(plaza => {
-      if (plaza[field]) options.add(plaza[field]);
-    });
-    return Array.from(options).sort();
-  };
-  
-  // Obtener opciones únicas para los filtros
-  const asiOptions = getUniqueOptions('asi');
-  const departamentoOptions = getUniqueOptions('departamento');
-  const municipioOptions = getUniqueOptions('municipio');
-  
-  // Estado para filtros adicionales
-  const [filterASI, setFilterASI] = useState('');
-  const [filterDepartamento, setFilterDepartamento] = useState('');
-  const [filterMunicipio, setFilterMunicipio] = useState('');
-  
-  // Filtrar plazas según todos los criterios
+  // Función para generar el rango de paginación
   const getPaginationRange = () => {
     // Mostrar 5 páginas alrededor de la actual
     if (totalPages <= 5) {
