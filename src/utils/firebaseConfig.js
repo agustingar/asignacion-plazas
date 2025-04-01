@@ -2,6 +2,7 @@
 import { initializeApp } from "firebase/app";
 import { getFirestore, enableIndexedDbPersistence } from "firebase/firestore";
 import { getAnalytics } from "firebase/analytics";
+import { getAuth } from "firebase/auth";
 // TODO: Add SDKs for Firebase products that you want to use
 // https://firebase.google.com/docs/web/setup#available-libraries
 
@@ -19,22 +20,24 @@ const firebaseConfig = {
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
-// Comentar analytics para evitar errores en entorno de producción
 // const analytics = getAnalytics(app);
 const db = getFirestore(app);
+
+// Obtener instancia de Auth
+const auth = getAuth(app);
 
 // Habilitar persistencia para que funcione offline
 try {
   enableIndexedDbPersistence(db)
     .catch((err) => {
       if (err.code === 'failed-precondition') {
-        console.warn('La persistencia falló: múltiples pestañas abiertas');
+        // console.warn('La persistencia falló: múltiples pestañas abiertas');
       } else if (err.code === 'unimplemented') {
-        console.warn('El navegador no soporta persistencia');
+        // console.warn('El navegador no soporta persistencia');
       }
     });
 } catch (error) {
-  console.warn('Error al configurar persistencia:', error);
+  // console.warn('Error al configurar persistencia:', error);
 }
 
-export { db, app }; 
+export { db, app, auth }; 

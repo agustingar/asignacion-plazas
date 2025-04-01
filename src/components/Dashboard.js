@@ -8,6 +8,7 @@ import React, { useState } from 'react';
  */
 const Dashboard = ({ assignments }) => {
   const [searchTerm, setSearchTerm] = useState('');
+  const [filtroEstado, setFiltroEstado] = useState('TODOS'); // Nuevo estado para filtrar por tipo
   
   if (!assignments.length) {
     return (
@@ -41,7 +42,7 @@ const Dashboard = ({ assignments }) => {
   // Obtener todos los números de orden
   const todosLosOrdenes = Object.keys(asignacionesPorOrden).map(Number);
   
-  // Filtrar órdenes según término de búsqueda
+  // Filtrar órdenes según término de búsqueda y estado
   const ordenesOrdenados = todosLosOrdenes
     .filter(orden => {
       if (!searchTerm) return true;
@@ -57,13 +58,24 @@ const Dashboard = ({ assignments }) => {
           asignacion.centro,
           asignacion.municipio,
           asignacion.localidad,
-          asignacion.codigo
+          asignacion.codigo,
+          asignacion.estado, // También buscar en el estado
+          asignacion.mensaje // Y en el mensaje
         ].filter(Boolean).join(' ').toLowerCase();
         
         return centroInfo.includes(searchTerm.toLowerCase());
       });
     })
-    .sort((a, b) => a - b); // Ordenar de menor a mayor
+    // Filtrar por estado si no es "TODOS"
+    .filter(orden => {
+      if (filtroEstado === 'TODOS') return true;
+      
+      const asignacionesDeEsteOrden = asignacionesPorOrden[orden];
+      return asignacionesDeEsteOrden.some(asignacion => 
+        asignacion.estado === filtroEstado
+      );
+    })
+    .sort((a, b) => a - b);
   
   // Estilos para el componente
   const styles = {
@@ -226,6 +238,72 @@ const Dashboard = ({ assignments }) => {
       backgroundColor: '#f9f9f9',
       borderRadius: '6px',
       margin: '10px 0'
+    },
+    // Estilos para asignaciones con estados especiales
+    noAsignable: {
+      backgroundColor: '#fff0f0',
+      borderLeft: '3px solid #e57373',
+    },
+    fueraDeOrden: {
+      backgroundColor: '#fff3e0',
+      borderLeft: '3px solid #ffb74d',
+    },
+    estadoBadge: {
+      display: 'inline-block',
+      padding: '3px 8px',
+      borderRadius: '30px',
+      fontSize: '11px',
+      fontWeight: '600',
+      marginRight: '8px'
+    },
+    badgeNoAsignable: {
+      backgroundColor: '#ffebee',
+      color: '#c62828',
+      border: '1px solid #ef9a9a'
+    },
+    badgeFueraDeOrden: {
+      backgroundColor: '#fff3e0',
+      color: '#e65100',
+      border: '1px solid #ffcc80'
+    },
+    badgeAsignada: {
+      backgroundColor: '#e8f5e9',
+      color: '#2e7d32',
+      border: '1px solid #a5d6a7'
+    },
+    // Añadir contenedor de filtros
+    filtrosContainer: {
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: '15px',
+      flexWrap: 'wrap'
+    },
+    filtroEstado: {
+      display: 'flex',
+      gap: '8px',
+      flexWrap: 'wrap'
+    },
+    botonFiltro: {
+      padding: '5px 10px',
+      borderRadius: '20px',
+      fontSize: '12px',
+      fontWeight: '500',
+      border: '1px solid #ddd',
+      backgroundColor: '#f8f9fa',
+      cursor: 'pointer',
+      transition: 'all 0.2s ease'
+    },
+    botonFiltroActivo: {
+      backgroundColor: '#4285f4',
+      color: 'white',
+      borderColor: '#4285f4'
+    },
+    mensajeRazon: {
+      fontSize: '13px',
+      color: '#666',
+      fontStyle: 'italic',
+      marginTop: '5px'
     }
   };
   
@@ -233,6 +311,17 @@ const Dashboard = ({ assignments }) => {
   const totalAsignacionesFiltradas = ordenesOrdenados.reduce((total, orden) => {
     return total + asignacionesPorOrden[orden].length;
   }, 0);
+  
+  // Contar los diferentes estados
+  const conteoEstados = { ASIGNADA: 0, NO_ASIGNABLE: 0, FUERA_DE_ORDEN: 0, OTROS: 0 };
+  assignments.forEach(asignacion => {
+    const estado = asignacion.estado || "OTROS";
+    if (conteoEstados.hasOwnProperty(estado)) {
+      conteoEstados[estado]++;
+    } else {
+      conteoEstados.OTROS++;
+    }
+  });
   
   return (
     <div style={styles.container}>
@@ -242,7 +331,7 @@ const Dashboard = ({ assignments }) => {
             <div style={styles.statIcon}>👥</div>
             <div style={styles.statContent}>
               <div style={styles.statValue}>{Object.keys(asignacionesPorOrden).length}</div>
-              <div style={styles.statLabel}>Personas asignadas</div>
+              <div style={styles.statLabel}>Personas en el historial</div>
             </div>
           </div>
           
@@ -255,6 +344,23 @@ const Dashboard = ({ assignments }) => {
               <div style={styles.statLabel}>Centros con asignaciones</div>
             </div>
           </div>
+          
+          {/* Nuevas tarjetas para mostrar estadísticas de estados */}
+          <div style={styles.statCard}>
+            <div style={{...styles.statIcon, color: '#c62828'}}>❌</div>
+            <div style={styles.statContent}>
+              <div style={styles.statValue}>{conteoEstados.NO_ASIGNABLE}</div>
+              <div style={styles.statLabel}>No Asignables</div>
+            </div>
+          </div>
+          
+          <div style={styles.statCard}>
+            <div style={{...styles.statIcon, color: '#e65100'}}>⚠️</div>
+            <div style={styles.statContent}>
+              <div style={styles.statValue}>{conteoEstados.FUERA_DE_ORDEN}</div>
+              <div style={styles.statLabel}>Fuera de Orden</div>
+            </div>
+          </div>
         </div>
       </div>
       
@@ -262,36 +368,85 @@ const Dashboard = ({ assignments }) => {
         <strong>Información importante:</strong> Las plazas han sido asignadas por número de orden (a menor número, mayor prioridad) y respetando el orden de preferencia de centros indicado por cada solicitante.
       </div>
       
-      {/* Buscador */}
-      <div style={styles.searchContainer}>
-        <span style={styles.searchIcon}>🔍</span>
-        <input
-          type="text"
-          placeholder="Buscar por número de orden, centro o municipio..."
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          style={styles.searchInput}
-        />
-        <button 
-          style={styles.clearButton}
-          onClick={() => setSearchTerm('')}
-          aria-label="Limpiar búsqueda"
-        >
-          ×
-        </button>
+      {/* Filtros por estado */}
+      <div style={styles.filtrosContainer}>
+        <div style={styles.filtroEstado}>
+          <button 
+            style={{
+              ...styles.botonFiltro,
+              ...(filtroEstado === 'TODOS' ? styles.botonFiltroActivo : {})
+            }}
+            onClick={() => setFiltroEstado('TODOS')}
+          >
+            Todos
+          </button>
+          <button 
+            style={{
+              ...styles.botonFiltro,
+              ...(filtroEstado === 'ASIGNADA' ? styles.botonFiltroActivo : {}),
+              backgroundColor: filtroEstado === 'ASIGNADA' ? '#2e7d32' : undefined
+            }}
+            onClick={() => setFiltroEstado('ASIGNADA')}
+          >
+            Asignados
+          </button>
+          <button 
+            style={{
+              ...styles.botonFiltro,
+              ...(filtroEstado === 'NO_ASIGNABLE' ? styles.botonFiltroActivo : {}),
+              backgroundColor: filtroEstado === 'NO_ASIGNABLE' ? '#c62828' : undefined
+            }}
+            onClick={() => setFiltroEstado('NO_ASIGNABLE')}
+          >
+            No Asignables
+          </button>
+          <button 
+            style={{
+              ...styles.botonFiltro,
+              ...(filtroEstado === 'FUERA_DE_ORDEN' ? styles.botonFiltroActivo : {}),
+              backgroundColor: filtroEstado === 'FUERA_DE_ORDEN' ? '#e65100' : undefined
+            }}
+            onClick={() => setFiltroEstado('FUERA_DE_ORDEN')}
+          >
+            Fuera de Orden
+          </button>
+        </div>
+        
+        {/* Buscador */}
+        <div style={styles.searchContainer}>
+          <span style={styles.searchIcon}>🔍</span>
+          <input
+            type="text"
+            placeholder="Buscar por número de orden, centro o municipio..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            style={styles.searchInput}
+          />
+          <button 
+            style={styles.clearButton}
+            onClick={() => setSearchTerm('')}
+            aria-label="Limpiar búsqueda"
+          >
+            ×
+          </button>
+        </div>
       </div>
       
       {/* Información de resultados */}
       <div style={styles.resultsInfo}>
-        Mostrando {totalAsignacionesFiltradas} asignaciones
-        {searchTerm && ` (filtradas de ${assignments.length})`}
+        Mostrando {totalAsignacionesFiltradas} elementos
+        {searchTerm && ` (filtrados de ${assignments.length})`}
+        {filtroEstado !== 'TODOS' && ` con estado ${filtroEstado}`}
       </div>
       
-      {ordenesOrdenados.length === 0 && searchTerm && (
+      {ordenesOrdenados.length === 0 && (searchTerm || filtroEstado !== 'TODOS') && (
         <div style={styles.emptyResults}>
-          <p>No se encontraron asignaciones con el criterio: <strong>"{searchTerm}"</strong></p>
+          <p>No se encontraron elementos {filtroEstado !== 'TODOS' ? `con estado ${filtroEstado}` : ''} {searchTerm ? `que coincidan con: "${searchTerm}"` : ''}</p>
           <button 
-            onClick={() => setSearchTerm('')}
+            onClick={() => {
+              setSearchTerm('');
+              setFiltroEstado('TODOS');
+            }}
             style={{
               padding: '6px 12px',
               backgroundColor: '#3498db',
@@ -302,7 +457,7 @@ const Dashboard = ({ assignments }) => {
               fontSize: '14px'
             }}
           >
-            Limpiar filtro
+            Limpiar filtros
           </button>
         </div>
       )}
@@ -312,10 +467,10 @@ const Dashboard = ({ assignments }) => {
           <thead style={styles.tableHeader}>
             <tr>
               <th style={{...styles.th, width: '12%'}}>Nº Orden</th>
-              <th style={{...styles.th, width: '33%'}}>Centro de Trabajo</th>
+              <th style={{...styles.th, width: '20%'}}>Estado</th>
+              <th style={{...styles.th, width: '28%'}}>Centro/Información</th>
               <th style={{...styles.th, width: '20%'}}>Localidad</th>
-              <th style={{...styles.th, width: '20%'}}>Municipio</th>
-              <th style={{...styles.th, width: '15%'}}>Fecha/Hora</th>
+              <th style={{...styles.th, width: '20%'}}>Fecha/Hora</th>
             </tr>
           </thead>
           <tbody>
@@ -330,6 +485,21 @@ const Dashboard = ({ assignments }) => {
                 
                 // Destacar órdenes bajos (alta prioridad)
                 const esPrioridad = orden <= 50;
+                
+                // Determinar estilo según el estado
+                let estiloFila = {};
+                let badgeEstilo = {};
+                let estadoTexto = asignacion.estado || 'ASIGNADA';
+                
+                if (asignacion.estado === 'NO_ASIGNABLE') {
+                  estiloFila = styles.noAsignable;
+                  badgeEstilo = styles.badgeNoAsignable;
+                } else if (asignacion.estado === 'FUERA_DE_ORDEN') {
+                  estiloFila = styles.fueraDeOrden;
+                  badgeEstilo = styles.badgeFueraDeOrden;
+                } else if (asignacion.estado === 'ASIGNADA' || !asignacion.estado) {
+                  badgeEstilo = styles.badgeAsignada;
+                }
                 
                 // Destacar coincidencias del término de búsqueda si existe
                 const destacarSiCoincide = (texto) => {
@@ -356,19 +526,25 @@ const Dashboard = ({ assignments }) => {
                     key={`${orden}-${index}`} 
                     style={{
                       ...styles.tr,
-                      backgroundColor: esPrioridad 
-                        ? '#fff9e6' 
-                        : (index % 2 === 0 ? 'white' : '#f8f9fa')
+                      ...estiloFila,
+                      backgroundColor: estiloFila.backgroundColor ||
+                        (esPrioridad 
+                          ? '#fff9e6' 
+                          : (index % 2 === 0 ? 'white' : '#f8f9fa'))
                     }}
                     onMouseEnter={(e) => {
-                      e.currentTarget.style.backgroundColor = esPrioridad 
-                        ? '#fff3cd' 
-                        : '#f1f3f5';
+                      if (!estiloFila.backgroundColor) {
+                        e.currentTarget.style.backgroundColor = esPrioridad 
+                          ? '#fff3cd' 
+                          : '#f1f3f5';
+                      }
                     }}
                     onMouseLeave={(e) => {
-                      e.currentTarget.style.backgroundColor = esPrioridad 
-                        ? '#fff9e6' 
-                        : (index % 2 === 0 ? 'white' : '#f8f9fa');
+                      if (!estiloFila.backgroundColor) {
+                        e.currentTarget.style.backgroundColor = esPrioridad 
+                          ? '#fff9e6' 
+                          : (index % 2 === 0 ? 'white' : '#f8f9fa');
+                      }
                     }}
                   >
                     <td style={styles.td}>
@@ -382,10 +558,30 @@ const Dashboard = ({ assignments }) => {
                       )}
                     </td>
                     <td style={styles.td}>
-                      <div style={styles.centerName}>{destacarSiCoincide(asignacion.centro)}</div>
+                      <span style={{...styles.estadoBadge, ...badgeEstilo}}>
+                        {estadoTexto}
+                      </span>
                     </td>
-                    <td style={styles.td}>{destacarSiCoincide(asignacion.localidad)}</td>
-                    <td style={styles.td}>{destacarSiCoincide(asignacion.municipio)}</td>
+                    <td style={styles.td}>
+                      <div style={styles.centerName}>
+                        {asignacion.estado === 'NO_ASIGNABLE' || asignacion.estado === 'FUERA_DE_ORDEN' 
+                          ? 'No asignado' 
+                          : destacarSiCoincide(asignacion.centro)
+                        }
+                      </div>
+                      {/* Mostrar mensaje o razón si existe */}
+                      {asignacion.mensaje && (
+                        <div style={styles.mensajeRazon}>
+                          {destacarSiCoincide(asignacion.mensaje)}
+                        </div>
+                      )}
+                    </td>
+                    <td style={styles.td}>
+                      {asignacion.estado === 'NO_ASIGNABLE' || asignacion.estado === 'FUERA_DE_ORDEN' 
+                        ? '-' 
+                        : destacarSiCoincide(asignacion.localidad)
+                      }
+                    </td>
                     <td style={styles.td}>
                       <div style={styles.timestamp}>{fechaFormateada}</div>
                     </td>
