@@ -597,7 +597,7 @@ const PlazasDisponibles = ({
                 <th>Código</th>
                 <th className="centro-column">Centro</th>
                 <th>Municipio</th>
-                <th>Plazas (Disp/Total)</th>
+                <th>Plazas</th>
                 {windowWidth < 768 && <th style={{width: '40px'}}>Info</th>}
               </tr>
             </thead>
@@ -605,8 +605,6 @@ const PlazasDisponibles = ({
               {currentPlazas.map((plaza, index) => {
                 // Calcular plazas disponibles
                 const disponibles = Math.max(0, plaza.plazas - (plaza.asignadas || 0));
-                const asignadas = plaza.asignadas || 0;
-                const plazasTotal = plaza.plazas || 0;
                 
                 // Verificar si está en la lista de seleccionados y su orden
                 const seleccionado = centrosSeleccionados.includes(plaza.id);
@@ -682,16 +680,7 @@ const PlazasDisponibles = ({
                       {plaza.centro}
                     </td>
                     <td>{plaza.municipio}</td>
-                    <td>
-                      <strong style={{ color: disponibles > 0 ? '#28a745' : '#dc3545' }}>
-                        {disponibles}
-                      </strong> / {plazasTotal}
-                      {asignadas > 0 && (
-                        <span style={{ fontSize: '0.85em', color: '#6c757d', marginLeft: '5px' }}>
-                          ({asignadas} asignadas)
-                        </span>
-                      )}
-                    </td>
+                    <td>{plaza.plazas}</td>
                     {windowWidth < 768 && (
                       <td>
                         <button 
@@ -768,17 +757,17 @@ const PlazasDisponibles = ({
             <p><strong>Municipio:</strong> {infoModal.municipio}</p>
             <p><strong>Departamento:</strong> {infoModal.departamento}</p>
             <p><strong>ASI:</strong> {infoModal.asi}</p>
-            <p><strong>Plazas disponibles:</strong> {infoModal.disponibles} de {infoModal.plazas} (Asignadas: {infoModal.asignadas || 0})</p>
+            <p><strong>Plazas disponibles:</strong> {infoModal.disponibles}</p>
             <div className="modal-footer">
               <button className="close-button" onClick={closeInfo}>Cerrar</button>
               <button 
                 className="select-button" 
                 onClick={() => {
-                  handleCentroChange({ target: { value: infoModal.id, checked: !centrosSeleccionados.includes(infoModal.id) } });
+                  handleCentroChange({ target: { value: infoModal.id } });
                   closeInfo();
                 }}
               >
-                {centrosSeleccionados.includes(infoModal.id) ? 'Deseleccionar' : 'Seleccionar'}
+                Seleccionar
               </button>
             </div>
           </div>

@@ -3421,7 +3421,7 @@ function App() {
                         <td style={{ padding: '10px' }}>{assignment.order}</td>
                         <td style={{ padding: '10px' }}>{assignment.centerName}</td>
                         <td style={{ padding: '10px' }}>
-                          <strong>{plazasDisponibles}</strong> disponibles / <strong>{centroInfo.asignadas || 0}</strong> asignadas / <strong>{plazasTotal}</strong> total
+                          <strong>{plazasDisponibles}</strong> / {plazasTotal}
                         </td>
                         <td style={{ padding: '10px' }}>
                           <button 
@@ -3586,7 +3586,7 @@ function App() {
                                 backgroundColor: index === 0 ? '#f2f9ff' : 'transparent',
                                 borderRadius: '3px'
                               }}>
-                                <strong>{plazasDisponibles}</strong> disponibles / <strong>{centro.asignadas || 0}</strong> asignadas / <strong>{centro.plazas || 0}</strong> total
+                                {centro.nombre || centro.centro || `Centro ID: ${centroId}`}
                               </div>
                             );
                           })}
@@ -3612,7 +3612,7 @@ function App() {
                                 backgroundColor: index === 0 ? '#f2f9ff' : 'transparent',
                                 borderRadius: '3px'
                               }}>
-                                {plazasDisponibles} / {plazasTotal}
+                                <strong>{plazasDisponibles}</strong> / {plazasTotal}
                               </div>
                             );
                           })}
@@ -3683,11 +3683,7 @@ function App() {
           fontSize: '14px',
           color: '#666'
         }}>
-          <p>Plazas asignadas: {assignments.length} / Plazas disponibles: {
-            // Calcular el total de plazas disponibles sumando las de cada centro
-            availablePlazas.reduce((total, centro) => 
-              total + Math.max(0, (centro.plazas || 0) - (centro.asignadas || 0)), 0)
-          }</p>
+          <p>Plazas asignadas: {assignments.length} / Plazas disponibles: {7066 - assignments.length}</p>
           <p>Última actualización: {lastProcessed && typeof lastProcessed.getTime === 'function' ? lastProcessed.toLocaleString() : 'No disponible'}</p>
         </div>
         
