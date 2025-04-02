@@ -8,11 +8,33 @@ import React, { useState, useEffect } from 'react';
  * @param {Array} props.availablePlazas - Lista de plazas disponibles
  * @returns {JSX.Element} - Componente SolicitudesPendientes
  */
-const SolicitudesPendientes = ({ solicitudes, assignments, availablePlazas }) => {
+const SolicitudesPendientes = ({ solicitudes = [], assignments = [], availablePlazas = [] }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const [searchTerm, setSearchTerm] = useState('');
+  const [error, setError] = useState('');
   const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1200);
+  const [sortConfig, setSortConfig] = useState({ key: 'orden', direction: 'asc' });
+  
+  // Validar props
+  useEffect(() => {
+    if (!Array.isArray(solicitudes)) {
+      setError('Error: Las solicitudes no son válidas');
+      console.error('SolicitudesPendientes: solicitudes debe ser un array');
+      return;
+    }
+    if (!Array.isArray(assignments)) {
+      setError('Error: Las asignaciones no son válidas');
+      console.error('SolicitudesPendientes: assignments debe ser un array');
+      return;
+    }
+    if (!Array.isArray(availablePlazas)) {
+      setError('Error: Las plazas disponibles no son válidas');
+      console.error('SolicitudesPendientes: availablePlazas debe ser un array');
+      return;
+    }
+    setError('');
+  }, [solicitudes, assignments, availablePlazas]);
   
   // Efecto para manejar el cambio de tamaño de ventana
   useEffect(() => {
@@ -26,49 +48,112 @@ const SolicitudesPendientes = ({ solicitudes, assignments, availablePlazas }) =>
     };
   }, []);
   
+  // Si hay error, mostrar mensaje
+  if (error) {
+    return (
+      <div style={{ 
+        textAlign: 'center', 
+        padding: '20px',
+        backgroundColor: '#fff3cd',
+        borderRadius: '8px',
+        color: '#856404',
+        margin: '20px 0'
+      }}>
+        <p>{error}</p>
+      </div>
+    );
+  }
+  
   // Determinar si estamos en móvil
   const isMobile = windowWidth < 768;
   
-  // Filtrar las solicitudes según la búsqueda
-  const filteredSolicitudes = solicitudes.filter(solicitud => {
-    const ordenStr = solicitud.orden.toString();
+  // Función para ordenar solicitudes
+  const sortSolicitudes = (solicitudesArray) => {
+    if (!solicitudesArray || !Array.isArray(solicitudesArray)) return [];
     
-    // Buscar en los centros seleccionados
-    const centrosNames = solicitud.centrosIds.map(id => {
-      const centro = availablePlazas.find(p => p.id === id);
-      return centro ? centro.centro + " " + centro.localidad + " " + centro.municipio : "";
-    }).join(" ").toLowerCase();
-    
-    return ordenStr.includes(searchTerm.toLowerCase()) || 
-           centrosNames.includes(searchTerm.toLowerCase());
-  });
-  
-  // Ordenar por número de orden (menor primero = mayor prioridad)
-  const sortedSolicitudes = [...filteredSolicitudes].sort((a, b) => a.orden - b.orden);
-  
-  // Calcular total de páginas
-  const totalPages = Math.ceil(sortedSolicitudes.length / itemsPerPage);
-  
-  // Obtener solicitudes para la página actual
-  const indexOfLastItem = currentPage * itemsPerPage;
-  const indexOfFirstItem = indexOfLastItem - itemsPerPage;
-  const currentItems = sortedSolicitudes.slice(indexOfFirstItem, indexOfLastItem);
-  
-  // Cambiar de página
-  const paginate = (pageNumber) => setCurrentPage(pageNumber);
-  
-  // Ir a la página anterior
-  const prevPage = () => {
-    if (currentPage > 1) {
-      setCurrentPage(currentPage - 1);
-    }
+    return [...solicitudesArray].sort((a, b) => {
+      if (!a || !b) return 0;
+      
+      let aValue = a[sortConfig.key];
+      let bValue = b[sortConfig.key];
+      
+      // Convertir a número si es el campo 'orden'
+      if (sortConfig.key === 'orden') {
+        aValue = Number(aValue) || 0;
+        bValue = Number(bValue) || 0;
+      }
+      
+      if (aValue < bValue) {
+        return sortConfig.direction === 'asc' ? -1 : 1;
+      }
+      if (aValue > bValue) {
+        return sortConfig.direction === 'asc' ? 1 : -1;
+      }
+      return 0;
+    });
   };
   
-  // Ir a la página siguiente
-  const nextPage = () => {
-    if (currentPage < totalPages) {
-      setCurrentPage(currentPage + 1);
-    }
+  // Filtrar y validar solicitudes
+  const filtrarSolicitudes = () => {
+    // Asegurar que solicitudes es un array
+    const solicitudesArray = Array.isArray(solicitudes) ? solicitudes : [];
+    
+    // Filtrar solicitudes inválidas
+    const solicitudesValidas = solicitudesArray.filter(solicitud => {
+      if (!solicitud) return false;
+      
+      // Validar que tenga número de orden
+      if (solicitud.orden === undefined || solicitud.orden === null) {
+        console.warn('Solicitud sin número de orden:', solicitud);
+        return false;
+      }
+      
+      // Validar que tenga centros seleccionados
+      if (!Array.isArray(solicitud.centrosIds) && !Array.isArray(solicitud.centrosSeleccionados)) {
+        console.warn('Solicitud sin centros seleccionados:', solicitud);
+        return false;
+      }
+      
+      return true;
+    });
+    
+    // Aplicar filtro de búsqueda
+    return solicitudesValidas.filter(solicitud => {
+      const searchFields = [
+        solicitud.orden?.toString(),
+        ...(solicitud.centrosIds || solicitud.centrosSeleccionados || []).map(centroId => {
+          const centro = availablePlazas.find(p => p.id === centroId);
+          return centro ? [centro.centro, centro.localidad, centro.municipio] : [];
+        }).flat()
+      ].filter(Boolean);
+      
+      return searchFields.some(field => 
+        field.toLowerCase().includes(searchTerm.toLowerCase())
+      );
+    });
+  };
+  
+  // Obtener solicitudes filtradas y ordenadas
+  const solicitudesFiltradas = sortSolicitudes(filtrarSolicitudes());
+  
+  // Calcular paginación
+  const totalPages = Math.ceil(solicitudesFiltradas.length / itemsPerPage);
+  const indexOfLastItem = currentPage * itemsPerPage;
+  const indexOfFirstItem = indexOfLastItem - itemsPerPage;
+  const currentItems = solicitudesFiltradas.slice(indexOfFirstItem, indexOfLastItem);
+  
+  // Cambiar página
+  const handlePageChange = (pageNumber) => {
+    if (pageNumber < 1 || pageNumber > totalPages) return;
+    setCurrentPage(pageNumber);
+  };
+  
+  // Cambiar orden
+  const handleSort = (key) => {
+    setSortConfig(prevConfig => ({
+      key,
+      direction: prevConfig.key === key && prevConfig.direction === 'asc' ? 'desc' : 'asc'
+    }));
   };
   
   if (!solicitudes.length) {
@@ -156,7 +241,7 @@ const SolicitudesPendientes = ({ solicitudes, assignments, availablePlazas }) =>
           gap: '10px'
         }}>
           <div style={{ marginBottom: '10px', fontSize: '14px', color: '#666' }}>
-            Mostrando <strong>{sortedSolicitudes.length > 0 ? indexOfFirstItem + 1 : 0}-{Math.min(indexOfLastItem, sortedSolicitudes.length)}</strong> de <strong>{sortedSolicitudes.length}</strong> solicitudes
+            Mostrando <strong>{solicitudesFiltradas.length > 0 ? indexOfFirstItem + 1 : 0}-{Math.min(indexOfLastItem, solicitudesFiltradas.length)}</strong> de <strong>{solicitudesFiltradas.length}</strong> solicitudes
             {searchTerm && ` (filtradas de ${solicitudes.length})`}
           </div>
           
@@ -178,7 +263,7 @@ const SolicitudesPendientes = ({ solicitudes, assignments, availablePlazas }) =>
               <option value={10}>10 por página</option>
               <option value={25}>25 por página</option>
               <option value={50}>50 por página</option>
-              <option value={sortedSolicitudes.length}>Ver todas</option>
+              <option value={solicitudesFiltradas.length}>Ver todas</option>
             </select>
           </div>
         </div>
@@ -266,76 +351,83 @@ const SolicitudesPendientes = ({ solicitudes, assignments, availablePlazas }) =>
                   <td style={{ border: '1px solid #ddd', padding: '12px 15px' }}>{fechaFormateada}</td>
                   <td style={{ border: '1px solid #ddd', padding: '12px 15px' }}>
                     <ol style={{ margin: '0', paddingLeft: '20px' }}>
-                      {solicitud.centrosIds.map((centroId, idx) => {
-                        // Buscar detalles del centro
-                        const centro = availablePlazas.find(p => p.id === centroId);
-                        
-                        // Buscar si este centro concreto tiene asignación para este orden
-                        const asignadoAEsteCentro = asignacion && asignacion.id === centroId;
+                      {/* Usar operador de encadenamiento opcional y verificar que es un array */}
+                      {Array.isArray(solicitud?.centrosIds || solicitud?.centrosSeleccionados) 
+                        ? (solicitud?.centrosIds || solicitud?.centrosSeleccionados || []).map((centroId, idx) => {
+                          // Buscar detalles del centro con validación
+                          const centro = centroId && availablePlazas && Array.isArray(availablePlazas) 
+                            ? availablePlazas.find(p => p && p.id === centroId) 
+                            : null;
                           
-                        return (
-                          <li key={idx} style={{ 
-                            marginBottom: '8px',
-                            backgroundColor: asignadoAEsteCentro ? '#e8f5e9' : 'inherit',
-                            padding: asignadoAEsteCentro ? '6px 8px' : '0',
-                            borderRadius: asignadoAEsteCentro ? '4px' : '0',
-                            border: asignadoAEsteCentro ? '1px solid #c8e6c9' : 'none'
-                          }}>
-                            {centro ? (
-                              <>
-                                <strong style={{ color: idx === 0 ? '#d35400' : 'inherit' }}>
-                                  {centro.centro}
-                                </strong> 
-                                <span style={{ fontSize: '14px', color: '#666' }}>
-                                  - {centro.localidad} ({centro.municipio})
-                                </span>
-                                {idx === 0 && (
-                                  <span style={{
-                                    display: 'inline-block',
-                                    marginLeft: '8px',
-                                    fontSize: '12px',
-                                    color: '#d35400',
-                                    backgroundColor: '#fff3cd',
-                                    padding: '1px 5px',
-                                    borderRadius: '10px',
-                                    fontWeight: 'bold'
-                                  }}>
-                                    1ª opción
+                          // Buscar si este centro concreto tiene asignación para este orden
+                          const asignadoAEsteCentro = asignacion && asignacion.id === centroId;
+                          
+                          return (
+                            <li key={idx} style={{ 
+                              marginBottom: '8px',
+                              backgroundColor: asignadoAEsteCentro ? '#f1f8e9' : 'transparent',
+                              padding: asignadoAEsteCentro ? '4px 8px' : '0',
+                              borderRadius: asignadoAEsteCentro ? '4px' : '0',
+                              border: asignadoAEsteCentro ? '1px solid #c8e6c9' : 'none'
+                            }}>
+                              {centro ? (
+                                <>
+                                  <strong style={{ color: idx === 0 ? '#d35400' : 'inherit' }}>
+                                    {centro.centro}
+                                  </strong> 
+                                  <span style={{ fontSize: '14px', color: '#666' }}>
+                                    {centro.localidad && `- ${centro.localidad}`} {centro.municipio && `(${centro.municipio})`}
                                   </span>
-                                )}
-                                {(centro.plazas - centro.asignadas) <= 0 && !asignadoAEsteCentro && (
-                                  <span style={{ 
-                                    color: '#e74c3c', 
-                                    marginLeft: '10px', 
-                                    fontSize: '12px', 
-                                    fontWeight: 'bold',
-                                    backgroundColor: '#ffebee',
-                                    padding: '1px 6px',
-                                    borderRadius: '10px'
-                                  }}>
-                                    Completo
-                                  </span>
-                                )}
-                                {asignadoAEsteCentro && (
-                                  <span style={{ 
-                                    color: '#2E7D32', 
-                                    marginLeft: '10px', 
-                                    fontSize: '12px', 
-                                    fontWeight: 'bold',
-                                    backgroundColor: '#e8f5e9',
-                                    padding: '1px 6px',
-                                    borderRadius: '10px'
-                                  }}>
-                                    ✓ Asignado
-                                  </span>
-                                )}
-                              </>
-                            ) : (
-                              <span style={{ color: '#999' }}>Centro no disponible (ID: {centroId})</span>
-                            )}
-                          </li>
-                        );
-                      })}
+                                  {idx === 0 && (
+                                    <span style={{
+                                      display: 'inline-block',
+                                      marginLeft: '8px',
+                                      fontSize: '12px',
+                                      color: '#d35400',
+                                      backgroundColor: '#fff3cd',
+                                      padding: '1px 5px',
+                                      borderRadius: '10px',
+                                      fontWeight: 'bold'
+                                    }}>
+                                      1ª opción
+                                    </span>
+                                  )}
+                                  {(centro.plazas && centro.asignadas !== undefined && (centro.plazas - centro.asignadas) <= 0) 
+                                    && !asignadoAEsteCentro && (
+                                    <span style={{ 
+                                      color: '#e74c3c', 
+                                      marginLeft: '10px', 
+                                      fontSize: '12px', 
+                                      fontWeight: 'bold',
+                                      backgroundColor: '#ffebee',
+                                      padding: '1px 6px',
+                                      borderRadius: '10px'
+                                    }}>
+                                      Completo
+                                    </span>
+                                  )}
+                                  {asignadoAEsteCentro && (
+                                    <span style={{ 
+                                      color: '#2E7D32', 
+                                      marginLeft: '10px', 
+                                      fontSize: '12px', 
+                                      fontWeight: 'bold',
+                                      backgroundColor: '#e8f5e9',
+                                      padding: '1px 6px',
+                                      borderRadius: '10px'
+                                    }}>
+                                      ✓ Asignado
+                                    </span>
+                                  )}
+                                </>
+                              ) : (
+                                <span style={{ color: '#999' }}>Centro no disponible (ID: {centroId})</span>
+                              )}
+                            </li>
+                          );
+                        })
+                        : <li>No hay centros seleccionados</li>
+                      }
                     </ol>
                   </td>
                   <td style={{ border: '1px solid #ddd', padding: '12px 15px', textAlign: 'center' }}>
@@ -385,7 +477,7 @@ const SolicitudesPendientes = ({ solicitudes, assignments, availablePlazas }) =>
       </div>
       
       {/* Paginación */}
-      {sortedSolicitudes.length > itemsPerPage && (
+      {solicitudesFiltradas.length > itemsPerPage && (
         <div style={{ 
           display: 'flex', 
           justifyContent: 'center', 
@@ -394,7 +486,7 @@ const SolicitudesPendientes = ({ solicitudes, assignments, availablePlazas }) =>
           flexWrap: 'wrap'
         }}>
           <button 
-            onClick={prevPage} 
+            onClick={() => handlePageChange(currentPage - 1)} 
             disabled={currentPage === 1}
             style={{
               padding: '8px 12px',
@@ -423,7 +515,7 @@ const SolicitudesPendientes = ({ solicitudes, assignments, availablePlazas }) =>
             return (
               <button
                 key={pageToShow}
-                onClick={() => paginate(pageToShow)}
+                onClick={() => handlePageChange(pageToShow)}
                 style={{
                   padding: '8px 12px',
                   backgroundColor: currentPage === pageToShow ? '#e67e22' : 'white',
@@ -439,7 +531,7 @@ const SolicitudesPendientes = ({ solicitudes, assignments, availablePlazas }) =>
           })}
           
           <button 
-            onClick={nextPage} 
+            onClick={() => handlePageChange(currentPage + 1)} 
             disabled={currentPage === totalPages}
             style={{
               padding: '8px 12px',

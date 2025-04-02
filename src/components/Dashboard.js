@@ -1,15 +1,79 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
 /**
  * Componente que muestra el historial de asignaciones
  * @param {Object} props - Propiedades del componente
  * @param {Array} props.assignments - Lista de asignaciones
+ * @param {Array} props.availablePlazas - Lista de centros/plazas disponibles
  * @returns {JSX.Element} - Componente Dashboard
  */
-const Dashboard = ({ assignments }) => {
+const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
   const [searchTerm, setSearchTerm] = useState('');
-  const [filtroEstado, setFiltroEstado] = useState('TODOS'); // Nuevo estado para filtrar por tipo
+  const [filtroEstado, setFiltroEstado] = useState('TODOS');
+  const [error, setError] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage] = useState(10);
+  const [sortConfig, setSortConfig] = useState({ key: 'order', direction: 'asc' });
   
+  // Validar que assignments sea un array
+  useEffect(() => {
+    if (!Array.isArray(assignments)) {
+      setError('Error: Los datos de asignaciones no son válidos');
+      console.error('Dashboard: assignments debe ser un array');
+      return;
+    }
+
+    // Validar estructura de datos
+    const invalidAssignments = assignments.filter(a => 
+      !a || 
+      typeof a !== 'object' || 
+      !a.order || 
+      !a.centro || 
+      !a.timestamp
+    );
+
+    if (invalidAssignments.length > 0) {
+      console.warn('Algunas asignaciones tienen estructura inválida:', invalidAssignments);
+    }
+
+    setError('');
+  }, [assignments]);
+
+  // Formatear fecha
+  const formatearFecha = (timestamp) => {
+    if (!timestamp) return 'Fecha no disponible';
+    try {
+      const fecha = new Date(timestamp);
+      return fecha.toLocaleString('es-ES', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    } catch (error) {
+      console.error('Error al formatear fecha:', error);
+      return 'Fecha inválida';
+    }
+  };
+
+  // Si hay error, mostrar mensaje
+  if (error) {
+    return (
+      <div style={{ 
+        textAlign: 'center', 
+        padding: '20px',
+        backgroundColor: '#fff3cd',
+        borderRadius: '8px',
+        color: '#856404',
+        margin: '20px 0'
+      }}>
+        <p>{error}</p>
+      </div>
+    );
+  }
+
+  // Si no hay asignaciones, mostrar mensaje
   if (!assignments.length) {
     return (
       <div style={{ 
@@ -30,59 +94,98 @@ const Dashboard = ({ assignments }) => {
     );
   }
   
-  // Agrupar asignaciones por número de orden
-  const asignacionesPorOrden = assignments.reduce((acc, asignacion) => {
-    if (!acc[asignacion.order]) {
-      acc[asignacion.order] = [];
-    }
-    acc[asignacion.order].push(asignacion);
-    return acc;
-  }, {});
-  
-  // Obtener todos los números de orden
-  const todosLosOrdenes = Object.keys(asignacionesPorOrden).map(Number);
-  
-  // Filtrar órdenes según término de búsqueda y estado
-  const ordenesOrdenados = todosLosOrdenes
-    .filter(orden => {
-      if (!searchTerm) return true;
+  // Función para ordenar asignaciones
+  const sortAssignments = (asignacionesArray) => {
+    if (!asignacionesArray || !Array.isArray(asignacionesArray)) return [];
+    
+    return [...asignacionesArray].sort((a, b) => {
+      if (!a || !b) return 0;
       
-      const ordenStr = orden.toString();
-      // Verificar si el número de orden coincide con la búsqueda
-      if (ordenStr.includes(searchTerm.toLowerCase())) return true;
+      let aValue = a[sortConfig.key];
+      let bValue = b[sortConfig.key];
       
-      // Buscar en los centros de este número de orden
-      const asignacionesDeEsteOrden = asignacionesPorOrden[orden];
-      return asignacionesDeEsteOrden.some(asignacion => {
-        const centroInfo = [
+      // Convertir a número si es el campo 'order'
+      if (sortConfig.key === 'order') {
+        aValue = Number(aValue) || 0;
+        bValue = Number(bValue) || 0;
+      }
+      
+      if (aValue < bValue) {
+        return sortConfig.direction === 'asc' ? -1 : 1;
+      }
+      if (aValue > bValue) {
+        return sortConfig.direction === 'asc' ? 1 : -1;
+      }
+      return 0;
+    });
+  };
+  
+  // Filtrar asignaciones
+  const filtrarAsignaciones = () => {
+    if (!Array.isArray(assignments)) return [];
+
+    let asignacionesFiltradas = assignments;
+
+    // Filtrar por término de búsqueda
+    if (searchTerm) {
+      asignacionesFiltradas = asignacionesFiltradas.filter(asignacion => {
+        if (!asignacion) return false;
+
+        const searchFields = [
+          asignacion.order?.toString(),
           asignacion.centro,
-          asignacion.municipio,
           asignacion.localidad,
-          asignacion.codigo,
-          asignacion.estado, // También buscar en el estado
-          asignacion.mensaje // Y en el mensaje
-        ].filter(Boolean).join(' ').toLowerCase();
-        
-        return centroInfo.includes(searchTerm.toLowerCase());
+          asignacion.municipio
+        ].filter(Boolean);
+
+        return searchFields.some(field => 
+          field.toLowerCase().includes(searchTerm.toLowerCase())
+        );
       });
-    })
-    // Filtrar por estado si no es "TODOS"
-    .filter(orden => {
-      if (filtroEstado === 'TODOS') return true;
-      
-      const asignacionesDeEsteOrden = asignacionesPorOrden[orden];
-      return asignacionesDeEsteOrden.some(asignacion => {
-        // Considerar las asignaciones sin estado como "ASIGNADA"
-        const estadoReal = asignacion.estado || 'ASIGNADA';
-        return estadoReal === filtroEstado;
-      });
-    })
-    .sort((a, b) => a - b);
+    }
+
+    // Filtrar por estado si no es 'TODOS'
+    if (filtroEstado !== 'TODOS') {
+      asignacionesFiltradas = asignacionesFiltradas.filter(asignacion => 
+        asignacion && asignacion.estado === filtroEstado
+      );
+    }
+
+    // Ordenar resultados
+    return sortAssignments(asignacionesFiltradas);
+  };
+  
+  // Obtener asignaciones filtradas y ordenadas
+  const asignacionesFiltradas = filtrarAsignaciones();
+  
+  // Calcular paginación
+  const totalPages = Math.ceil(asignacionesFiltradas.length / itemsPerPage);
+  const indexOfLastItem = currentPage * itemsPerPage;
+  const indexOfFirstItem = indexOfLastItem - itemsPerPage;
+  const currentItems = asignacionesFiltradas.slice(indexOfFirstItem, indexOfLastItem);
+  
+  // Cambiar página
+  const handlePageChange = (pageNumber) => {
+    if (pageNumber < 1 || pageNumber > totalPages) return;
+    setCurrentPage(pageNumber);
+  };
+  
+  // Cambiar ordenamiento
+  const handleSort = (key) => {
+    setSortConfig(prevConfig => ({
+      key,
+      direction: prevConfig.key === key && prevConfig.direction === 'asc' ? 'desc' : 'asc'
+    }));
+  };
   
   // Estilos para el componente
   const styles = {
     container: {
-      position: 'relative'
+      position: 'relative',
+      padding: '20px',
+      backgroundColor: '#f4f6f9',
+      borderRadius: '8px',
+      boxShadow: '0 4px 8px rgba(0,0,0,0.1)'
     },
     infoContainer: {
       display: 'flex',
@@ -98,479 +201,490 @@ const Dashboard = ({ assignments }) => {
       flexWrap: 'wrap'
     },
     statCard: {
-      backgroundColor: 'white',
-      padding: '12px 18px',
-      borderRadius: '8px',
-      boxShadow: '0 2px 6px rgba(0,0,0,0.05)',
-      border: '1px solid #eaeaea',
-      minWidth: '120px',
-      display: 'flex',
-      alignItems: 'center',
-      gap: '10px'
-    },
-    statIcon: {
-      backgroundColor: '#e6f7ff',
-      borderRadius: '50%',
-      width: '40px',
-      height: '40px',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      fontSize: '18px',
-      color: '#1890ff'
-    },
-    statContent: {
+      backgroundColor: '#ffffff',
+      borderRadius: '6px',
+      padding: '15px',
+      minWidth: '140px',
+      boxShadow: '0 2px 5px rgba(0,0,0,0.06)',
       flex: 1
     },
     statValue: {
-      fontSize: '18px',
+      fontSize: '24px',
       fontWeight: 'bold',
-      color: '#2c3e50'
+      color: '#2d3748',
+      marginBottom: '5px'
     },
     statLabel: {
-      fontSize: '12px',
-      color: '#95a5a6'
+      fontSize: '13px',
+      color: '#718096'
     },
-    infoBox: {
-      padding: '12px 15px',
-      backgroundColor: '#f8f9fa',
+    searchBar: {
+      display: 'flex',
+      gap: '10px',
+      marginBottom: '20px'
+    },
+    input: {
+      flex: '1',
+      padding: '10px 12px',
       borderRadius: '6px',
-      marginBottom: '20px',
-      borderLeft: '4px solid #3498db',
-      fontSize: '14px',
-      color: '#2c3e50',
-      lineHeight: '1.5'
+      border: '1px solid #e2e8f0',
+      fontSize: '14px'
     },
-    searchContainer: {
-      marginBottom: '20px',
-      position: 'relative',
-      width: '100%'
-    },
-    searchInput: {
-      width: '100%',
-      padding: '12px 15px',
-      paddingLeft: '40px',
-      border: '1px solid #ddd',
+    select: {
+      padding: '10px 12px',
       borderRadius: '6px',
-      fontSize: '16px',
-      boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.05)',
-      boxSizing: 'border-box'
-    },
-    searchIcon: {
-      position: 'absolute',
-      left: '12px',
-      top: '50%',
-      transform: 'translateY(-50%)',
-      color: '#666',
-      fontSize: '18px',
-      pointerEvents: 'none'
-    },
-    clearButton: {
-      position: 'absolute',
-      right: '12px',
-      top: '50%',
-      transform: 'translateY(-50%)',
-      background: 'none',
-      border: 'none',
-      fontSize: '18px',
-      cursor: 'pointer',
-      color: '#999',
-      display: searchTerm ? 'block' : 'none'
-    },
-    resultsInfo: {
+      border: '1px solid #e2e8f0',
       fontSize: '14px',
-      color: '#666',
-      marginBottom: '15px'
+      backgroundColor: '#fff'
     },
     tableContainer: {
       overflowX: 'auto',
-      paddingBottom: '5px',
-      border: '1px solid #eaeaea',
-      borderRadius: '8px'
+      backgroundColor: '#ffffff',
+      borderRadius: '8px',
+      boxShadow: '0 2px 5px rgba(0,0,0,0.05)'
     },
     table: {
       width: '100%',
-      borderCollapse: 'collapse'
+      borderCollapse: 'collapse',
+      fontSize: '14px'
     },
     tableHeader: {
-      backgroundImage: 'linear-gradient(to right, #f8f9fa, #e9ecef)',
-      position: 'sticky',
-      top: 0,
-      zIndex: 10
-    },
-    th: {
+      backgroundColor: '#f8fafc',
+      color: '#4a5568',
       textAlign: 'left',
-      padding: '14px 16px',
-      fontSize: '14px',
-      fontWeight: '600',
-      color: '#495057',
-      borderBottom: '2px solid #dee2e6'
+      padding: '12px 15px',
+      fontWeight: 'bold',
+      borderBottom: '2px solid #e2e8f0',
+      cursor: 'pointer',
+      transition: 'background-color 0.2s',
+      position: 'sticky',
+      top: 0
     },
-    tr: {
-      transition: 'background-color 0.2s ease'
+    tableCell: {
+      padding: '12px 15px',
+      borderBottom: '1px solid #e2e8f0',
+      color: '#2d3748',
+      whiteSpace: 'nowrap'
     },
-    td: {
-      padding: '14px 16px',
-      borderBottom: '1px solid #e9ecef',
-      fontSize: '14px',
-      verticalAlign: 'middle'
-    },
-    priorityBadge: {
-      display: 'inline-block',
-      padding: '3px 8px',
-      backgroundColor: '#fff3cd',
-      color: '#856404',
-      borderRadius: '30px',
-      fontSize: '11px',
-      fontWeight: '600',
-      marginLeft: '8px'
-    },
-    centerName: {
-      fontWeight: '600',
-      color: '#2c3e50'
-    },
-    timestamp: {
-      color: '#7f8c8d',
-      fontSize: '13px'
-    },
-    emptyResults: {
-      textAlign: 'center',
-      padding: '30px 20px',
-      color: '#666',
-      backgroundColor: '#f9f9f9',
-      borderRadius: '6px',
-      margin: '10px 0'
-    },
-    // Estilos para asignaciones con estados especiales
-    noAsignable: {
-      backgroundColor: '#fff0f0',
-      borderLeft: '3px solid #e57373',
-    },
-    estadoBadge: {
-      display: 'inline-block',
-      padding: '3px 8px',
-      borderRadius: '30px',
-      fontSize: '11px',
-      fontWeight: '600',
-      marginRight: '8px'
-    },
-    badgeNoAsignable: {
-      backgroundColor: '#ffebee',
-      color: '#c62828',
-      border: '1px solid #ef9a9a'
-    },
-    badgeAsignada: {
-      backgroundColor: '#e8f5e9',
-      color: '#2e7d32',
-      border: '1px solid #a5d6a7'
-    },
-    // Añadir contenedor de filtros
-    filtrosContainer: {
+    pagination: {
       display: 'flex',
       justifyContent: 'space-between',
       alignItems: 'center',
-      marginBottom: '15px',
-      flexWrap: 'wrap'
+      padding: '15px 0',
+      fontSize: '14px'
     },
-    filtroEstado: {
-      display: 'flex',
-      gap: '8px',
-      flexWrap: 'wrap'
-    },
-    botonFiltro: {
-      padding: '5px 10px',
-      borderRadius: '20px',
-      fontSize: '12px',
-      fontWeight: '500',
-      border: '1px solid #ddd',
-      backgroundColor: '#f8f9fa',
+    pageButton: {
+      padding: '6px 12px',
+      margin: '0 4px',
+      backgroundColor: '#f1f5f9',
+      border: 'none',
+      borderRadius: '4px',
       cursor: 'pointer',
-      transition: 'all 0.2s ease'
+      transition: 'background-color 0.2s',
+      fontSize: '13px'
     },
-    botonFiltroActivo: {
-      backgroundColor: '#4285f4',
-      color: 'white',
-      borderColor: '#4285f4'
+    activePageButton: {
+      backgroundColor: '#3182ce',
+      color: '#ffffff'
     },
-    mensajeRazon: {
-      fontSize: '13px',
-      color: '#666',
-      fontStyle: 'italic',
-      marginTop: '5px'
+    textCenter: {
+      textAlign: 'center'
+    },
+    badge: {
+      display: 'inline-block',
+      padding: '3px 8px',
+      borderRadius: '12px',
+      fontSize: '12px',
+      fontWeight: 'bold',
+      textAlign: 'center'
+    },
+    badgePrimary: {
+      backgroundColor: '#ebf5ff',
+      color: '#3182ce'
+    },
+    badgeSuccess: {
+      backgroundColor: '#e6fffa',
+      color: '#38b2ac'
+    },
+    badgeWarning: {
+      backgroundColor: '#fffaf0',
+      color: '#dd6b20'
+    },
+    badgeReasignado: {
+      backgroundColor: '#fef0f5',
+      color: '#d53f8c',
+      border: '1px dashed #d53f8c'
+    },
+    infoRow: {
+      marginBottom: '15px',
+      backgroundColor: '#f8fafc',
+      borderRadius: '6px',
+      padding: '10px 15px',
+      fontSize: '14px',
+      color: '#4a5568',
+      boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
+    },
+    orderContainer: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '8px'
+    },
+    orderBadge: {
+      color: '#000',
+      borderRadius: '50%',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      fontSize: '16px',
+      fontWeight: 'bold'
+    },
+    sortIcon: {
+      marginLeft: '4px',
+      display: 'inline-block',
+      fontSize: '10px'
+    },
+    leyendaContainer: {
+      marginTop: '20px',
+      padding: '15px',
+      backgroundColor: '#ffffff',
+      borderRadius: '8px',
+      boxShadow: '0 2px 5px rgba(0,0,0,0.05)',
+      fontSize: '13px'
+    },
+    leyendaTitle: {
+      fontSize: '14px',
+      fontWeight: 'bold',
+      marginBottom: '10px'
+    },
+    leyendaItems: {
+      display: 'flex',
+      flexWrap: 'wrap',
+      gap: '15px'
+    },
+    leyendaItem: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '8px',
+      marginBottom: '8px'
     }
   };
   
-  // Calcular el total de asignaciones filtradas
-  const totalAsignacionesFiltradas = ordenesOrdenados.reduce((total, orden) => {
-    return total + asignacionesPorOrden[orden].length;
-  }, 0);
+  // Calcular estadísticas
+  const estadisticas = {
+    total: asignacionesFiltradas.length,
+    centros: [...new Set(asignacionesFiltradas.map(a => a.centro))].length,
+    reasignados: asignacionesFiltradas.filter(a => a.reasignado).length
+  };
   
-  // Contar los diferentes estados
-  const conteoEstados = { ASIGNADA: 0, NO_ASIGNABLE: 0, OTROS: 0 };
-  assignments.forEach(asignacion => {
-    // Unificar FUERA_DE_ORDEN como NO_ASIGNABLE
-    let estado = asignacion.estado || "ASIGNADA";
-    if (estado === "FUERA_DE_ORDEN") {
-      estado = "NO_ASIGNABLE";
-    }
-    
-    if (conteoEstados.hasOwnProperty(estado)) {
-      conteoEstados[estado]++;
-    } else {
-      conteoEstados.OTROS++;
-    }
-  });
+  // Obtener lista de estados únicos para el filtro
+  const estados = ['TODOS', ...new Set(asignacionesFiltradas
+    .filter(a => a.estado)
+    .map(a => a.estado))];
   
   return (
     <div style={styles.container}>
+      {/* Encabezado y estadísticas */}
       <div style={styles.infoContainer}>
         <div style={styles.statsContainer}>
           <div style={styles.statCard}>
-            <div style={styles.statIcon}>👥</div>
-            <div style={styles.statContent}>
-              <div style={styles.statValue}>{Object.keys(asignacionesPorOrden).length}</div>
-              <div style={styles.statLabel}>Personas en el historial</div>
-            </div>
+            <div style={styles.statValue}>{estadisticas.total}</div>
+            <div style={styles.statLabel}>Asignaciones totales</div>
           </div>
-          
           <div style={styles.statCard}>
-            <div style={styles.statIcon}>🏢</div>
-            <div style={styles.statContent}>
-              <div style={styles.statValue}>
-                {new Set(assignments.map(a => a.centroId || a.id)).size}
-              </div>
-              <div style={styles.statLabel}>Centros con asignaciones</div>
-            </div>
+            <div style={styles.statValue}>{estadisticas.centros}</div>
+            <div style={styles.statLabel}>Centros con asignaciones</div>
           </div>
-          
-          {/* Nuevas tarjetas para mostrar estadísticas de estados */}
           <div style={styles.statCard}>
-            <div style={{...styles.statIcon, color: '#c62828'}}>❌</div>
-            <div style={styles.statContent}>
-              <div style={styles.statValue}>{conteoEstados.NO_ASIGNABLE}</div>
-              <div style={styles.statLabel}>No Asignables</div>
-            </div>
+            <div style={styles.statValue}>{estadisticas.reasignados}</div>
+            <div style={styles.statLabel}>Reasignaciones</div>
           </div>
         </div>
       </div>
       
-      <div style={styles.infoBox}>
-        <strong>Información importante:</strong> Las plazas han sido asignadas por número de orden (a menor número, mayor prioridad) y respetando el orden de preferencia de centros indicado por cada solicitante.
-      </div>
-      
-      {/* Filtros por estado */}
-      <div style={styles.filtrosContainer}>
-        <div style={styles.filtroEstado}>
-          <button 
-            style={{
-              ...styles.botonFiltro,
-              ...(filtroEstado === 'TODOS' ? styles.botonFiltroActivo : {})
-            }}
-            onClick={() => setFiltroEstado('TODOS')}
-          >
-            Todos
-          </button>
-          <button 
-            style={{
-              ...styles.botonFiltro,
-              ...(filtroEstado === 'ASIGNADA' ? 
-                { backgroundColor: '#2e7d32', color: 'white', borderWidth: '1px', borderStyle: 'solid', borderColor: '#2e7d32' } : 
-                {})
-            }}
-            onClick={() => setFiltroEstado('ASIGNADA')}
-          >
-            Asignados
-          </button>
-          <button 
-            style={{
-              ...styles.botonFiltro,
-              ...(filtroEstado === 'NO_ASIGNABLE' ? 
-                { backgroundColor: '#c62828', color: 'white', borderWidth: '1px', borderStyle: 'solid', borderColor: '#c62828' } : 
-                {})
-            }}
-            onClick={() => setFiltroEstado('NO_ASIGNABLE')}
-          >
-            No Asignables
-          </button>
-        </div>
+      {/* Alerta para detectar centros con exceso de asignaciones */}
+      {(() => {
+        // Verificar centros con exceso
+        const centrosConExceso = assignments.reduce((acc, asignacion) => {
+          if (!asignacion) return acc;
+          
+          // Agrupar por centro
+          const centroId = asignacion.id;
+          if (!centroId) return acc;
+          
+          if (!acc[centroId]) {
+            acc[centroId] = {
+              id: centroId,
+              centro: asignacion.centro || 'Centro desconocido',
+              count: 0,
+              plazas: 0
+            };
+          }
+          
+          acc[centroId].count++;
+          
+          return acc;
+        }, {});
         
-        {/* Buscador */}
-        <div style={styles.searchContainer}>
-          <span style={styles.searchIcon}>🔍</span>
-          <input
-            type="text"
-            placeholder="Buscar por número de orden, centro o municipio..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            style={styles.searchInput}
-          />
-          <button 
-            style={styles.clearButton}
-            onClick={() => setSearchTerm('')}
-            aria-label="Limpiar búsqueda"
-          >
-            ×
-          </button>
-        </div>
-      </div>
-      
-      {/* Información de resultados */}
-      <div style={styles.resultsInfo}>
-        Mostrando {totalAsignacionesFiltradas} elementos
-        {searchTerm && ` (filtrados de ${assignments.length})`}
-        {filtroEstado !== 'TODOS' && ` con estado ${filtroEstado}`}
-      </div>
-      
-      {ordenesOrdenados.length === 0 && (searchTerm || filtroEstado !== 'TODOS') && (
-        <div style={styles.emptyResults}>
-          <p>No se encontraron elementos {filtroEstado !== 'TODOS' ? `con estado ${filtroEstado}` : ''} {searchTerm ? `que coincidan con: "${searchTerm}"` : ''}</p>
-          <button 
-            onClick={() => {
-              setSearchTerm('');
-              setFiltroEstado('TODOS');
-            }}
-            style={{
-              padding: '6px 12px',
-              backgroundColor: '#3498db',
-              color: 'white',
-              border: 'none',
+        // Buscar plazas disponibles para cada centro
+        for (const centroId in centrosConExceso) {
+          const centro = availablePlazas.find(p => p.id === centroId);
+          if (centro) {
+            centrosConExceso[centroId].plazas = centro.plazas || 0;
+          }
+        }
+        
+        // Filtrar solo los centros que tienen exceso
+        const excesos = Object.values(centrosConExceso).filter(
+          centro => centro.count > centro.plazas && centro.plazas > 0
+        );
+        
+        if (excesos.length > 0) {
+          return (
+            <div style={{
+              backgroundColor: '#fff5f5',
+              borderLeft: '4px solid #e53e3e',
               borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '14px'
-            }}
-          >
-            Limpiar filtros
-          </button>
-        </div>
-      )}
+              padding: '12px 15px',
+              marginBottom: '20px',
+              fontSize: '14px',
+              color: '#742a2a',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+            }}>
+              <div style={{fontWeight: 'bold', marginBottom: '8px', fontSize: '16px'}}>
+                ⚠️ Se detectaron centros con exceso de asignaciones
+              </div>
+              <div style={{marginBottom: '10px'}}>
+                Los siguientes centros tienen más asignaciones que plazas disponibles:
+              </div>
+              <ul style={{
+                margin: '10px 0',
+                paddingLeft: '25px'
+              }}>
+                {excesos.map(centro => (
+                  <li key={centro.id} style={{marginBottom: '5px'}}>
+                    <strong>{centro.centro}:</strong> {centro.count} asignaciones para {centro.plazas} plazas
+                  </li>
+                ))}
+              </ul>
+              <div style={{marginTop: '10px', fontSize: '13px'}}>
+                Se recomienda ejecutar la verificación y corrección automática de asignaciones.
+              </div>
+            </div>
+          );
+        }
+        
+        return null;
+      })()}
       
+      {/* Filtros de búsqueda */}
+      <div style={styles.searchBar}>
+        <input
+          type="text"
+          placeholder="Buscar por nº de orden, centro, localidad..."
+          value={searchTerm}
+          onChange={(e) => {
+            setSearchTerm(e.target.value);
+            setCurrentPage(1); // Reiniciar página al buscar
+          }}
+          style={styles.input}
+        />
+        <select
+          value={filtroEstado}
+          onChange={(e) => {
+            setFiltroEstado(e.target.value);
+            setCurrentPage(1); // Reiniciar página al filtrar
+          }}
+          style={styles.select}
+        >
+          {estados.map(estado => (
+            <option key={estado} value={estado}>
+              {estado === 'TODOS' ? 'Todos los estados' : estado}
+            </option>
+          ))}
+        </select>
+      </div>
+      
+      {/* Tabla de asignaciones */}
       <div style={styles.tableContainer}>
         <table style={styles.table}>
-          <thead style={styles.tableHeader}>
+          <thead>
             <tr>
-              <th style={{...styles.th, width: '12%'}}>Nº Orden</th>
-              <th style={{...styles.th, width: '20%'}}>Estado</th>
-              <th style={{...styles.th, width: '28%'}}>Centro/Información</th>
-              <th style={{...styles.th, width: '20%'}}>Localidad</th>
-              <th style={{...styles.th, width: '20%'}}>Fecha/Hora</th>
+              <th 
+                style={styles.tableHeader} 
+                onClick={() => handleSort('order')}
+              >
+                <div style={styles.orderContainer}>
+                  Nº Orden
+                  <span style={styles.sortIcon}>
+                    {sortConfig.key === 'order' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
+                  </span>
+                </div>
+              </th>
+              <th 
+                style={styles.tableHeader}
+                onClick={() => handleSort('centro')}
+              >
+                Centro 
+                <span style={styles.sortIcon}>
+                  {sortConfig.key === 'centro' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
+                </span>
+              </th>
+              <th 
+                style={styles.tableHeader}
+                onClick={() => handleSort('localidad')}
+              >
+                Localidad/Municipio
+                <span style={styles.sortIcon}>
+                  {sortConfig.key === 'localidad' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
+                </span>
+              </th>
+              <th 
+                style={styles.tableHeader}
+                onClick={() => handleSort('timestamp')}
+              >
+                Fecha
+                <span style={styles.sortIcon}>
+                  {sortConfig.key === 'timestamp' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
+                </span>
+              </th>
+              <th style={{...styles.tableHeader, textAlign: 'center'}}>Estado</th>
             </tr>
           </thead>
           <tbody>
-            {ordenesOrdenados.map(orden => {
-              // Para cada orden, mostrar todas sus asignaciones
-              const asignacionesDeEsteOrden = asignacionesPorOrden[orden];
-              
-              return asignacionesDeEsteOrden.map((asignacion, index) => {
-                // Convertir timestamp a objeto Date
-                const fecha = new Date(asignacion.timestamp);
-                const fechaFormateada = `${fecha.toLocaleDateString()} ${fecha.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
-                
-                // Destacar órdenes bajos (alta prioridad)
-                const esPrioridad = orden <= 50;
-                
-                // Determinar estilo según el estado
-                let estiloFila = {};
-                let badgeEstilo = {};
-                let estadoTexto = asignacion.estado || 'ASIGNADA';
-                
-                if (asignacion.estado === 'NO_ASIGNABLE' || asignacion.estado === 'FUERA_DE_ORDEN') {
-                  estiloFila = styles.noAsignable;
-                  badgeEstilo = styles.badgeNoAsignable;
-                  estadoTexto = 'NO_ASIGNABLE'; // Unificar todos los textos como NO_ASIGNABLE
-                } else if (asignacion.estado === 'ASIGNADA' || !asignacion.estado) {
-                  badgeEstilo = styles.badgeAsignada;
-                }
-                
-                // Destacar coincidencias del término de búsqueda si existe
-                const destacarSiCoincide = (texto) => {
-                  if (!searchTerm || !texto) return texto;
-                  
-                  const regex = new RegExp(`(${searchTerm})`, 'gi');
-                  const partes = texto.toString().split(regex);
-                  
-                  if (partes.length <= 1) return texto;
-                  
-                  return (
-                    <span>
-                      {partes.map((parte, i) => 
-                        regex.test(parte) ? 
-                          <span key={i} style={{backgroundColor: '#ffff00', fontWeight: 'bold'}}>{parte}</span> : 
-                          parte
-                      )}
-                    </span>
-                  );
-                };
-                
-                return (
-                  <tr 
-                    key={`${orden}-${index}`} 
-                    style={{
-                      ...styles.tr,
-                      ...estiloFila,
-                      backgroundColor: estiloFila.backgroundColor ||
-                        (esPrioridad 
-                          ? '#fff9e6' 
-                          : (index % 2 === 0 ? 'white' : '#f8f9fa'))
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!estiloFila.backgroundColor) {
-                        e.currentTarget.style.backgroundColor = esPrioridad 
-                          ? '#fff3cd' 
-                          : '#f1f3f5';
-                      }
-                    }}
-                    onMouseLeave={(e) => {
-                      if (!estiloFila.backgroundColor) {
-                        e.currentTarget.style.backgroundColor = esPrioridad 
-                          ? '#fff9e6' 
-                          : (index % 2 === 0 ? 'white' : '#f8f9fa');
-                      }
-                    }}
-                  >
-                    <td style={styles.td}>
-                      <span style={{ fontWeight: esPrioridad ? 'bold' : 'normal' }}>
-                        {destacarSiCoincide(orden)}
-                      </span>
-                      {esPrioridad && (
-                        <span style={styles.priorityBadge}>
-                          Alta prioridad
-                        </span>
-                      )}
-                    </td>
-                    <td style={styles.td}>
-                      <span style={{...styles.estadoBadge, ...badgeEstilo}}>
-                        {estadoTexto}
-                      </span>
-                    </td>
-                    <td style={styles.td}>
-                      <div style={styles.centerName}>
-                        {asignacion.estado === 'NO_ASIGNABLE' || asignacion.estado === 'FUERA_DE_ORDEN' 
-                          ? 'No asignado' 
-                          : destacarSiCoincide(asignacion.centro)
-                        }
+            {currentItems.map((asignacion, index) => (
+              <tr key={asignacion.docId || index} style={asignacion.reasignado ? {backgroundColor: '#fff9fb'} : {}}>
+                <td style={styles.tableCell}>
+                  <div style={styles.orderContainer}>
+                    <div style={styles.orderBadge}>{asignacion.order}</div>
+                  </div>
+                </td>
+                <td style={styles.tableCell}>
+                  <div>
+                    <strong>{asignacion.centro}</strong>
+                    {asignacion.reasignado && (
+                      <div style={{fontSize: '12px', color: '#d53f8c', marginTop: '4px'}}>
+                        Reasignado de: {asignacion.centroOriginal}
                       </div>
-                      {/* Mostrar mensaje o razón si existe */}
-                      {asignacion.mensaje && (
-                        <div style={styles.mensajeRazon}>
-                          {destacarSiCoincide(asignacion.mensaje)}
-                        </div>
-                      )}
-                    </td>
-                    <td style={styles.td}>
-                      {asignacion.estado === 'NO_ASIGNABLE' || asignacion.estado === 'FUERA_DE_ORDEN' 
-                        ? '-' 
-                        : destacarSiCoincide(asignacion.localidad)
-                      }
-                    </td>
-                    <td style={styles.td}>
-                      <div style={styles.timestamp}>{fechaFormateada}</div>
-                    </td>
-                  </tr>
-                );
-              });
-            })}
+                    )}
+                  </div>
+                </td>
+                <td style={styles.tableCell}>
+                  {asignacion.localidad}
+                  {asignacion.municipio && asignacion.municipio !== asignacion.localidad && (
+                    <div style={{color: '#718096', fontSize: '12px'}}>{asignacion.municipio}</div>
+                  )}
+                </td>
+                <td style={styles.tableCell}>
+                  {formatearFecha(asignacion.timestamp)}
+                </td>
+                <td style={{...styles.tableCell, textAlign: 'center'}}>
+                  <div style={{
+                    ...styles.badge,
+                    ...(asignacion.reasignado ? styles.badgeReasignado : 
+                       asignacion.estado === 'ASIGNADO' ? styles.badgeSuccess : 
+                       asignacion.estado === 'PENDIENTE' ? styles.badgeWarning : 
+                       styles.badgePrimary)
+                  }}>
+                    {asignacion.reasignado ? 'REASIGNADO' : asignacion.estado || 'ASIGNADO'}
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {currentItems.length === 0 && (
+              <tr>
+                <td colSpan="5" style={{...styles.tableCell, textAlign: 'center', padding: '30px 15px'}}>
+                  No se encontraron asignaciones que coincidan con los filtros.
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
+      </div>
+      
+      {/* Paginación */}
+      {totalPages > 1 && (
+        <div style={styles.pagination}>
+          <div>
+            Mostrando {indexOfFirstItem + 1}-{Math.min(indexOfLastItem, asignacionesFiltradas.length)} de {asignacionesFiltradas.length}
+          </div>
+          <div>
+            <button 
+              style={styles.pageButton} 
+              onClick={() => handlePageChange(1)}
+              disabled={currentPage === 1}
+            >
+              «
+            </button>
+            <button 
+              style={styles.pageButton}
+              onClick={() => handlePageChange(currentPage - 1)}
+              disabled={currentPage === 1}
+            >
+              ‹
+            </button>
+            
+            {/* Generar botones de paginación */}
+            {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+              let pageNumber;
+              if (totalPages <= 5) {
+                pageNumber = i + 1;
+              } else if (currentPage <= 3) {
+                pageNumber = i + 1;
+              } else if (currentPage >= totalPages - 2) {
+                pageNumber = totalPages - 4 + i;
+              } else {
+                pageNumber = currentPage - 2 + i;
+              }
+              
+              return (
+                <button
+                  key={pageNumber}
+                  style={{
+                    ...styles.pageButton,
+                    ...(currentPage === pageNumber ? styles.activePageButton : {})
+                  }}
+                  onClick={() => handlePageChange(pageNumber)}
+                >
+                  {pageNumber}
+                </button>
+              );
+            })}
+            
+            <button 
+              style={styles.pageButton}
+              onClick={() => handlePageChange(currentPage + 1)}
+              disabled={currentPage === totalPages}
+            >
+              ›
+            </button>
+            <button 
+              style={styles.pageButton}
+              onClick={() => handlePageChange(totalPages)}
+              disabled={currentPage === totalPages}
+            >
+              »
+            </button>
+          </div>
+        </div>
+      )}
+      
+      {/* Leyenda */}
+      <div style={styles.leyendaContainer}>
+        <div style={styles.leyendaTitle}>Leyenda de estados</div>
+        <div style={styles.leyendaItems}>
+          <div style={styles.leyendaItem}>
+            <div style={{...styles.badge, ...styles.badgePrimary}}>ASIGNADO</div>
+            <span>Asignación normal</span>
+          </div>
+          <div style={styles.leyendaItem}>
+            <div style={{...styles.badge, ...styles.badgeReasignado}}>REASIGNADO</div>
+            <span>Asignación reubicada por exceso de plazas</span>
+          </div>
+          <div style={styles.leyendaItem}>
+            <div style={{...styles.badge, ...styles.badgeWarning}}>PENDIENTE</div>
+            <span>En proceso de asignación</span>
+          </div>
+        </div>
       </div>
     </div>
   );

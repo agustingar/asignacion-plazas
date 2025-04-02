@@ -16,18 +16,18 @@ import React, { useState, useEffect } from 'react';
  * @returns {JSX.Element} - Componente PlazasDisponibles
  */
 const PlazasDisponibles = ({ 
-  availablePlazas, 
-  assignments,
-  searchTerm,
+  availablePlazas = [], 
+  assignments = [],
+  searchTerm = '',
   setSearchTerm,
   orderNumber,
   setOrderNumber,
-  centrosSeleccionados,
+  centrosSeleccionados = [],
   setCentrosSeleccionados,
   handleOrderSubmit,
-  isProcessing
+  isProcessing = false
 }) => {
-  // Estados para paginación y filtro
+  const [error, setError] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1200);
@@ -36,6 +36,13 @@ const PlazasDisponibles = ({
   const [filterDepartamento, setFilterDepartamento] = useState('');
   const [filterMunicipio, setFilterMunicipio] = useState('');
   const [submitMessage, setSubmitMessage] = useState(null);
+  
+  // Validar props requeridas
+  useEffect(() => {
+    if (!setSearchTerm || !setOrderNumber || !setCentrosSeleccionados || !handleOrderSubmit) {
+      console.error('PlazasDisponibles: Faltan funciones de callback requeridas');
+    }
+  }, [setSearchTerm, setOrderNumber, setCentrosSeleccionados, handleOrderSubmit]);
   
   // Efecto para manejar el cambio de tamaño de ventana
   useEffect(() => {
@@ -48,6 +55,95 @@ const PlazasDisponibles = ({
       window.removeEventListener('resize', handleResize);
     };
   }, []);
+  
+  // Validar y normalizar el número de orden
+  const handleOrderNumberChange = (e) => {
+    const value = e.target.value;
+    
+    // Limpiar error previo
+    setError('');
+    
+    // Permitir campo vacío para borrar
+    if (value === '') {
+      setOrderNumber('');
+      return;
+    }
+    
+    // Validar que sea un número
+    const numberValue = Number(value);
+    if (isNaN(numberValue)) {
+      setError('Por favor ingrese un número válido');
+      return;
+    }
+    
+    // Validar rango
+    if (numberValue < 1) {
+      setError('El número de orden debe ser mayor a 0');
+      return;
+    }
+    
+    // Validar que no tenga decimales
+    if (!Number.isInteger(numberValue)) {
+      setError('El número de orden debe ser un número entero');
+      return;
+    }
+    
+    setOrderNumber(numberValue);
+  };
+  
+  // Validar selección de centros
+  const handleCentroSelection = (centroId) => {
+    if (!centroId) {
+      console.error('ID de centro inválido');
+      return;
+    }
+    
+    setCentrosSeleccionados(prevSelected => {
+      // Verificar si ya está seleccionado
+      if (prevSelected.includes(centroId)) {
+        return prevSelected.filter(id => id !== centroId);
+      }
+      
+      // Verificar límite de selecciones
+      if (prevSelected.length >= 5) {
+        setError('No se pueden seleccionar más de 5 centros');
+        return prevSelected;
+      }
+      
+      return [...prevSelected, centroId];
+    });
+  };
+  
+  // Validar envío del formulario
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    setError('');
+    
+    // Validar número de orden
+    if (!orderNumber) {
+      setError('Por favor ingrese un número de orden');
+      return;
+    }
+    
+    // Validar selección de centros
+    if (!centrosSeleccionados.length) {
+      setError('Por favor seleccione al menos un centro');
+      return;
+    }
+    
+    // Validar que los centros seleccionados existan y tengan plazas disponibles
+    const centrosInvalidos = centrosSeleccionados.filter(centroId => {
+      const centro = availablePlazas.find(p => p.id === centroId);
+      return !centro || centro.plazas <= centro.asignadas;
+    });
+    
+    if (centrosInvalidos.length > 0) {
+      setError('Algunos centros seleccionados ya no tienen plazas disponibles');
+      return;
+    }
+    
+    handleOrderSubmit(orderNumber, centrosSeleccionados);
+  };
   
   // Determinar si estamos en móvil
   const isMobile = windowWidth < 768;
@@ -154,55 +250,59 @@ const PlazasDisponibles = ({
   
   // Manejar selección de centro
   const handleCentroChange = (e) => {
-    const selectedId = Number(e.target.value);
-    
-    if (e.target.checked) {
-      // Agregar a seleccionados si no está ya
-      if (!centrosSeleccionados.includes(selectedId)) {
-        setCentrosSeleccionados([...centrosSeleccionados, selectedId]);
+    try {
+      const selectedId = Number(e.target.value);
+      
+      if (!selectedId || isNaN(selectedId)) {
+        console.error("ID de centro inválido:", e.target.value);
+        return;
       }
-    } else {
-      // Quitar de seleccionados y reordenar los índices
-      const newSeleccionados = centrosSeleccionados.filter(id => id !== selectedId);
-      setCentrosSeleccionados(newSeleccionados);
+      
+      if (e.target.checked) {
+        // Agregar a seleccionados si no está ya
+        if (!centrosSeleccionados.includes(selectedId)) {
+          setCentrosSeleccionados(prevSeleccionados => [...prevSeleccionados, selectedId]);
+        }
+      } else {
+        // Quitar de seleccionados
+        setCentrosSeleccionados(prevSeleccionados => 
+          prevSeleccionados.filter(id => id !== selectedId)
+        );
+      }
+    } catch (error) {
+      console.error("Error al seleccionar centro:", error);
     }
-  };
-
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    
-    // Validar número de orden
-    if (!orderNumber || isNaN(parseInt(orderNumber))) {
-      setSubmitMessage({ message: "Por favor, ingresa un número de orden válido", type: "error" });
-      return;
-    }
-    
-    // Validar que haya centros seleccionados
-    if (centrosSeleccionados.length === 0) {
-      setSubmitMessage({ message: "Por favor, selecciona al menos un centro", type: "error" });
-      return;
-    }
-    
-    // Enviar centros seleccionados al componente padre
-    handleOrderSubmit(e);
-    
-    // Limpiar selección después de enviar
-    setOrderNumber("");
-    setCentrosSeleccionados([]);
-    
-    // Mostrar mensaje de éxito
-    setSubmitMessage({ message: "Solicitud enviada correctamente. Redirigiendo...", type: "success" });
-    
-    // Redireccionar a la pestaña de solicitudes pendientes después de 2 segundos
-    setTimeout(() => {
-      window.location.href = "#solicitudes";
-      window.location.reload(); // Recargar la página
-    }, 2000);
   };
 
   return (
     <div className="plazas-container">
-
+      {/* Mostrar mensaje de envío si existe */}
+      {submitMessage && (
+        <div className={`submit-message ${submitMessage.type}`} style={{
+          padding: '10px 15px',
+          margin: '10px 0',
+          borderRadius: '4px',
+          backgroundColor: submitMessage.type === 'success' ? '#d4edda' : '#f8d7da',
+          color: submitMessage.type === 'success' ? '#155724' : '#721c24',
+          border: `1px solid ${submitMessage.type === 'success' ? '#c3e6cb' : '#f5c6cb'}`
+        }}>
+          {submitMessage.message}
+        </div>
+      )}
+      
+      {/* Información de totales */}
+      <div className="totals-info" style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        padding: '10px 15px',
+        backgroundColor: '#f8f9fa',
+        borderRadius: '4px',
+        marginBottom: '15px'
+      }}>
+        <div>Total de plazas: <strong>{totalPlazas}</strong></div>
+        <div>Plazas asignadas: <strong>{totalAsignadas}</strong></div>
+        <div>Plazas disponibles: <strong>{totalDisponibles}</strong></div>
+      </div>
       
       {/* Formulario para solicitar plaza */}
       <div style={{ 
@@ -241,7 +341,7 @@ const PlazasDisponibles = ({
               type="number" 
               id="orderNumber"
               value={orderNumber}
-              onChange={(e) => setOrderNumber(e.target.value)}
+              onChange={handleOrderNumberChange}
               style={{ 
                 width: '100%', 
                 padding: '12px 15px', 
@@ -508,7 +608,6 @@ const PlazasDisponibles = ({
                 
                 // Verificar si está en la lista de seleccionados y su orden
                 const seleccionado = centrosSeleccionados.includes(plaza.id);
-                const ordenSeleccion = seleccionado ? centrosSeleccionados.indexOf(plaza.id) + 1 : null;
                 
                 // Determinar el color de fondo según disponibilidad y selección
                 let rowColor = index % 2 === 0 ? 'white' : '#f9f9f9';
