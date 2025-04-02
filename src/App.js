@@ -625,19 +625,67 @@ function App() {
       // Cargar asignaciones para mostrar en el panel de admin
       console.log("Procesando asignaciones para mostrar...");
       
+      // Crear índices de búsqueda para centros (por ID y por nombre)
+      const centrosPorId = {};
+      const centrosPorNombre = {};
+      
+      // Indexar centros por ID y por nombre para búsqueda eficiente
+      Object.values(centrosData).forEach(centro => {
+        centrosPorId[centro.id] = centro;
+        if (centro.nombre) {
+          centrosPorNombre[centro.nombre.toUpperCase()] = centro;
+        }
+      });
+      
+      console.log("Centros indexados:", {
+        porId: Object.keys(centrosPorId).length,
+        porNombre: Object.keys(centrosPorNombre).length
+      });
+      
       let asignacionesData = {};
       asignacionesSnapshot.forEach(doc => {
         const data = doc.data();
         console.log("Asignación encontrada:", doc.id, data);
         if (data) {
+          // Buscar centro por ID
+          let centroBuscado = centrosPorId[data.centerId];
+          
+          // Si no se encuentra por ID, intentar buscar por nombre
+          if (!centroBuscado && data.centerId) {
+            // Normalizar a mayúsculas para la búsqueda
+            const nombreBusqueda = data.centerId.toUpperCase();
+            centroBuscado = centrosPorNombre[nombreBusqueda];
+            
+            if (centroBuscado) {
+              console.log(`Centro encontrado por nombre: "${data.centerId}" corresponde a ID=${centroBuscado.id}`);
+            }
+          }
+          
+          // Si no se encuentra, intentar por centerName si existe
+          if (!centroBuscado && data.centerName) {
+            const nombreBusqueda = data.centerName.toUpperCase();
+            centroBuscado = centrosPorNombre[nombreBusqueda];
+            
+            if (centroBuscado) {
+              console.log(`Centro encontrado por centerName: "${data.centerName}" corresponde a ID=${centroBuscado.id}`);
+            }
+          }
+          
+          // Obtener el nombre del centro del objeto encontrado o usar el que viene en los datos
+          const nombreCentro = centroBuscado ? 
+                              centroBuscado.nombre : 
+                              data.centerName || data.centerId || "Centro no encontrado";
+          
           asignacionesData[doc.id] = {
             id: doc.id,
             numeroOrden: data.order || data.numeroOrden || 0,
             centerId: data.centerId || data.centro || "",
             centroPrevio: data.centroPrevio || data.centroAnterior || "",
-            nombreCentro: centrosData[data.centerId]?.nombre || data.centerName || "Centro no encontrado",
+            nombreCentro: nombreCentro,
             timestamp: data.timestamp || Date.now(),
-            fechaAsignacion: data.fechaAsignacion || new Date().toISOString()
+            fechaAsignacion: data.fechaAsignacion || new Date().toISOString(),
+            // Guardar referencia al centro real para calcular plazas disponibles
+            centroAsociado: centroBuscado
           };
         }
       });
