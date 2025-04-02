@@ -27,8 +27,8 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
     const invalidAssignments = assignments.filter(a => 
       !a || 
       typeof a !== 'object' || 
-      !a.order || 
-      !a.centro || 
+      (!a.numeroOrden && !a.order) || 
+      (!a.nombreCentro && !a.centro) || 
       !a.timestamp
     );
 
@@ -101,8 +101,19 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
     return [...asignacionesArray].sort((a, b) => {
       if (!a || !b) return 0;
       
-      let aValue = a[sortConfig.key];
-      let bValue = b[sortConfig.key];
+      let aValue, bValue;
+      
+      // Manejar diferentes nombres de propiedades
+      if (sortConfig.key === 'order') {
+        aValue = a.numeroOrden !== undefined ? a.numeroOrden : a.order;
+        bValue = b.numeroOrden !== undefined ? b.numeroOrden : b.order;
+      } else if (sortConfig.key === 'centro') {
+        aValue = a.nombreCentro || a.centro || '';
+        bValue = b.nombreCentro || b.centro || '';
+      } else {
+        aValue = a[sortConfig.key];
+        bValue = b[sortConfig.key];
+      }
       
       // Convertir a número si es el campo 'order'
       if (sortConfig.key === 'order') {
@@ -132,8 +143,8 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
         if (!asignacion) return false;
 
         const searchFields = [
-          asignacion.order?.toString(),
-          asignacion.centro,
+          (asignacion.numeroOrden || asignacion.order)?.toString(),
+          asignacion.nombreCentro || asignacion.centro,
           asignacion.localidad,
           asignacion.municipio
         ].filter(Boolean);
@@ -372,7 +383,7 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
   // Calcular estadísticas
   const estadisticas = {
     total: asignacionesFiltradas.length,
-    centros: [...new Set(asignacionesFiltradas.map(a => a.centro))].length,
+    centros: [...new Set(asignacionesFiltradas.map(a => a.nombreCentro || a.centro))].length,
     reasignados: asignacionesFiltradas.filter(a => a.reasignado).length
   };
   
@@ -408,13 +419,13 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
           if (!asignacion) return acc;
           
           // Agrupar por centro
-          const centroId = asignacion.id;
+          const centroId = asignacion.centerId || asignacion.id;
           if (!centroId) return acc;
           
           if (!acc[centroId]) {
             acc[centroId] = {
               id: centroId,
-              centro: asignacion.centro || 'Centro desconocido',
+              centro: asignacion.nombreCentro || asignacion.centro || 'Centro desconocido',
               count: 0,
               plazas: 0
             };
@@ -533,7 +544,10 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
                 style={styles.tableHeader}
                 onClick={() => handleSort('localidad')}
               >
-                Localidad/Municipio
+                Ubicación
+                <span style={{fontSize: '12px', fontWeight: 'normal', display: 'block'}}>
+                  Localidad / Municipio
+                </span>
                 <span style={styles.sortIcon}>
                   {sortConfig.key === 'localidad' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                 </span>
@@ -554,24 +568,40 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
               <tr key={asignacion.docId || index} style={asignacion.reasignado ? {backgroundColor: '#fff9fb'} : {}}>
                 <td style={styles.tableCell}>
                   <div style={styles.orderContainer}>
-                    <div style={styles.orderBadge}>{asignacion.order}</div>
+                    <div style={styles.orderBadge}>{asignacion.numeroOrden || asignacion.order}</div>
                   </div>
                 </td>
                 <td style={styles.tableCell}>
                   <div>
-                    <strong>{asignacion.centro}</strong>
+                    <strong>{asignacion.nombreCentro || asignacion.centerName || asignacion.centro}</strong>
                     {asignacion.reasignado && (
                       <div style={{fontSize: '12px', color: '#d53f8c', marginTop: '4px'}}>
-                        Reasignado de: {asignacion.centroOriginal}
+                        Reasignado de: {asignacion.centroOriginal || asignacion.centroPrevio}
                       </div>
                     )}
                   </div>
                 </td>
                 <td style={styles.tableCell}>
-                  {asignacion.localidad}
-                  {asignacion.municipio && asignacion.municipio !== asignacion.localidad && (
-                    <div style={{color: '#718096', fontSize: '12px'}}>{asignacion.municipio}</div>
-                  )}
+                  <div>
+                    {asignacion.localidad && (
+                      <div style={{fontWeight: 'medium'}}>{asignacion.localidad}</div>
+                    )}
+                    {asignacion.municipio && asignacion.municipio !== asignacion.localidad && (
+                      <div style={{
+                        color: '#4a5568',
+                        fontSize: '13px',
+                        marginTop: asignacion.localidad ? '3px' : '0',
+                        display: 'flex',
+                        alignItems: 'center'
+                      }}>
+                        <span style={{marginRight: '4px'}}>📍</span>
+                        {asignacion.municipio}
+                      </div>
+                    )}
+                    {!asignacion.localidad && !asignacion.municipio && (
+                      <span style={{color: '#a0aec0', fontStyle: 'italic'}}></span>
+                    )}
+                  </div>
                 </td>
                 <td style={styles.tableCell}>
                   {formatearFecha(asignacion.timestamp)}

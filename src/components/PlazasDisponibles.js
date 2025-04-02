@@ -169,12 +169,14 @@ const PlazasDisponibles = ({
       if (searchTerm) {
         const searchTermLower = searchTerm.toLowerCase();
         const matchesSearch = 
-          plaza.centro?.toLowerCase().includes(searchTermLower) ||
-          plaza.localidad?.toLowerCase().includes(searchTermLower) ||
-          plaza.municipio?.toLowerCase().includes(searchTermLower) ||
-          plaza.codigo?.toLowerCase().includes(searchTermLower) ||
-          plaza.asi?.toLowerCase().includes(searchTermLower) ||
-          plaza.departamento?.toLowerCase().includes(searchTermLower);
+          (plaza.centro && plaza.centro.toLowerCase().includes(searchTermLower)) ||
+          (plaza.nombre && plaza.nombre.toLowerCase().includes(searchTermLower)) ||
+          (plaza.nombreCentro && plaza.nombreCentro.toLowerCase().includes(searchTermLower)) ||
+          (plaza.localidad && plaza.localidad.toLowerCase().includes(searchTermLower)) ||
+          (plaza.municipio && plaza.municipio.toLowerCase().includes(searchTermLower)) ||
+          (plaza.codigo && plaza.codigo.toLowerCase().includes(searchTermLower)) ||
+          (plaza.asi && plaza.asi.toLowerCase().includes(searchTermLower)) ||
+          (plaza.departamento && plaza.departamento.toLowerCase().includes(searchTermLower));
         
         if (!matchesSearch) return false;
       }
@@ -393,8 +395,16 @@ const PlazasDisponibles = ({
                   const centro = availablePlazas.find(p => p.id === id);
                   return centro ? (
                     <li key={id} style={{ marginBottom: '8px' }}>
-                      <strong>{centro.centro}</strong> 
-                      <span style={{ color: '#555' }}>({centro.municipio})</span>
+                      <strong>{centro.nombre || centro.nombreCentro || centro.centro}</strong> 
+                      {centro.localidad && (
+                        <span style={{ color: '#555', marginLeft: '5px' }}>- {centro.localidad}</span>
+                      )}
+                      {centro.municipio && centro.municipio !== centro.localidad && (
+                        <span style={{ marginLeft: '5px', color: '#4a5568', fontSize: '13px' }}>
+                          <span style={{ marginRight: '4px' }}>📍</span>
+                          {centro.municipio}
+                        </span>
+                      )}
                       {index === 0 && (
                         <span style={{
                           display: 'inline-block',
@@ -584,7 +594,7 @@ const PlazasDisponibles = ({
                 <th style={{width: '60px'}}></th>
                 <th>Código</th>
                 <th className="centro-column">Centro</th>
-                <th>Municipio</th>
+                <th>Ubicación</th>
                 <th>Plazas</th>
                 {windowWidth < 768 && <th style={{width: '40px'}}>Info</th>}
               </tr>
@@ -664,10 +674,31 @@ const PlazasDisponibles = ({
                       </div>
                     </td>
                     <td>{plaza.codigo}</td>
-                    <td className="centro-column" title={plaza.centro}>
-                      {plaza.centro}
+                    <td className="centro-column" title={plaza.nombre || plaza.nombreCentro || plaza.centro}>
+                      {plaza.nombre || plaza.nombreCentro || plaza.centro}
                     </td>
-                    <td>{plaza.municipio}</td>
+                    <td>
+                      <div>
+                        {plaza.localidad && (
+                          <div style={{fontWeight: 'medium'}}>{plaza.localidad}</div>
+                        )}
+                        {plaza.municipio && plaza.municipio !== plaza.localidad && (
+                          <div style={{
+                            color: '#4a5568',
+                            fontSize: '13px',
+                            marginTop: plaza.localidad ? '3px' : '0',
+                            display: 'flex',
+                            alignItems: 'center'
+                          }}>
+                            <span style={{marginRight: '4px'}}>📍</span>
+                            {plaza.municipio}
+                          </div>
+                        )}
+                        {!plaza.localidad && !plaza.municipio && (
+                          <span style={{color: '#a0aec0', fontStyle: 'italic'}}></span>
+                        )}
+                      </div>
+                    </td>
                     <td>{plaza.plazas}</td>
                     {windowWidth < 768 && (
                       <td>
@@ -740,7 +771,7 @@ const PlazasDisponibles = ({
         <div className="info-modal">
           <div className="info-content">
             <h3>Información del centro</h3>
-            <p><strong>Centro:</strong> {infoModal.centro}</p>
+            <p><strong>Centro:</strong> {infoModal.nombre || infoModal.nombreCentro || infoModal.centro}</p>
             <p><strong>Código:</strong> {infoModal.codigo}</p>
             <p><strong>Municipio:</strong> {infoModal.municipio}</p>
             <p><strong>Departamento:</strong> {infoModal.departamento}</p>

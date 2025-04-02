@@ -14,6 +14,7 @@ import Dashboard from './components/Dashboard';
 import PlazasDisponibles from './components/PlazasDisponibles';
 import SolicitudesPendientes from './components/SolicitudesPendientes';
 import Footer from './components/Footer';
+import Admin from './components/Admin'; // Importar el componente Admin
 
 function App() {
   // Estados principales
@@ -560,35 +561,111 @@ function App() {
       
       console.log("Conteo de asignaciones por centro:", asignacionesPorCentro);
       
-      let centrosData = {};
+      // Creamos estructuras para detectar duplicados
+      const idsUnicos = new Set();
+      const codigosUnicos = new Set();
+      const nombresUnicos = new Map(); // Usamos Map para guardar {nombreNormalizado: id}
+      const todosCentros = [];
+      
+      // Primera pasada: recopilar y normalizar todos los centros
       centrosSnapshot.forEach(doc => {
         const data = doc.data();
-        console.log("Centro encontrado:", doc.id, data);
         
-        // Determinar el número total de plazas
+        // Normalizar el nombre para detectar duplicados
+        const nombre = data.nombre || data.centro || "Centro sin nombre";
+        const nombreNormalizado = nombre.toLowerCase()
+          .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // Eliminar acentos
+          .replace(/\s+/g, ' ').trim(); // Normalizar espacios
+        
+        // Obtener código si existe
+        const codigo = data.codigoCentro || data.codigo || "";
+        
+        // Datos normalizados del centro
         const plazasTotal = parseInt(data.plazas || data.plazasTotal || 0, 10);
-        
-        // Obtener asignaciones actuales para este centro desde nuestro conteo
         const plazasAsignadas = asignacionesPorCentro[doc.id] || 0;
-        
-        // Calcular plazas disponibles
         const plazasDisponibles = Math.max(0, plazasTotal - plazasAsignadas);
         
-        centrosData[doc.id] = {
+        // Añadir a la lista completa con metadatos para filtrado posterior
+        todosCentros.push({
           id: doc.id,
-          nombre: data.nombre || data.centro || "Centro sin nombre",
-          // Usar nombres de campos para compatibilidad con PlazasDisponibles.js
+          docId: doc.id, // Mantener referencia al documento original
+          nombre,
+          nombreNormalizado,
+          codigo,
           plazas: plazasTotal,
           asignadas: plazasAsignadas,
-          // También mantener campos normalizados
-          plazasDisponibles: plazasDisponibles,
+          plazasDisponibles,
           plazasOcupadas: plazasAsignadas,
-          plazasTotal: plazasTotal,
+          plazasTotal,
           direccion: data.direccion || "",
-          codigoCentro: data.codigoCentro || data.id || "",
-          estadoCentro: data.estadoCentro || "Activo"
-        };
+          codigoCentro: codigo,
+          estadoCentro: data.estadoCentro || "Activo",
+          municipio: data.municipio || "",
+          localidad: data.localidad || "",
+          // Información de duplicidad (se llenará después)
+          esDuplicado: false,
+          duplicadoDe: null
+        });
       });
+      
+      console.log(`Se encontraron ${todosCentros.length} centros en total antes de filtrar`);
+      
+      // Segunda pasada: marcar duplicados
+      for (let i = 0; i < todosCentros.length; i++) {
+        const centro = todosCentros[i];
+        
+        // Si ya está marcado como duplicado, continuar
+        if (centro.esDuplicado) continue;
+        
+        // Verificar si el ID ya fue procesado
+        if (idsUnicos.has(centro.id)) {
+          centro.esDuplicado = true;
+          continue;
+        }
+        
+        // Verificar si el código ya fue procesado (solo si tiene código)
+        if (centro.codigo && codigosUnicos.has(centro.codigo)) {
+          // Marcar como posible duplicado, pero seguir procesando
+          console.warn(`Posible duplicado por código: ${centro.codigo} - ${centro.nombre}`);
+        }
+        
+        // Verificar si el nombre normalizado ya fue procesado
+        if (nombresUnicos.has(centro.nombreNormalizado)) {
+          const idOriginal = nombresUnicos.get(centro.nombreNormalizado);
+          console.warn(`Duplicado por nombre: "${centro.nombre}" duplica a ID=${idOriginal}`);
+          centro.esDuplicado = true;
+          centro.duplicadoDe = idOriginal;
+          continue;
+        }
+        
+        // Si llegamos aquí, este centro es único hasta ahora
+        idsUnicos.add(centro.id);
+        if (centro.codigo) codigosUnicos.add(centro.codigo);
+        nombresUnicos.set(centro.nombreNormalizado, centro.id);
+      }
+      
+      // Tercera pasada: filtrar duplicados y limitar a 366 centros
+      const centrosFiltrados = todosCentros.filter(centro => !centro.esDuplicado);
+      
+      console.log(`Después de eliminar duplicados, quedan ${centrosFiltrados.length} centros`);
+      
+      // Si todavía tenemos más de 366 centros, limitamos por prioridad
+      // (asumimos que los centros con más plazas son más importantes)
+      let centrosFinales = centrosFiltrados;
+      if (centrosFinales.length > 366) {
+        console.warn(`Aún hay más centros (${centrosFinales.length}) de los esperados (366). Limitando...`);
+        
+        // Ordenar por número de plazas (mayor a menor) y tomar los primeros 366
+        centrosFinales = [...centrosFinales].sort((a, b) => b.plazasTotal - a.plazasTotal).slice(0, 366);
+      }
+      
+      // Convertir a objeto para mantener compatibilidad con el resto del código
+      let centrosData = {};
+      centrosFinales.forEach(centro => {
+        centrosData[centro.id] = centro;
+      });
+      
+      console.log(`Finalmente se cargarán ${Object.keys(centrosData).length} centros`);
       
       // Si no se encontraron centros, intentar crear algunos por defecto para diagnóstico
       if (Object.keys(centrosData).length === 0) {
@@ -603,7 +680,9 @@ function App() {
           plazasTotal: 10,
           direccion: "Dirección de prueba",
           codigoCentro: "CP001",
-          estadoCentro: "Activo"
+          estadoCentro: "Activo",
+          municipio: "Municipio de Prueba 1",
+          localidad: "Localidad de Prueba 1"
         };
         
         centrosData["centro2"] = {
@@ -616,11 +695,14 @@ function App() {
           plazasTotal: 7,
           direccion: "Otra dirección",
           codigoCentro: "CP002",
-          estadoCentro: "Activo"
+          estadoCentro: "Activo",
+          municipio: "Municipio de Prueba 2",
+          localidad: "Localidad de Prueba 2"
         };
       }
       
       console.log("Centros procesados:", Object.keys(centrosData).length);
+      
       
       // Cargar asignaciones para mostrar en el panel de admin
       console.log("Procesando asignaciones para mostrar...");
@@ -723,7 +805,10 @@ function App() {
             timestamp: data.timestamp || Date.now(),
             fechaAsignacion: data.fechaAsignacion || new Date().toISOString(),
             // Guardar referencia al centro real para calcular plazas disponibles
-            centroAsociado: centroBuscado
+            centroAsociado: centroBuscado,
+            // Añadir municipio y localidad
+            municipio: data.municipio || (centroBuscado ? centroBuscado.municipio : ""),
+            localidad: data.localidad || (centroBuscado ? centroBuscado.localidad : "")
           };
         }
       });
@@ -818,25 +903,42 @@ function App() {
       // Actualizar plazas disponibles para mostrar en el dashboard
       let plazasDisponiblesPorCentro = {};
       Object.values(centrosData).forEach(centro => {
+        // Calcular plazas de manera consistente
+        const plazasTotal = centro.plazasTotal || centro.plazas || 0;
+        const plazasOcupadas = centro.asignadas || centro.plazasOcupadas || 0;
+        const plazasDisponibles = centro.plazasDisponibles || Math.max(0, plazasTotal - plazasOcupadas);
+        
         plazasDisponiblesPorCentro[centro.id] = {
           id: centro.id,
           nombre: centro.nombre,
-          plazas: centro.plazas,
-          asignadas: centro.asignadas,
-          plazasDisponibles: centro.plazasDisponibles,
-          plazasTotal: centro.plazasTotal,
+          plazas: plazasTotal, // Usar plazasTotal para consistencia
+          asignadas: plazasOcupadas, // Usar plazasOcupadas para consistencia
+          plazasDisponibles: plazasDisponibles,
+          plazasTotal: plazasTotal,
+          plazasOcupadas: plazasOcupadas,
           codigoCentro: centro.codigoCentro,
-          estadoCentro: centro.estadoCentro
+          estadoCentro: centro.estadoCentro,
+          municipio: centro.municipio || "",
+          localidad: centro.localidad || ""
         };
       });
       
       setPlazasDisponibles(plazasDisponiblesPorCentro);
       
+      // Calcular estadísticas totales
+      const totalPlazas = Object.values(centrosData).reduce((sum, c) => sum + (c.plazasTotal || c.plazas || 0), 0);
+      const totalAsignadasCount = Object.values(centrosData).reduce((sum, c) => sum + (c.asignadas || c.plazasOcupadas || 0), 0);
+      const totalDisponiblesCount = Object.values(centrosData).reduce((sum, c) => {
+        const plazasTotal = c.plazasTotal || c.plazas || 0;
+        const plazasOcupadas = c.asignadas || c.plazasOcupadas || 0;
+        return sum + Math.max(0, plazasTotal - plazasOcupadas);
+      }, 0);
+      
       console.log("Datos de plazas actualizados. Totales:", {
         totalCentros: Object.keys(centrosData).length,
-        totalPlazas: Object.values(centrosData).reduce((sum, c) => sum + c.plazasTotal, 0),
-        plazasAsignadas: Object.values(centrosData).reduce((sum, c) => sum + c.asignadas, 0),
-        plazasDisponibles: Object.values(centrosData).reduce((sum, c) => sum + c.plazasDisponibles, 0)
+        totalPlazas: totalPlazas,
+        plazasAsignadas: totalAsignadasCount,
+        plazasDisponibles: totalDisponiblesCount
       });
       
       console.log("Datos cargados correctamente:", {
@@ -858,13 +960,72 @@ function App() {
   const setupFirebaseListeners = () => {
     // Listener para los centros
     const unsubscribeCentros = onSnapshot(collection(db, "centros"), (snapshot) => {
-      const centrosData = [];
+      // Reproducir la misma lógica de filtrado que en cargarDatosDesdeFirebase
+      const idsUnicos = new Set();
+      const nombresUnicos = new Map();
+      const todosCentros = [];
+      
+      // Primera pasada: recopilar todos los centros
       snapshot.forEach((doc) => {
-        centrosData.push({ ...doc.data(), docId: doc.id });
+        const data = doc.data();
+        
+        // Normalizar el nombre para detectar duplicados
+        const nombre = data.nombre || data.centro || "Centro sin nombre";
+        const nombreNormalizado = nombre.toLowerCase()
+          .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // Eliminar acentos
+          .replace(/\s+/g, ' ').trim(); // Normalizar espacios
+        
+        // Añadir a la lista completa
+        todosCentros.push({
+          ...data,
+          docId: doc.id,
+          id: doc.id,
+          nombre: nombre,
+          nombreNormalizado: nombreNormalizado,
+          esDuplicado: false,
+          duplicadoDe: null
+        });
       });
       
-      if (centrosData.length > 0) {
-        setAvailablePlazas(centrosData);
+      // Segunda pasada: marcar duplicados
+      for (let i = 0; i < todosCentros.length; i++) {
+        const centro = todosCentros[i];
+        
+        // Si ya está marcado como duplicado, continuar
+        if (centro.esDuplicado) continue;
+        
+        // Verificar si el ID ya fue procesado
+        if (idsUnicos.has(centro.id)) {
+          centro.esDuplicado = true;
+          continue;
+        }
+        
+        // Verificar si el nombre normalizado ya fue procesado
+        if (nombresUnicos.has(centro.nombreNormalizado)) {
+          centro.esDuplicado = true;
+          centro.duplicadoDe = nombresUnicos.get(centro.nombreNormalizado);
+          continue;
+        }
+        
+        // Si llegamos aquí, este centro es único hasta ahora
+        idsUnicos.add(centro.id);
+        nombresUnicos.set(centro.nombreNormalizado, centro.id);
+      }
+      
+      // Filtrar duplicados
+      let centrosFiltrados = todosCentros.filter(centro => !centro.esDuplicado);
+      
+      // Limitar a 366 centros si hay más
+      if (centrosFiltrados.length > 366) {
+        // Ordenar por número de plazas (mayor a menor)
+        centrosFiltrados = [...centrosFiltrados].sort((a, b) => 
+          (b.plazas || b.plazasTotal || 0) - (a.plazas || a.plazasTotal || 0)
+        ).slice(0, 366);
+      }
+      
+      if (centrosFiltrados.length > 0) {
+        setAvailablePlazas(centrosFiltrados);
+        console.log(`Listener: Actualizados ${centrosFiltrados.length} centros filtrados`);
       }
     });
     
@@ -3189,653 +3350,23 @@ function App() {
 
   // Renderizado condicional basado en la ruta
   if (isAdminView) {
-    // Si estamos en modo admin pero no autenticado
-    if (!isAdminAuthenticated) {
-      return (
-        <div style={{
-          maxWidth: '1280px',
-          margin: '0 auto',
-          padding: '20px',
-          fontFamily: 'Arial, sans-serif',
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          minHeight: '100vh',
-          flexDirection: 'column'
-        }}>
-          <h1 style={{ marginBottom: '30px', color: '#2c3e50' }}>Panel de Administración</h1>
-          
-          <div style={{ 
-            backgroundColor: 'white', 
-            padding: '30px', 
-            borderRadius: '10px',
-            boxShadow: '0 4px 15px rgba(0,0,0,0.1)',
-            width: '100%',
-            maxWidth: '400px'
-          }}>
-            <h2 style={{ textAlign: 'center', marginBottom: '25px' }}>Autenticación Requerida</h2>
-            
-            {adminAuthAttempted && (
-              <div style={{
-                backgroundColor: '#f8d7da',
-                color: '#721c24',
-                padding: '10px',
-                borderRadius: '5px',
-                marginBottom: '15px',
-                textAlign: 'center'
-              }}>
-                Contraseña incorrecta. Inténtalo de nuevo.
-              </div>
-            )}
-            
-            <div style={{ marginBottom: '20px' }}>
-              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>
-                Contraseña de Administrador:
-              </label>
-              <input
-                type="password"
-                value={adminPassword}
-                onChange={(e) => setAdminPassword(e.target.value)}
-                style={{
-                  width: '100%',
-                  padding: '12px',
-                  border: '1px solid #ddd',
-                  borderRadius: '5px',
-                  fontSize: '16px'
-                }}
-                placeholder="Ingrese la contraseña"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    if (adminPassword === 'SoyAdmin') {
-                      setIsAdminAuthenticated(true);
-                    } else {
-                      setAdminAuthAttempted(true);
-                    }
-                  }
-                }}
-              />
-            </div>
-            
-            <button
-              onClick={() => {
-                if (adminPassword === 'SoyAdmin') {
-                  setIsAdminAuthenticated(true);
-                } else {
-                  setAdminAuthAttempted(true);
-                }
-              }}
-              style={{
-                width: '100%',
-                padding: '12px',
-                backgroundColor: '#3498db',
-                color: 'white',
-                border: 'none',
-                borderRadius: '5px',
-                fontSize: '16px',
-                fontWeight: 'bold',
-                cursor: 'pointer'
-              }}
-            >
-              Acceder
-            </button>
-            
-            <div style={{ marginTop: '20px', textAlign: 'center' }}>
-              <a 
-                href="/"
-                style={{
-                  color: '#3498db',
-                  textDecoration: 'none'
-                }}
-              >
-                Volver a la página principal
-              </a>
-            </div>
-          </div>
-        </div>
-      );
-    }
-    
-    // Si ya está autenticado, mostrar el panel de administración
     return (
-      <div style={{
-        maxWidth: '1280px',
-        margin: '0 auto',
-        padding: '20px',
-        fontFamily: 'Arial, sans-serif'
-      }}>
-        <h1 style={{ textAlign: 'center', marginBottom: '20px' }}>Panel de Administración</h1>
-        
-        {/* Información del panel de administración */}
-        <div style={{ 
-          backgroundColor: '#f8f9fa', 
-          padding: '15px', 
-          borderRadius: '10px',
-          marginBottom: '20px',
-          textAlign: 'center',
-          border: '1px solid #e9ecef'
-        }}>
-          <h3 style={{ marginTop: 0, color: '#2c3e50' }}>Bienvenido al Panel de Administración</h3>
-          <p>
-            Desde aquí puede gestionar las solicitudes pendientes sin que aparezca la pantalla de mantenimiento
-            para los usuarios del sistema. Puede procesar todas las solicitudes a la vez o una por una.
-          </p>
-          <p style={{ fontWeight: 'bold', color: '#3498db' }}>
-            El sistema procesa solicitudes por orden de prioridad, desplazando asignaciones si es necesario.
-          </p>
-        </div>
-        
-        {/* Acciones administrativas */}
-        <div style={{ 
-          backgroundColor: 'white', 
-          padding: '20px', 
-          borderRadius: '10px',
-          boxShadow: '0 2px 10px rgba(0,0,0,0.05)',
-          marginBottom: '20px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '15px'
-        }}>
-          <h2>Acciones de Administración</h2>
-          
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
-            gap: '15px'
-          }}>
-            {/* Botón para eliminar duplicados */}
-            <button
-              onClick={async () => {
-                // Primero eliminar duplicados en solicitudes
-                await eliminarSolicitudesDuplicadas();
-                // Luego eliminar duplicados en historial
-                await limpiarDuplicadosHistorial();
-                showNotification("Duplicados eliminados correctamente", "success");
-              }}
-              style={{
-                padding: '15px 20px',
-                backgroundColor: '#e74c3c',
-                color: 'white',
-                border: 'none',
-                borderRadius: '5px',
-                cursor: 'pointer',
-                fontWeight: 'bold',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '10px'
-              }}
-              disabled={loadingProcess}
-            >
-              <span>🗑️</span> Eliminar Duplicados
-            </button>
-            
-            {/* Botón para reasignar plazas por orden */}
-            <button
-              onClick={() => procesarTodasLasSolicitudes({respetarAsignacionesExistentes: false})}
-              style={{
-                padding: '15px 20px',
-                backgroundColor: '#3498db',
-                color: 'white',
-                border: 'none',
-                borderRadius: '5px',
-                cursor: solicitudes.length > 0 ? 'pointer' : 'not-allowed',
-                fontWeight: 'bold',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '10px',
-                opacity: solicitudes.length > 0 ? 1 : 0.6
-              }}
-              disabled={solicitudes.length === 0 || loadingProcess}
-            >
-              <span>🔄</span> Reasignar Plazas por Orden
-            </button>
-            
-            {/* Botón para procesar siguiente */}
-            <button
-              onClick={procesarSolicitudesPorMinuto}
-              style={{
-                padding: '15px 20px',
-                backgroundColor: '#2ecc71',
-                color: 'white',
-                border: 'none',
-                borderRadius: '5px',
-                cursor: solicitudes.length > 0 ? 'pointer' : 'not-allowed',
-                fontWeight: 'bold',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '10px',
-                opacity: solicitudes.length > 0 ? 1 : 0.6
-              }}
-              disabled={solicitudes.length === 0 || loadingProcess}
-            >
-              <span>▶️</span> Procesar Siguiente Solicitud
-            </button>
-          </div>
-        </div>
-        
-        {processingMessage && (
-          <div style={{ 
-            marginTop: '15px', 
-            padding: '15px', 
-            backgroundColor: '#f8f9fa', 
-            borderRadius: '5px', 
-            fontStyle: 'italic',
-            marginBottom: '20px',
-            textAlign: 'center',
-            border: '1px solid #e9ecef'
-          }}>
-            <strong>Estado:</strong> {processingMessage}
-          </div>
-        )}
-        
-        {/* Sección de asignaciones actuales */}
-        <div style={{ 
-          backgroundColor: 'white', 
-          padding: '20px', 
-          borderRadius: '10px',
-          boxShadow: '0 2px 10px rgba(0,0,0,0.05)',
-          marginBottom: '20px'
-        }}>
-          <h2>Asignaciones Actuales</h2>
-          
-          {/* Buscador de asignaciones */}
-          <div style={{ marginBottom: '15px' }}>
-            <input
-              type="text"
-              placeholder="Buscar por número de orden o centro..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              style={{
-                width: '100%',
-                padding: '10px',
-                border: '1px solid #ddd',
-                borderRadius: '5px',
-                marginBottom: '10px'
-              }}
-            />
-          </div>
-          
-          {assignments.length > 0 ? (
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ backgroundColor: '#f8f9fa' }}>
-                  <th style={{ padding: '10px', textAlign: 'left' }}>Orden</th>
-                  <th style={{ padding: '10px', textAlign: 'left' }}>Centro Asignado</th>
-                  <th style={{ padding: '10px', textAlign: 'left' }}>Plazas Disponibles</th>
-                  <th style={{ padding: '10px', textAlign: 'left' }}>Acciones</th>
-                </tr>
-              </thead>
-              <tbody>
-                {assignments
-                  .sort((a, b) => Number(a.order) - Number(b.order)) // Ordenar por número de orden
-                  .filter(assignment => {
-                    const searchTermLower = searchTerm.toLowerCase();
-                    return (
-                      String(assignment.order).includes(searchTermLower) ||
-                      (assignment.centerName && assignment.centerName.toLowerCase().includes(searchTermLower))
-                    );
-                  })
-                  .map(assignment => {
-                    // Buscar info del centro para mostrar plazas disponibles
-                    let centroInfo = null;
-                    
-                    // 1. Intentar usar la referencia guardada si existe
-                    if (assignment.centroAsociado) {
-                      centroInfo = assignment.centroAsociado;
-                    } 
-                    // 2. Intentar buscar por id
-                    else if (assignment.centerId) {
-                      centroInfo = availablePlazas.find(c => c.id === assignment.centerId);
-                    }
-                    // 3. Intentar buscar por nombre
-                    if (!centroInfo && assignment.nombreCentro && assignment.nombreCentro !== "Centro no encontrado") {
-                      // Normalizar para búsqueda
-                      const nombreBusqueda = assignment.nombreCentro.toLowerCase();
-                      centroInfo = availablePlazas.find(c => 
-                        (c.nombre && c.nombre.toLowerCase() === nombreBusqueda) || 
-                        (c.centro && c.centro.toLowerCase() === nombreBusqueda)
-                      );
-                    }
-                    // 4. Intentar buscar por centerName
-                    if (!centroInfo && assignment.centerName) {
-                      const nombreBusqueda = assignment.centerName.toLowerCase();
-                      centroInfo = availablePlazas.find(c => 
-                        (c.nombre && c.nombre.toLowerCase() === nombreBusqueda) || 
-                        (c.centro && c.centro.toLowerCase() === nombreBusqueda)
-                      );
-                    }
-                    
-                    // 5. Crear objeto por defecto si no se encontró
-                    if (!centroInfo) {
-                      centroInfo = {
-                        id: assignment.centerId || "desconocido",
-                        nombre: assignment.nombreCentro || assignment.centerName || "Centro desconocido",
-                        plazas: 0,
-                        asignadas: 0
-                      };
-                      
-                      // Intentar buscar de manera aproximada por nombre
-                      const nombreParcial = (assignment.nombreCentro || assignment.centerName || "").toLowerCase();
-                      if (nombreParcial.length > 5) {
-                        const coincidenciaParcial = availablePlazas.find(c => 
-                          (c.nombre && c.nombre.toLowerCase().includes(nombreParcial)) || 
-                          (c.centro && c.centro.toLowerCase().includes(nombreParcial))
-                        );
-                        
-                        if (coincidenciaParcial) {
-                          centroInfo = coincidenciaParcial;
-                          console.log(`Coincidencia parcial encontrada para "${nombreParcial}": ${coincidenciaParcial.nombre}`);
-                        }
-                      }
-                    }
-                    
-                    const plazasDisponibles = Math.max(0, (centroInfo.plazas || 0) - (centroInfo.asignadas || 0));
-                    const plazasTotal = centroInfo.plazas || 0;
-                    
-                    return (
-                      <tr key={assignment.docId} style={{ borderBottom: '1px solid #eee' }}>
-                        <td style={{ padding: '10px' }}>{assignment.order}</td>
-                        <td style={{ padding: '10px' }}>{assignment.centerName}</td>
-                        <td style={{ padding: '10px' }}>
-                          <strong>{plazasDisponibles}</strong> / {plazasTotal}
-                        </td>
-                        <td style={{ padding: '10px' }}>
-                          <button 
-                            onClick={async () => {
-                              // Eliminar la asignación y volverla a poner como solicitud pendiente
-                              try {
-                                // Usamos la asignación del parámetro del map en lugar del estado
-                                const currentAssignment = assignment;
-                                
-                                // Asegurar que no haya valores undefined
-                                if (!currentAssignment.order) {
-                                  showNotification("Error: No se pudo obtener el número de orden", "error");
-                                  return;
-                                }
-                                
-                                // Crear una solicitud pendiente solo con valores válidos
-                                const nuevaSolicitud = {
-                                  orden: currentAssignment.order,
-                                  // Usar un array vacío si centerId es undefined
-                                  centrosIds: currentAssignment.centerId ? [currentAssignment.centerId] : [],
-                                  // Añadir el timestamp que faltaba
-                                  timestamp: serverTimestamp()
-                                };
-                                
-                                console.log("Nueva solicitud a crear:", nuevaSolicitud);
-                                
-                                // Usar writeBatch en lugar de transaction para mayor control
-                                const batch = writeBatch(db);
-                                
-                                // Añadir la nueva solicitud pendiente
-                                const solicitudRef = doc(collection(db, "solicitudesPendientes"));
-                                batch.set(solicitudRef, nuevaSolicitud);
-                                
-                                // Eliminar la asignación existente
-                                const asignacionRef = doc(db, "asignaciones", currentAssignment.docId);
-                                batch.delete(asignacionRef);
-                                
-                                // Crear un objeto para el historial con solo campos válidos
-                                // Usar una única fecha para mantener consistencia
-                                const ahora = new Date();
-                                const historialData = {
-                                  orden: currentAssignment.order,
-                                  estado: "REASIGNANDO",
-                                  mensaje: "Reasignación manual desde el panel de administración",
-                                  fechaHistorico: ahora.toISOString(), // Formato ISO estándar
-                                  timestamp: ahora.getTime() // Timestamp numérico
-                                };
-                                
-                                // Solo añadir el campo centroAnterior si centerId no es undefined
-                                if (currentAssignment.centerId) {
-                                  historialData.centroAnterior = currentAssignment.centerId;
-                                }
-                                
-                                console.log("Datos de historial a crear:", historialData);
-                                
-                                // Añadir al historial
-                                const historialRef = doc(collection(db, "historialSolicitudes"));
-                                batch.set(historialRef, historialData);
-                                
-                                // Ejecutar todos los cambios en un solo lote
-                                await batch.commit();
-                                
-                                // Recargar datos
-                                await cargarDatosDesdeFirebase();
-                                showNotification(`Asignación para orden ${currentAssignment.order} movida a solicitudes pendientes`, "success");
-                              } catch (error) {
-                                console.error("Error al reasignar:", error);
-                                showNotification(`Error al reasignar: ${error.message}`, "error");
-                              }
-                            }}
-                            style={{
-                              padding: '5px 10px',
-                              backgroundColor: '#f39c12',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '3px',
-                              cursor: 'pointer'
-                            }}
-                            disabled={loadingProcess}
-                          >
-                            Reasignar
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-              </tbody>
-            </table>
-          ) : (
-            <p>No hay asignaciones.</p>
-          )}
-        </div>
-        
-        {/* Lista de solicitudes pendientes - con buscador */}
-        <div style={{ 
-          backgroundColor: 'white', 
-          padding: '20px', 
-          borderRadius: '10px',
-          boxShadow: '0 2px 10px rgba(0,0,0,0.05)',
-          marginBottom: '20px'
-        }}>
-          <h2>Solicitudes Pendientes</h2>
-          
-          {/* Buscador de solicitudes */}
-          <div style={{ marginBottom: '15px' }}>
-            <input
-              type="text"
-              placeholder="Buscar por número de orden..."
-              value={searchTermSolicitudes}
-              onChange={(e) => setSearchTermSolicitudes(e.target.value)}
-              style={{
-                width: '100%',
-                padding: '10px',
-                border: '1px solid #ddd',
-                borderRadius: '5px',
-                marginBottom: '10px'
-              }}
-            />
-          </div>
-          
-          {solicitudes.length > 0 ? (
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ backgroundColor: '#f8f9fa' }}>
-                  <th style={{ padding: '10px', textAlign: 'left' }}>Orden</th>
-                  <th style={{ padding: '10px', textAlign: 'left' }}>Centros Solicitados</th>
-                  <th style={{ padding: '10px', textAlign: 'left' }}>Plazas Disponibles</th>
-                  <th style={{ padding: '10px', textAlign: 'left' }}>Acciones</th>
-                </tr>
-              </thead>
-              <tbody>
-                {solicitudes
-                  .sort((a, b) => Number(a.orden) - Number(b.orden))
-                  .filter(solicitud => {
-                    const searchTermLower = searchTermSolicitudes.toLowerCase();
-                    return String(solicitud.orden).includes(searchTermLower);
-                  })
-                  .map(solicitud => {
-                    return (
-                      <tr key={solicitud.docId} style={{ borderBottom: '1px solid #eee' }}>
-                        <td style={{ padding: '10px' }}>{solicitud.orden}</td>
-                        <td style={{ padding: '10px' }}>
-                          {solicitud.centrosIds?.map((centroId, index) => {
-                            // Buscar centro con múltiples estrategias
-                            let centro = null;
-                            
-                            // 1. Intentar buscar por ID exacto
-                            centro = availablePlazas.find(c => c.id === centroId);
-                            
-                            // 2. Si centroId parece un nombre (es un string largo), intentar buscar por nombre
-                            if (!centro && typeof centroId === 'string' && centroId.length > 5) {
-                              // Normalizar para búsqueda
-                              const nombreBusqueda = centroId.toLowerCase();
-                              centro = availablePlazas.find(c => 
-                                (c.nombre && c.nombre.toLowerCase() === nombreBusqueda) || 
-                                (c.centro && c.centro.toLowerCase() === nombreBusqueda)
-                              );
-                            }
-                            
-                            // 3. Intentar coincidencia parcial
-                            if (!centro && typeof centroId === 'string' && centroId.length > 5) {
-                              const nombreParcial = centroId.toLowerCase();
-                              const coincidenciaParcial = availablePlazas.find(c => 
-                                (c.nombre && c.nombre.toLowerCase().includes(nombreParcial)) || 
-                                (c.centro && c.centro.toLowerCase().includes(nombreParcial))
-                              );
-                              
-                              if (coincidenciaParcial) {
-                                centro = coincidenciaParcial;
-                              }
-                            }
-                            
-                            // 4. Si no se encuentra, crear objeto por defecto
-                            if (!centro) {
-                              centro = {
-                                id: centroId,
-                                plazas: 0,
-                                asignadas: 0
-                              };
-                            }
-                            
-                            // Calcular plazas disponibles y formatear para la visualización
-                            const plazasDisponibles = Math.max(0, (centro.plazas || 0) - (centro.asignadas || 0));
-                            const plazasTotal = centro.plazas || 0;
-                            
-                            return (
-                              <div key={centroId} style={{ 
-                                marginBottom: index < solicitud.centrosIds.length - 1 ? '5px' : '0',
-                                padding: '3px',
-                                backgroundColor: index === 0 ? '#f2f9ff' : 'transparent',
-                                borderRadius: '3px'
-                              }}>
-                                <strong>{plazasDisponibles}</strong> / {plazasTotal}
-                              </div>
-                            );
-                          })}
-                        </td>
-                        <td style={{ padding: '10px' }}>
-                          <button 
-                            onClick={() => {
-                              // Procesar esta solicitud individualmente
-                              const solicitudesArray = [solicitud];
-                              procesarSolicitudes(
-                                solicitudesArray, 
-                                [], // No tocar asignaciones existentes
-                                availablePlazas,
-                                setProcessingMessage
-                              ).then(async () => {
-                                // Recargar datos desde Firebase
-                                await cargarDatosDesdeFirebase();
-                                showNotification(`Solicitud ${solicitud.orden} procesada`, "success");
-                              });
-                            }}
-                            style={{
-                              padding: '5px 10px',
-                              backgroundColor: '#3498db',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '3px',
-                              cursor: 'pointer'
-                            }}
-                            disabled={loadingProcess}
-                          >
-                            Procesar
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-              </tbody>
-            </table>
-          ) : (
-            <p>No hay solicitudes pendientes.</p>
-          )}
-        </div>
-        
-        {/* Enlaces de navegación */}
-        <div style={{ textAlign: 'center', marginTop: '20px' }}>
-          <a 
-            href="/" 
-            style={{
-              padding: '10px 20px',
-              backgroundColor: '#f8f9fa',
-              color: '#333',
-              textDecoration: 'none',
-              borderRadius: '5px',
-              fontWeight: 'bold'
-            }}
-          >
-            Volver a la página principal
-          </a>
-        </div>
-        
-        {/* Información de estado */}
-        <div style={{ 
-          marginTop: '20px', 
-          padding: '15px', 
-          backgroundColor: '#f8f9fa', 
-          borderRadius: '5px', 
-          textAlign: 'center',
-          fontSize: '14px',
-          color: '#666'
-        }}>
-          <p>Plazas asignadas: {assignments.length} / Plazas disponibles: {7066 - assignments.length}</p>
-          <p>Última actualización: {lastProcessed && typeof lastProcessed.getTime === 'function' ? lastProcessed.toLocaleString() : 'No disponible'}</p>
-        </div>
-        
-        {/* Popup de notificación */}
-        {showPopup && (
-          <div style={{
-            position: 'fixed',
-            top: '20px',
-            right: '20px',
-            padding: '15px 20px',
-            borderRadius: '10px',
-            boxShadow: '0 3px 15px rgba(0,0,0,0.2)',
-            backgroundColor: popupType === 'success' ? '#d4edda' : 
-                            popupType === 'warning' ? '#fff3cd' : '#f8d7da',
-            color: popupType === 'success' ? '#155724' : 
-                  popupType === 'warning' ? '#856404' : '#721c24',
-            zIndex: 1000,
-            maxWidth: '350px',
-            animation: 'slideIn 0.3s ease'
-          }}>
-            {popupMessage}
-          </div>
-        )}
-        
-        {/* Estilos CSS */}
-        <style>{`
-          @keyframes slideIn {
-            0% { transform: translateX(100%); opacity: 0; }
-            100% { transform: translateX(0); opacity: 1; }
-          }
-        `}</style>
-      </div>
+      <Admin 
+        assignments={assignments}
+        availablePlazas={availablePlazas}
+        solicitudes={solicitudes}
+        procesarTodasLasSolicitudes={procesarTodasLasSolicitudes}
+        procesarSolicitudesPorMinuto={procesarSolicitudesPorMinuto}
+        cargarDatosDesdeFirebase={cargarDatosDesdeFirebase}
+        eliminarSolicitudesDuplicadas={eliminarSolicitudesDuplicadas}
+        limpiarDuplicadosHistorial={limpiarDuplicadosHistorial}
+        db={db}
+        loadingProcess={loadingProcess}
+        processingMessage={processingMessage}
+        showNotification={showNotification}
+        lastProcessed={lastProcessed}
+        procesarSolicitudes={procesarSolicitudes}
+      />
     );
   }
 

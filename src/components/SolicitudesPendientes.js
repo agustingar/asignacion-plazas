@@ -123,7 +123,7 @@ const SolicitudesPendientes = ({ solicitudes = [], assignments = [], availablePl
         solicitud.orden?.toString(),
         ...(solicitud.centrosIds || solicitud.centrosSeleccionados || []).map(centroId => {
           const centro = availablePlazas.find(p => p.id === centroId);
-          return centro ? [centro.centro, centro.localidad, centro.municipio] : [];
+          return centro ? [centro.nombre || centro.nombreCentro || centro.centro, centro.localidad, centro.municipio] : [];
         }).flat()
       ].filter(Boolean);
       
@@ -154,6 +154,13 @@ const SolicitudesPendientes = ({ solicitudes = [], assignments = [], availablePl
       key,
       direction: prevConfig.key === key && prevConfig.direction === 'asc' ? 'desc' : 'asc'
     }));
+  };
+  
+  // Función para obtener información del centro
+  const getCentroInfo = (centroId) => {
+    const centro = availablePlazas.find(plaza => plaza.id === centroId);
+    // Si se encuentra el centro, devolver sus datos, sino devolver array vacío
+    return centro ? [centro.nombre || centro.nombreCentro || centro.centro, centro.localidad, centro.municipio] : [];
   };
   
   if (!solicitudes.length) {
@@ -373,11 +380,17 @@ const SolicitudesPendientes = ({ solicitudes = [], assignments = [], availablePl
                               {centro ? (
                                 <>
                                   <strong style={{ color: idx === 0 ? '#d35400' : 'inherit' }}>
-                                    {centro.centro}
+                                    {centro.nombre || centro.nombreCentro || centro.centro}
                                   </strong> 
-                                  <span style={{ fontSize: '14px', color: '#666' }}>
-                                    {centro.localidad && `- ${centro.localidad}`} {centro.municipio && `(${centro.municipio})`}
-                                  </span>
+                                  <div className="centro-localidad">
+                                    {centro.localidad && `- ${centro.localidad}`} 
+                                    {centro.municipio && centro.municipio !== centro.localidad && (
+                                      <span style={{ marginLeft: '5px', color: '#4a5568', fontSize: '13px' }}>
+                                        <span style={{ marginRight: '4px' }}>📍</span>
+                                        {centro.municipio}
+                                      </span>
+                                    )}
+                                  </div>
                                   {idx === 0 && (
                                     <span style={{
                                       display: 'inline-block',
@@ -421,7 +434,9 @@ const SolicitudesPendientes = ({ solicitudes = [], assignments = [], availablePl
                                   )}
                                 </>
                               ) : (
-                                <span style={{ color: '#999' }}>Centro no disponible (ID: {centroId})</span>
+                                <span style={{ color: '#999' }}>
+                                  {centroId}
+                                </span>
                               )}
                             </li>
                           );
