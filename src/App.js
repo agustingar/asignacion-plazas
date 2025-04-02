@@ -29,10 +29,13 @@ function App() {
   const [secondsUntilNextUpdate, setSecondsUntilNextUpdate] = useState(45);
   const [resetingCounters, setResetingCounters] = useState(false);
   const [isMaintenanceMode, setIsMaintenanceMode] = useState(false);
-  // Agregar estado para mostrar pantalla de mantenimiento durante verificación
-  const [isVerificationMaintenance, setIsVerificationMaintenance] = useState(true); // Iniciar con true para mostrar pantalla mantenimiento al cargar
+  // Modificar: inicializar en false para no mostrar siempre al cargar
+  const [isVerificationMaintenance, setIsVerificationMaintenance] = useState(false);
   const [maintenanceMessage, setMaintenanceMessage] = useState('Iniciando sistema y verificando datos...');
   const [maintenanceProgress, setMaintenanceProgress] = useState(10);
+  
+  // Añadir estado para identificar si estamos en el modo admin
+  const [isAdminView, setIsAdminView] = useState(false);
   
   // Estados para el formulario de solicitud
   const [orderNumber, setOrderNumber] = useState('');
@@ -878,6 +881,10 @@ function App() {
     let unsubscribe;
     
     const inicializarApp = async () => {
+      // Comprobar si estamos en modo admin
+      const isAdmin = window.location.pathname.includes('/admin');
+      setIsAdminView(isAdmin);
+      
       // Usar refs para controlar el estado de inicialización
       if (cargandoRef.current || cargaCompletadaRef.current) {
         return;
@@ -886,20 +893,29 @@ function App() {
       cargandoRef.current = true;
       
       try {
-        // Activar modo mantenimiento durante la carga inicial
-        setIsVerificationMaintenance(true);
-        setMaintenanceMessage("Iniciando sistema y verificando conexión...");
-        setMaintenanceProgress(5);
+        // Solo activamos modo mantenimiento si hay solicitudes pendientes
+        // o si estamos en modo admin
+        const solicitudesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
+        const hayPendientes = !solicitudesSnapshot.empty;
+        
+        if (hayPendientes || isAdmin) {
+          setIsVerificationMaintenance(true);
+          setMaintenanceMessage("Iniciando sistema y verificando conexión...");
+          setMaintenanceProgress(5);
+        }
         
         // Verificar conexión con Firebase primero
         const conexionResult = await verificarConexionFirebase();
         if (!conexionResult.success) {
+          setIsVerificationMaintenance(true); // Mostrar independientemente
           setMaintenanceMessage(`Error de conexión: ${conexionResult.message}. Intenta recargar la página.`);
           return;
         }
         
-        setMaintenanceMessage("Verificando datos...");
-        setMaintenanceProgress(10);
+        if (hayPendientes || isAdmin) {
+          setMaintenanceMessage("Verificando datos...");
+          setMaintenanceProgress(10);
+        }
         
         // Resto del código de inicialización...
         // Comprobar si ya hay datos en Firebase
@@ -2780,6 +2796,232 @@ function App() {
     };
   }, []); // Sin dependencias para ejecutar solo una vez al montar
 
+  // Renderizado condicional basado en la ruta
+  if (isAdminView) {
+    return (
+      <div style={{
+        maxWidth: '1280px',
+        margin: '0 auto',
+        padding: '20px',
+        fontFamily: 'Arial, sans-serif'
+      }}>
+        <h1 style={{ textAlign: 'center', marginBottom: '20px' }}>Panel de Administración</h1>
+        
+        {/* Información del panel de administración */}
+        <div style={{ 
+          backgroundColor: '#f8f9fa', 
+          padding: '15px', 
+          borderRadius: '10px',
+          marginBottom: '20px',
+          textAlign: 'center',
+          border: '1px solid #e9ecef'
+        }}>
+          <h3 style={{ marginTop: 0, color: '#2c3e50' }}>Bienvenido al Panel de Administración</h3>
+          <p>
+            Desde aquí puede gestionar las solicitudes pendientes sin que aparezca la pantalla de mantenimiento
+            para los usuarios del sistema. Puede procesar todas las solicitudes a la vez o una por una.
+          </p>
+          <p style={{ fontWeight: 'bold', color: '#3498db' }}>
+            El sistema procesa solicitudes por orden de prioridad, desplazando asignaciones si es necesario.
+          </p>
+        </div>
+        
+        {/* Sección de procesamiento de solicitudes pendientes */}
+        <div style={{ 
+          backgroundColor: 'white', 
+          padding: '20px', 
+          borderRadius: '10px',
+          boxShadow: '0 2px 10px rgba(0,0,0,0.05)',
+          marginBottom: '20px'
+        }}>
+          <h2>Procesar Solicitudes Pendientes</h2>
+          
+          <div>
+            <p>Solicitudes pendientes: <strong>{solicitudes.length}</strong></p>
+            
+            {/* Botón para procesar todas las solicitudes pendientes */}
+            <button 
+              onClick={() => procesarTodasLasSolicitudes({respetarAsignacionesExistentes: false})}
+              style={{
+                padding: '10px 20px',
+                backgroundColor: solicitudes.length > 0 ? '#3498db' : '#cccccc',
+                color: 'white',
+                border: 'none',
+                borderRadius: '5px',
+                cursor: solicitudes.length > 0 ? 'pointer' : 'not-allowed',
+                marginRight: '10px'
+              }}
+              disabled={solicitudes.length === 0 || loadingProcess}
+            >
+              {loadingProcess ? 'Procesando...' : 'Procesar todas las solicitudes'}
+            </button>
+            
+            {/* Botón para procesar solo la siguiente solicitud */}
+            <button 
+              onClick={procesarSolicitudesPorMinuto}
+              style={{
+                padding: '10px 20px',
+                backgroundColor: solicitudes.length > 0 ? '#2ecc71' : '#cccccc',
+                color: 'white',
+                border: 'none',
+                borderRadius: '5px',
+                cursor: solicitudes.length > 0 ? 'pointer' : 'not-allowed'
+              }}
+              disabled={solicitudes.length === 0 || loadingProcess}
+            >
+              {loadingProcess ? 'Procesando...' : 'Procesar siguiente solicitud'}
+            </button>
+          </div>
+          
+          {processingMessage && (
+            <div style={{ 
+              marginTop: '15px', 
+              padding: '10px', 
+              backgroundColor: '#f8f9fa', 
+              borderRadius: '5px', 
+              fontStyle: 'italic' 
+            }}>
+              {processingMessage}
+            </div>
+          )}
+        </div>
+        
+        {/* Lista de solicitudes pendientes */}
+        <div style={{ 
+          backgroundColor: 'white', 
+          padding: '20px', 
+          borderRadius: '10px',
+          boxShadow: '0 2px 10px rgba(0,0,0,0.05)',
+          marginBottom: '20px'
+        }}>
+          <h2>Solicitudes Pendientes</h2>
+          
+          {solicitudes.length > 0 ? (
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ backgroundColor: '#f8f9fa' }}>
+                  <th style={{ padding: '10px', textAlign: 'left' }}>Orden</th>
+                  <th style={{ padding: '10px', textAlign: 'left' }}>Centros Solicitados</th>
+                  <th style={{ padding: '10px', textAlign: 'left' }}>Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {solicitudes
+                  .sort((a, b) => Number(a.orden) - Number(b.orden))
+                  .map(solicitud => (
+                    <tr key={solicitud.docId} style={{ borderBottom: '1px solid #eee' }}>
+                      <td style={{ padding: '10px' }}>{solicitud.orden}</td>
+                      <td style={{ padding: '10px' }}>
+                        {solicitud.centrosIds?.map((centroId, index) => {
+                          const centro = availablePlazas.find(c => c.id === centroId);
+                          return (
+                            <span key={centroId}>
+                              {centro ? centro.nombre : centroId}
+                              {index < solicitud.centrosIds.length - 1 ? ', ' : ''}
+                            </span>
+                          );
+                        })}
+                      </td>
+                      <td style={{ padding: '10px' }}>
+                        <button 
+                          onClick={() => {
+                            // Procesar esta solicitud individualmente
+                            const solicitudesArray = [solicitud];
+                            procesarSolicitudes(
+                              solicitudesArray, 
+                              [], // No tocar asignaciones existentes
+                              availablePlazas,
+                              setProcessingMessage
+                            ).then(async () => {
+                              // Recargar datos desde Firebase
+                              await cargarDatosDesdeFirebase();
+                              showNotification(`Solicitud ${solicitud.orden} procesada`, "success");
+                            });
+                          }}
+                          style={{
+                            padding: '5px 10px',
+                            backgroundColor: '#3498db',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '3px',
+                            cursor: 'pointer'
+                          }}
+                          disabled={loadingProcess}
+                        >
+                          Procesar
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          ) : (
+            <p>No hay solicitudes pendientes.</p>
+          )}
+        </div>
+        
+        {/* Enlaces de navegación */}
+        <div style={{ textAlign: 'center', marginTop: '20px' }}>
+          <a 
+            href="/" 
+            style={{
+              padding: '10px 20px',
+              backgroundColor: '#f8f9fa',
+              color: '#333',
+              textDecoration: 'none',
+              borderRadius: '5px',
+              fontWeight: 'bold'
+            }}
+          >
+            Volver a la página principal
+          </a>
+        </div>
+        
+        {/* Información de estado */}
+        <div style={{ 
+          marginTop: '20px', 
+          padding: '15px', 
+          backgroundColor: '#f8f9fa', 
+          borderRadius: '5px', 
+          textAlign: 'center',
+          fontSize: '14px',
+          color: '#666'
+        }}>
+          <p>Plazas asignadas: {assignments.length} / Plazas disponibles: {7066 - assignments.length}</p>
+          <p>Última actualización: {lastProcessed && typeof lastProcessed.getTime === 'function' ? lastProcessed.toLocaleString() : 'No disponible'}</p>
+        </div>
+        
+        {/* Popup de notificación */}
+        {showPopup && (
+          <div style={{
+            position: 'fixed',
+            top: '20px',
+            right: '20px',
+            padding: '15px 20px',
+            borderRadius: '10px',
+            boxShadow: '0 3px 15px rgba(0,0,0,0.2)',
+            backgroundColor: popupType === 'success' ? '#d4edda' : popupType === 'warning' ? '#fff3cd' : '#f8d7da',
+            color: popupType === 'success' ? '#155724' : popupType === 'warning' ? '#856404' : '#721c24',
+            zIndex: 1000,
+            maxWidth: '350px',
+            animation: 'slideIn 0.3s ease'
+          }}>
+            {popupMessage}
+          </div>
+        )}
+        
+        {/* Estilos CSS */}
+        <style>{`
+          @keyframes slideIn {
+            0% { transform: translateX(100%); opacity: 0; }
+            100% { transform: translateX(0); opacity: 1; }
+          }
+        `}</style>
+      </div>
+    );
+  }
+
+  // El renderizado normal de la aplicación original
   return (
     <div className="App" style={styles.container}>
       {/* Modal de contraseña para administrador */}
@@ -2992,34 +3234,62 @@ function App() {
             </button>
           </div>
         )}
-       
-      <div style={styles.tabs}>
-        <div 
-          style={{
-            ...styles.tab,
-            ...(activeTab === 'asignaciones' ? styles.activeTab : styles.inactiveTab)
-          }}
-          onClick={() => setActiveTab('asignaciones')}
-        >
-          📋 Historial de Asignaciones
+        
+        {/* Enlace al panel de administración */}
+        <div style={{
+          position: 'absolute',
+          top: '20px',
+          left: '20px',
+          zIndex: 50
+        }}>
+          <a
+            href="/admin"
+            style={{
+              padding: '12px 20px',
+              backgroundColor: '#2c3e50',
+              color: 'white',
+              border: 'none',
+              borderRadius: '6px',
+              textDecoration: 'none',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '15px',
+              fontWeight: '500',
+              boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+            }}
+          >
+            🔧 Panel de Administración
+          </a>
         </div>
-        <div 
-          style={{
-            ...styles.tab,
-            ...(activeTab === 'solicitudes' ? styles.activeTab : styles.inactiveTab)
-          }}
-          onClick={() => setActiveTab('solicitudes')}
-        >
-          🔍 Solicitudes Pendientes
-        </div>
-        <div 
-          style={{
-            ...styles.tab,
-            ...(activeTab === 'plazas' ? styles.activeTab : styles.inactiveTab)
-          }}
-          onClick={() => setActiveTab('plazas')}
-        >
-          🏢 Plazas Disponibles
+        
+        <div style={styles.tabs}>
+          <div 
+            style={{
+              ...styles.tab,
+              ...(activeTab === 'asignaciones' ? styles.activeTab : styles.inactiveTab)
+            }}
+            onClick={() => setActiveTab('asignaciones')}
+          >
+            📋 Historial de Asignaciones
+          </div>
+          <div 
+            style={{
+              ...styles.tab,
+              ...(activeTab === 'solicitudes' ? styles.activeTab : styles.inactiveTab)
+            }}
+            onClick={() => setActiveTab('solicitudes')}
+          >
+            🔍 Solicitudes Pendientes
+          </div>
+          <div 
+            style={{
+              ...styles.tab,
+              ...(activeTab === 'plazas' ? styles.activeTab : styles.inactiveTab)
+            }}
+            onClick={() => setActiveTab('plazas')}
+          >
+            🏢 Plazas Disponibles
           </div>
         </div>
       </div>
