@@ -547,7 +547,6 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
                   {sortConfig.key === 'timestamp' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                 </span>
               </th>
-              <th style={{...styles.tableHeader, textAlign: 'center'}}>Estado</th>
             </tr>
           </thead>
           <tbody>
@@ -577,17 +576,7 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
                 <td style={styles.tableCell}>
                   {formatearFecha(asignacion.timestamp)}
                 </td>
-                <td style={{...styles.tableCell, textAlign: 'center'}}>
-                  <div style={{
-                    ...styles.badge,
-                    ...(asignacion.reasignado ? styles.badgeReasignado : 
-                       asignacion.estado === 'ASIGNADO' ? styles.badgeSuccess : 
-                       asignacion.estado === 'PENDIENTE' ? styles.badgeWarning : 
-                       styles.badgePrimary)
-                  }}>
-                    {asignacion.reasignado ? 'REASIGNADO' : asignacion.estado || 'ASIGNADO'}
-                  </div>
-                </td>
+              
               </tr>
             ))}
             {currentItems.length === 0 && (
@@ -668,24 +657,7 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
         </div>
       )}
       
-      {/* Leyenda */}
-      <div style={styles.leyendaContainer}>
-        <div style={styles.leyendaTitle}>Leyenda de estados</div>
-        <div style={styles.leyendaItems}>
-          <div style={styles.leyendaItem}>
-            <div style={{...styles.badge, ...styles.badgePrimary}}>ASIGNADO</div>
-            <span>Asignación normal</span>
-          </div>
-          <div style={styles.leyendaItem}>
-            <div style={{...styles.badge, ...styles.badgeReasignado}}>REASIGNADO</div>
-            <span>Asignación reubicada por exceso de plazas</span>
-          </div>
-          <div style={styles.leyendaItem}>
-            <div style={{...styles.badge, ...styles.badgeWarning}}>PENDIENTE</div>
-            <span>En proceso de asignación</span>
-          </div>
-        </div>
-      </div>
+  
     </div>
   );
 };

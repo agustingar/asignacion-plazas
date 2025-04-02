@@ -290,19 +290,7 @@ const PlazasDisponibles = ({
         </div>
       )}
       
-      {/* Información de totales */}
-      <div className="totals-info" style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        padding: '10px 15px',
-        backgroundColor: '#f8f9fa',
-        borderRadius: '4px',
-        marginBottom: '15px'
-      }}>
-        <div>Total de plazas: <strong>{totalPlazas}</strong></div>
-        <div>Plazas asignadas: <strong>{totalAsignadas}</strong></div>
-        <div>Plazas disponibles: <strong>{totalDisponibles}</strong></div>
-      </div>
+   
       
       {/* Formulario para solicitar plaza */}
       <div style={{ 

@@ -631,9 +631,22 @@ function App() {
       
       // Indexar centros por ID y por nombre para búsqueda eficiente
       Object.values(centrosData).forEach(centro => {
+        // Indexar por ID
         centrosPorId[centro.id] = centro;
+        
+        // Indexar por nombre (normalizado a mayúsculas sin acentos)
         if (centro.nombre) {
-          centrosPorNombre[centro.nombre.toUpperCase()] = centro;
+          // Normalizar el nombre para búsqueda insensible a mayúsculas/minúsculas y acentos
+          const nombreNormalizado = centro.nombre.toUpperCase()
+            .normalize("NFD").replace(/[\u0300-\u036f]/g, ""); // Eliminar acentos
+          centrosPorNombre[nombreNormalizado] = centro;
+        }
+        
+        // Indexar también por centro (si existe y es diferente del nombre)
+        if (centro.centro && centro.centro !== centro.nombre) {
+          const centroNormalizado = centro.centro.toUpperCase()
+            .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+          centrosPorNombre[centroNormalizado] = centro;
         }
       });
       
@@ -650,38 +663,63 @@ function App() {
           // Buscar centro por ID
           let centroBuscado = centrosPorId[data.centerId];
           
-          // Si no se encuentra por ID, intentar buscar por nombre
-          if (!centroBuscado && data.centerId) {
-            // Normalizar a mayúsculas para la búsqueda
-            const nombreBusqueda = data.centerId.toUpperCase();
-            centroBuscado = centrosPorNombre[nombreBusqueda];
+          // Si no se encuentra por ID, intentar buscar por nombre centro
+          if (!centroBuscado && data.centro) {
+            // Normalizar nombre a mayúsculas sin acentos para la búsqueda
+            const centroNormalizado = data.centro.toUpperCase()
+              .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+            centroBuscado = centrosPorNombre[centroNormalizado];
             
             if (centroBuscado) {
-              console.log(`Centro encontrado por nombre: "${data.centerId}" corresponde a ID=${centroBuscado.id}`);
+              console.log(`Centro encontrado por campo 'centro': "${data.centro}" corresponde a ID=${centroBuscado.id}`);
+            }
+          }
+          
+          // Si aún no se encuentra, intentar buscar por ID como nombre
+          if (!centroBuscado && data.centerId && typeof data.centerId === 'string') {
+            const idComoNombre = data.centerId.toUpperCase()
+              .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+            centroBuscado = centrosPorNombre[idComoNombre];
+            
+            if (centroBuscado) {
+              console.log(`Centro encontrado por centerId como nombre: "${data.centerId}" corresponde a ID=${centroBuscado.id}`);
             }
           }
           
           // Si no se encuentra, intentar por centerName si existe
           if (!centroBuscado && data.centerName) {
-            const nombreBusqueda = data.centerName.toUpperCase();
-            centroBuscado = centrosPorNombre[nombreBusqueda];
+            const nombreNormalizado = data.centerName.toUpperCase()
+              .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+            centroBuscado = centrosPorNombre[nombreNormalizado];
             
             if (centroBuscado) {
               console.log(`Centro encontrado por centerName: "${data.centerName}" corresponde a ID=${centroBuscado.id}`);
             }
           }
           
-          // Obtener el nombre del centro del objeto encontrado o usar el que viene en los datos
-          const nombreCentro = centroBuscado ? 
-                              centroBuscado.nombre : 
-                              data.centerName || data.centerId || "Centro no encontrado";
+          // Ahora elegir el mejor nombre disponible para mostrar
+          let nombreMostrar = "Centro no encontrado";
+          
+          if (centroBuscado) {
+            // Priorizar el nombre del centro encontrado
+            nombreMostrar = centroBuscado.nombre;
+          } else if (data.centro) {
+            // Si no se encontró el centro pero tenemos campo 'centro', usar ese
+            nombreMostrar = data.centro;
+          } else if (data.centerName) {
+            // Si tenemos centerName, usar ese
+            nombreMostrar = data.centerName;
+          } else if (data.centerId && typeof data.centerId === 'string' && data.centerId.length > 5) {
+            // Si el centerId parece ser un nombre (es string y largo), usar ese
+            nombreMostrar = data.centerId;
+          }
           
           asignacionesData[doc.id] = {
             id: doc.id,
             numeroOrden: data.order || data.numeroOrden || 0,
             centerId: data.centerId || data.centro || "",
             centroPrevio: data.centroPrevio || data.centroAnterior || "",
-            nombreCentro: nombreCentro,
+            nombreCentro: nombreMostrar,
             timestamp: data.timestamp || Date.now(),
             fechaAsignacion: data.fechaAsignacion || new Date().toISOString(),
             // Guardar referencia al centro real para calcular plazas disponibles
@@ -3441,24 +3479,56 @@ function App() {
                   })
                   .map(assignment => {
                     // Buscar info del centro para mostrar plazas disponibles
-                    let centroInfo = availablePlazas.find(c => c.id === assignment.centerId);
+                    let centroInfo = null;
                     
-                    // Si no se encuentra por id, intentar encontrarlo por nombre
-                    if (!centroInfo && assignment.centerName) {
+                    // 1. Intentar usar la referencia guardada si existe
+                    if (assignment.centroAsociado) {
+                      centroInfo = assignment.centroAsociado;
+                    } 
+                    // 2. Intentar buscar por id
+                    else if (assignment.centerId) {
+                      centroInfo = availablePlazas.find(c => c.id === assignment.centerId);
+                    }
+                    // 3. Intentar buscar por nombre
+                    if (!centroInfo && assignment.nombreCentro && assignment.nombreCentro !== "Centro no encontrado") {
+                      // Normalizar para búsqueda
+                      const nombreBusqueda = assignment.nombreCentro.toLowerCase();
                       centroInfo = availablePlazas.find(c => 
-                        (c.nombre && c.nombre.toLowerCase() === assignment.centerName.toLowerCase()) || 
-                        (c.centro && c.centro.toLowerCase() === assignment.centerName.toLowerCase())
+                        (c.nombre && c.nombre.toLowerCase() === nombreBusqueda) || 
+                        (c.centro && c.centro.toLowerCase() === nombreBusqueda)
+                      );
+                    }
+                    // 4. Intentar buscar por centerName
+                    if (!centroInfo && assignment.centerName) {
+                      const nombreBusqueda = assignment.centerName.toLowerCase();
+                      centroInfo = availablePlazas.find(c => 
+                        (c.nombre && c.nombre.toLowerCase() === nombreBusqueda) || 
+                        (c.centro && c.centro.toLowerCase() === nombreBusqueda)
                       );
                     }
                     
-                    // Si aún no se encuentra, crear un objeto vacío con valores por defecto
+                    // 5. Crear objeto por defecto si no se encontró
                     if (!centroInfo) {
                       centroInfo = {
                         id: assignment.centerId || "desconocido",
-                        nombre: assignment.centerName || "Centro desconocido",
+                        nombre: assignment.nombreCentro || assignment.centerName || "Centro desconocido",
                         plazas: 0,
                         asignadas: 0
                       };
+                      
+                      // Intentar buscar de manera aproximada por nombre
+                      const nombreParcial = (assignment.nombreCentro || assignment.centerName || "").toLowerCase();
+                      if (nombreParcial.length > 5) {
+                        const coincidenciaParcial = availablePlazas.find(c => 
+                          (c.nombre && c.nombre.toLowerCase().includes(nombreParcial)) || 
+                          (c.centro && c.centro.toLowerCase().includes(nombreParcial))
+                        );
+                        
+                        if (coincidenciaParcial) {
+                          centroInfo = coincidenciaParcial;
+                          console.log(`Coincidencia parcial encontrada para "${nombreParcial}": ${coincidenciaParcial.nombre}`);
+                        }
+                      }
                     }
                     
                     const plazasDisponibles = Math.max(0, (centroInfo.plazas || 0) - (centroInfo.asignadas || 0));
@@ -3613,40 +3683,42 @@ function App() {
                         <td style={{ padding: '10px' }}>{solicitud.orden}</td>
                         <td style={{ padding: '10px' }}>
                           {solicitud.centrosIds?.map((centroId, index) => {
-                            // Buscar centro con más opciones de matching
-                            let centro = availablePlazas.find(c => c.id === centroId);
+                            // Buscar centro con múltiples estrategias
+                            let centro = null;
                             
-                            // Si no se encuentra el centro por id, crear un objeto por defecto
+                            // 1. Intentar buscar por ID exacto
+                            centro = availablePlazas.find(c => c.id === centroId);
+                            
+                            // 2. Si centroId parece un nombre (es un string largo), intentar buscar por nombre
+                            if (!centro && typeof centroId === 'string' && centroId.length > 5) {
+                              // Normalizar para búsqueda
+                              const nombreBusqueda = centroId.toLowerCase();
+                              centro = availablePlazas.find(c => 
+                                (c.nombre && c.nombre.toLowerCase() === nombreBusqueda) || 
+                                (c.centro && c.centro.toLowerCase() === nombreBusqueda)
+                              );
+                            }
+                            
+                            // 3. Intentar coincidencia parcial
+                            if (!centro && typeof centroId === 'string' && centroId.length > 5) {
+                              const nombreParcial = centroId.toLowerCase();
+                              const coincidenciaParcial = availablePlazas.find(c => 
+                                (c.nombre && c.nombre.toLowerCase().includes(nombreParcial)) || 
+                                (c.centro && c.centro.toLowerCase().includes(nombreParcial))
+                              );
+                              
+                              if (coincidenciaParcial) {
+                                centro = coincidenciaParcial;
+                              }
+                            }
+                            
+                            // 4. Si no se encuentra, crear objeto por defecto
                             if (!centro) {
                               centro = {
                                 id: centroId,
-                                nombre: `Centro ID: ${centroId}`,
                                 plazas: 0,
                                 asignadas: 0
                               };
-                              console.log(`Centro no encontrado para ID: ${centroId}, usando valores por defecto`);
-                            }
-                            
-                            return (
-                              <div key={centroId} style={{ 
-                                marginBottom: index < solicitud.centrosIds.length - 1 ? '5px' : '0',
-                                padding: '3px',
-                                backgroundColor: index === 0 ? '#f2f9ff' : 'transparent',
-                                borderRadius: '3px'
-                              }}>
-                                {centro.nombre || centro.centro || `Centro ID: ${centroId}`}
-                              </div>
-                            );
-                          })}
-                        </td>
-                        <td style={{ padding: '10px' }}>
-                          {solicitud.centrosIds?.map((centroId, index) => {
-                            // Buscar centro con más opciones de matching
-                            let centro = availablePlazas.find(c => c.id === centroId);
-                            
-                            // Si no se encuentra el centro por id, crear un objeto por defecto
-                            if (!centro) {
-                              centro = { plazas: 0, asignadas: 0 };
                             }
                             
                             // Calcular plazas disponibles y formatear para la visualización
