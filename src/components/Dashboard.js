@@ -499,20 +499,7 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
           }}
           style={styles.input}
         />
-        <select
-          value={filtroEstado}
-          onChange={(e) => {
-            setFiltroEstado(e.target.value);
-            setCurrentPage(1); // Reiniciar página al filtrar
-          }}
-          style={styles.select}
-        >
-          {estados.map(estado => (
-            <option key={estado} value={estado}>
-              {estado === 'TODOS' ? 'Todos los estados' : estado}
-            </option>
-          ))}
-        </select>
+      
       </div>
       
       {/* Tabla de asignaciones */}

@@ -8,6 +8,7 @@ import {
   verificarYCorregirAsignaciones,
   resetearContadoresAsignaciones
 } from './utils/assignmentUtils';
+import * as XLSX from 'xlsx';
 
 // Importar componentes
 import Dashboard from './components/Dashboard';
@@ -168,13 +169,14 @@ function App() {
           const response = await fetch(csvUrl);
           
           if (response.ok) {
-            file = await response.blob();
+            const text = await response.text();
+            file = new Blob([text], { type: 'text/csv' });
           } else {
             console.log("CSV no encontrado en la ubicación predeterminada, abriendo diálogo de selección...");
             // Si falla, recurrimos al diálogo de selección manual
             const fileInput = document.createElement("input");
             fileInput.type = "file";
-            fileInput.accept = '.csv';
+            fileInput.accept = '.csv,.xlsx';
             
             const filePromise = new Promise((resolve) => {
               fileInput.onchange = (event) => resolve(event.target.files[0]);
@@ -188,7 +190,7 @@ function App() {
           // Si falla, recurrimos al diálogo de selección manual
           const fileInput = document.createElement("input");
           fileInput.type = "file";
-          fileInput.accept = '.csv';
+          fileInput.accept = '.csv,.xlsx';
           
           const filePromise = new Promise((resolve) => {
             fileInput.onchange = (event) => resolve(event.target.files[0]);
@@ -203,17 +205,50 @@ function App() {
       setProcessingMessage("Cargando y procesando archivo CSV...");
     
     try {
-      // Limpiar primero la colección completa
-      await limpiarColeccion("centros");
+      // Ya no limpiamos la colección, obtenemos los centros existentes
+      setProcessingMessage("Obteniendo centros existentes...");
+      const centrosExistentesSnapshot = await getDocs(collection(db, "centros"));
       
-      // Cargar el CSV
-        const response = await fetch(file);
+      // Crear un mapa de centros existentes por código para búsqueda rápida
+      const centrosExistentesPorCodigo = {};
+      const centrosExistentesPorNombre = {};
       
-      if (!response.ok) {
-        throw new Error(`Error al cargar el CSV: ${response.status} - ${response.statusText}`);
+      centrosExistentesSnapshot.forEach(doc => {
+        const centro = doc.data();
+        if (centro.codigo) {
+          centrosExistentesPorCodigo[centro.codigo] = {
+            ...centro,
+            docId: doc.id
+          };
+        }
+        if (centro.centro) {
+          // Normalizar nombre para búsqueda
+          const nombreNormalizado = centro.centro.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+          centrosExistentesPorNombre[nombreNormalizado] = {
+            ...centro,
+            docId: doc.id
+          };
+        }
+      });
+      
+      console.log(`Se encontraron ${centrosExistentesSnapshot.size} centros existentes`);
+      
+      // Procesar el archivo según su tipo
+      let text;
+      const fileName = file.name ? file.name.toLowerCase() : '';
+      
+      if (fileName.endsWith('.xlsx')) {
+        // Procesamiento de archivo Excel
+        setProcessingMessage("Procesando archivo Excel...");
+        // Aquí necesitaríamos una librería como xlsx para procesar Excel
+        // Por ahora podemos mostrar un mensaje de error
+        throw new Error("El procesamiento de archivos Excel no está implementado aún");
+      } else {
+        // Procesamiento de CSV
+        setProcessingMessage("Procesando archivo CSV...");
+        // Leer como texto si es un CSV
+        text = await file.text();
       }
-      
-      const text = await response.text();
       
       if (text.length < 100) {
         throw new Error("El archivo CSV parece estar vacío o es demasiado pequeño");
@@ -229,7 +264,7 @@ function App() {
       }
       
       // Encontrar la línea de encabezado
-      const headerIndex = lines.findIndex(line => line.includes("A.S.I.;"));
+      let headerIndex = lines.findIndex(line => line.includes("A.S.I.;"));
       
       if (headerIndex === -1) {
         // Intentar otros patrones posibles en el encabezado
@@ -244,7 +279,6 @@ function App() {
         } else {
           headerIndex = alternativeHeaderIndex;
         }
-      } else {
       }
       
       // Verificar estructura de encabezado
@@ -258,8 +292,9 @@ function App() {
       const codigosProcesados = new Set();
       
       // Procesar cada línea después del encabezado
-      const centros = [];
-      let nextId = 1;
+      const nuevoscentros = [];
+      const centrosActualizados = [];
+      let nextId = Object.keys(centrosExistentesPorCodigo).length + 1; // Comenzar desde el siguiente ID
       let totalPlazas = 0;
       let lineasInvalidas = 0;
       let centrosDuplicados = 0;
@@ -340,8 +375,40 @@ function App() {
         // Verificar total de plazas acumulado
         totalPlazas += plazas;
         
-        // Añadir a la lista
-        centros.push({
+        // Comprobar si el centro ya existe
+        const centroExistente = centrosExistentesPorCodigo[codigo];
+        const nombreNormalizado = centro.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        const centroExistentePorNombre = centrosExistentesPorNombre[nombreNormalizado];
+        
+        if (centroExistente) {
+          // Actualizar centro existente manteniendo su ID y asignaciones actuales
+          centrosActualizados.push({
+            ...centroExistente,
+            asi: asi || centroExistente.asi,
+            departamento: departamento || centroExistente.departamento,
+            centro: centro || centroExistente.centro,
+            localidad: municipio || centroExistente.localidad,
+            municipio: municipio || centroExistente.municipio,
+            plazas: plazas,
+            // Mantener asignadas para no perder las asignaciones actuales
+            asignadas: centroExistente.asignadas || 0
+          });
+        } else if (centroExistentePorNombre) {
+          // Actualizar por nombre si no encontramos por código
+          centrosActualizados.push({
+            ...centroExistentePorNombre,
+            asi: asi || centroExistentePorNombre.asi,
+            departamento: departamento || centroExistentePorNombre.departamento,
+            codigo: codigo || centroExistentePorNombre.codigo,
+            localidad: municipio || centroExistentePorNombre.localidad,
+            municipio: municipio || centroExistentePorNombre.municipio,
+            plazas: plazas,
+            // Mantener asignadas para no perder las asignaciones actuales
+            asignadas: centroExistentePorNombre.asignadas || 0
+          });
+        } else {
+          // Añadir nuevo centro
+          nuevoscentros.push({
           id: nextId++,
           asi: asi,
           departamento: departamento,
@@ -352,99 +419,41 @@ function App() {
           plazas: plazas,
           asignadas: 0
         });
+        }
         
-        if (centros.length % 100 === 0) {
-          setProcessingMessage(`Procesando CSV: ${centros.length} centros encontrados...`);
+        if ((nuevoscentros.length + centrosActualizados.length) % 100 === 0) {
+          setProcessingMessage(`Procesando CSV: ${nuevoscentros.length} nuevos, ${centrosActualizados.length} actualizados...`);
         }
       }
       
+      const totalCentros = nuevoscentros.length + centrosActualizados.length;
       
-      if (centros.length === 0) {
+      if (totalCentros === 0) {
         throw new Error("No se pudieron extraer centros válidos del CSV");
       }
       
-      // Asegurar que el total de plazas sea exactamente 7066
-      const PLAZAS_OBJETIVO = 7066;
+      // No ajustamos el total de plazas para mantener los valores exactos
       
-      if (totalPlazas !== PLAZAS_OBJETIVO) {
-        
-        // Estrategia: distribuir el ajuste en varios centros grandes para minimizar distorsión
-        const centrosOrdenados = [...centros].sort((a, b) => b.plazas - a.plazas);
-        const diferencia = totalPlazas - PLAZAS_OBJETIVO;
-        
-        if (Math.abs(diferencia) > 100) {
-          console.warn(`Diferencia muy grande (${diferencia} plazas) entre el total calculado y el objetivo`);
-        }
-        
-        if (diferencia > 0) {
-          // Hay plazas de más, reducir de forma distribuida
-          let restante = diferencia;
-          let indice = 0;
-          
-          while (restante > 0 && indice < Math.min(5, centrosOrdenados.length)) {
-            const centro = centrosOrdenados[indice];
-            const ajuste = Math.min(Math.ceil(diferencia / 5), centro.plazas - 1, restante);
-            
-            if (ajuste > 0) {
-              centro.plazas -= ajuste;
-              restante -= ajuste;
-            }
-            
-            indice++;
-          }
-          
-          // Si aún queda diferencia, reducir del centro más grande
-          if (restante > 0) {
-            centrosOrdenados[0].plazas -= restante;
-          }
-        } else if (diferencia < 0) {
-          // Faltan plazas, añadir de forma distribuida
-          let restante = Math.abs(diferencia);
-          let indice = 0;
-          
-          while (restante > 0 && indice < Math.min(5, centrosOrdenados.length)) {
-            const centro = centrosOrdenados[indice];
-            const ajuste = Math.min(Math.ceil(Math.abs(diferencia) / 5), restante);
-            
-            centro.plazas += ajuste;
-            restante -= ajuste;
-            
-            indice++;
-          }
-          
-          // Si aún queda diferencia, añadir al centro más grande
-          if (restante > 0) {
-            centrosOrdenados[0].plazas += restante;
-          }
-        }
-        
-        // Verificar que el ajuste se hizo correctamente
-        const nuevoTotal = centros.reduce((sum, c) => sum + c.plazas, 0);
-        if (nuevoTotal !== PLAZAS_OBJETIVO) {
-          console.error(`Error en el ajuste: ${nuevoTotal} ≠ ${PLAZAS_OBJETIVO}`);
-          throw new Error(`No se pudo ajustar el número de plazas correctamente: ${nuevoTotal} ≠ ${PLAZAS_OBJETIVO}`);
-        } else {
+      // Primero actualizar centros existentes
+      setProcessingMessage(`Actualizando ${centrosActualizados.length} centros existentes...`);
+      for (const centro of centrosActualizados) {
+        if (centro.docId) {
+          await updateDoc(doc(db, "centros", centro.docId), {
+            ...centro,
+            // No sobrescribir el docId
+          });
         }
       }
       
-      // Añadir los centros a Firebase
-      setProcessingMessage(`Añadiendo ${centros.length} centros a Firebase...`);
-      let procesados = 0;
-      
-      // Verificar una vez más si hay datos para evitar duplicación
-      const verificacionFinal = await getDocs(collection(db, "centros"));
-      if (verificacionFinal.size > 0) {
-        showNotification("Se encontraron datos existentes. Usando datos actuales para evitar duplicación.", 'warning');
-        setLoadingCSV(false);
-        return await cargarDatosDesdeFirebase();
-      }
+      // Añadir los nuevos centros a Firebase
+      setProcessingMessage(`Añadiendo ${nuevoscentros.length} nuevos centros a Firebase...`);
       
       // Añadir centros por lotes para mayor eficiencia
       const BATCH_SIZE = 100;
-      for (let i = 0; i < centros.length; i += BATCH_SIZE) {
-        const batch = centros.slice(i, i + BATCH_SIZE);
+      for (let i = 0; i < nuevoscentros.length; i += BATCH_SIZE) {
+        const batch = nuevoscentros.slice(i, i + BATCH_SIZE);
         
-        setProcessingMessage(`Añadiendo centros: ${i}/${centros.length}`);
+        setProcessingMessage(`Añadiendo nuevos centros: ${i}/${nuevoscentros.length}`);
         
         // Procesar el lote actual
         for (const centro of batch) {
@@ -453,9 +462,7 @@ function App() {
             ...centro,
             docId: docRef.id
           });
-          procesados++;
         }
-        
       }
       
       setProcessingMessage("Datos cargados correctamente");
@@ -464,7 +471,7 @@ function App() {
       await cargarDatosDesdeFirebase();
       
       setLoadingCSV(false);
-      showNotification(`Se han cargado ${procesados} centros y exactamente ${PLAZAS_OBJETIVO} plazas correctamente`, 'success');
+      showNotification(`Se han actualizado ${centrosActualizados.length} centros y añadido ${nuevoscentros.length} nuevos centros correctamente`, 'success');
       return true;
     } catch (error) {
       console.error("Error al cargar o procesar el CSV:", error);
@@ -680,9 +687,7 @@ function App() {
           plazasTotal: 10,
           direccion: "Dirección de prueba",
           codigoCentro: "CP001",
-          estadoCentro: "Activo",
-          municipio: "Municipio de Prueba 1",
-          localidad: "Localidad de Prueba 1"
+          estadoCentro: "Activo"
         };
         
         centrosData["centro2"] = {
@@ -695,9 +700,7 @@ function App() {
           plazasTotal: 7,
           direccion: "Otra dirección",
           codigoCentro: "CP002",
-          estadoCentro: "Activo",
-          municipio: "Municipio de Prueba 2",
-          localidad: "Localidad de Prueba 2"
+          estadoCentro: "Activo"
         };
       }
       
@@ -805,10 +808,7 @@ function App() {
             timestamp: data.timestamp || Date.now(),
             fechaAsignacion: data.fechaAsignacion || new Date().toISOString(),
             // Guardar referencia al centro real para calcular plazas disponibles
-            centroAsociado: centroBuscado,
-            // Añadir municipio y localidad
-            municipio: data.municipio || (centroBuscado ? centroBuscado.municipio : ""),
-            localidad: data.localidad || (centroBuscado ? centroBuscado.localidad : "")
+            centroAsociado: centroBuscado
           };
         }
       });
@@ -903,23 +903,15 @@ function App() {
       // Actualizar plazas disponibles para mostrar en el dashboard
       let plazasDisponiblesPorCentro = {};
       Object.values(centrosData).forEach(centro => {
-        // Calcular plazas de manera consistente
-        const plazasTotal = centro.plazasTotal || centro.plazas || 0;
-        const plazasOcupadas = centro.asignadas || centro.plazasOcupadas || 0;
-        const plazasDisponibles = centro.plazasDisponibles || Math.max(0, plazasTotal - plazasOcupadas);
-        
         plazasDisponiblesPorCentro[centro.id] = {
           id: centro.id,
           nombre: centro.nombre,
-          plazas: plazasTotal, // Usar plazasTotal para consistencia
-          asignadas: plazasOcupadas, // Usar plazasOcupadas para consistencia
-          plazasDisponibles: plazasDisponibles,
-          plazasTotal: plazasTotal,
-          plazasOcupadas: plazasOcupadas,
+          plazas: centro.plazas,
+          asignadas: centro.asignadas,
+          plazasDisponibles: centro.plazasDisponibles,
+          plazasTotal: centro.plazasTotal,
           codigoCentro: centro.codigoCentro,
-          estadoCentro: centro.estadoCentro,
-          municipio: centro.municipio || "",
-          localidad: centro.localidad || ""
+          estadoCentro: centro.estadoCentro
         };
       });
       
@@ -1101,30 +1093,27 @@ function App() {
   // Función para cargar automáticamente el CSV desde ubicación predeterminada
   const cargarCSVAutomatico = async () => {
     try {
+      setLoadingCSV(true);
+      setProcessingMessage("Cargando CSV automáticamente...");
+      
+    try {
       const csvUrl = process.env.PUBLIC_URL + '/plazas.csv';
       const response = await fetch(csvUrl);
       
-      if (response.ok) {
-        // El archivo existe, continuar con la carga
-        setLoadingCSV(true);
-        setProcessingMessage("Cargando y procesando archivo CSV automáticamente...");
-        
-        const file = await response.blob();
-        
-        // Limpiar primero la colección completa
-        await limpiarColeccion("centros");
-        
-        // El resto del procesamiento es similar a cargarDesdePlazasCSV
-        if (file.size < 100) {
-          throw new Error("El archivo CSV parece estar vacío o es demasiado pequeño");
+        if (!response.ok) {
+          throw new Error(`Error al cargar el CSV: ${response.status} - ${response.statusText}`);
         }
         
-        const text = await file.text();
+        const text = await response.text();
         
-        // Continuar con el procesamiento normal del CSV
-        // ... (continuará con la lógica existente de procesamiento)
+        if (!text || text.length < 100) {
+          throw new Error("El archivo CSV está vacío o es demasiado pequeño");
+        }
         
-        // Resto del código de procesamiento de CSV
+        // Ya no limpiamos la colección, utilizamos el mismo enfoque de cargarDesdePlazasCSV
+        // await limpiarColeccion("centros");
+        
+        // El resto del procesamiento es similar a cargarDesdePlazasCSV
         const lines = text.split("\n")
           .map(line => line.replace(/"/g, '').trim())
           .filter(Boolean);
@@ -1368,8 +1357,9 @@ function App() {
         setLoadingCSV(false);
         showNotification(`Se han cargado ${procesados} centros y exactamente ${PLAZAS_OBJETIVO} plazas automáticamente`, 'success');
         return true;
-      } else {
-        console.log("CSV no encontrado en la ubicación predeterminada:", response.status);
+      } catch (error) {
+        console.error("Error al cargar CSV automáticamente:", error);
+        setLoadingCSV(false);
         return false;
       }
     } catch (error) {
@@ -1384,14 +1374,38 @@ function App() {
     let unsubscribe;
     
     const inicializarApp = async () => {
-      // Comprobar si estamos en modo admin basado en la URL
-      const pathname = window.location.pathname;
-      const basePathSegments = pathname.split('/');
-      const lastSegment = basePathSegments[basePathSegments.length - 1];
+      console.log("Inicializando aplicación...");
       
-      const isAdmin = lastSegment === 'admin';
-      setIsAdminView(isAdmin);
-      
+      try {
+        // Etapa 2: Intentar verificar si hay datos. Si no, cargar desde CSV
+        console.log("Verificando si ya hay datos en Firebase...");
+        const centrosSnapshot = await getDocs(collection(db, "centros"));
+        
+        if (centrosSnapshot.empty) {
+          console.log("No se encontraron centros. Intentando cargar desde CSV...");
+          
+          const csvResponse = await fetch(process.env.PUBLIC_URL + '/plazas.csv');
+          if (csvResponse.ok) {
+            console.log("CSV encontrado, cargando datos automáticamente...");
+            // No limpiamos la colección, solo cargamos datos
+            // await limpiarColeccion("centros"); // Asegurar que está vacío
+            await cargarDesdePlazasCSV();
+            console.log("Datos cargados desde CSV inicial.");
+          } else {
+            console.warn("CSV no encontrado en ubicación predeterminada");
+          }
+        } else {
+          console.log("Datos existentes encontrados:", centrosSnapshot.size, "centros");
+        }
+        
+        // Comprobar si estamos en modo admin basado en la URL
+        const pathname = window.location.pathname;
+        const basePathSegments = pathname.split('/');
+        const lastSegment = basePathSegments[basePathSegments.length - 1];
+        
+        const isAdmin = lastSegment === 'admin';
+        setIsAdminView(isAdmin);
+        
       // Usar refs para controlar el estado de inicialización
       if (cargandoRef.current || cargaCompletadaRef.current) {
         return;
@@ -1400,73 +1414,73 @@ function App() {
       cargandoRef.current = true;
       
       try {
-        // Si es el panel de admin, forzar la carga de todos los datos independientemente
-        // de si hay solicitudes pendientes o no
-        if (isAdmin) {
-          setIsVerificationMaintenance(true);
-          setMaintenanceMessage("Cargando datos para el panel de administración...");
-          setMaintenanceProgress(5);
-          
-          // Verificar conexión con Firebase primero
-          const conexionResult = await verificarConexionFirebase();
-          if (!conexionResult.success) {
-            setIsVerificationMaintenance(true); // Mostrar independientemente
-            setMaintenanceMessage(`Error de conexión: ${conexionResult.message}. Intenta recargar la página.`);
+          // Si es el panel de admin, forzar la carga de todos los datos independientemente
+          // de si hay solicitudes pendientes o no
+          if (isAdmin) {
+            setIsVerificationMaintenance(true);
+            setMaintenanceMessage("Cargando datos para el panel de administración...");
+            setMaintenanceProgress(5);
+            
+            // Verificar conexión con Firebase primero
+            const conexionResult = await verificarConexionFirebase();
+            if (!conexionResult.success) {
+              setIsVerificationMaintenance(true); // Mostrar independientemente
+              setMaintenanceMessage(`Error de conexión: ${conexionResult.message}. Intenta recargar la página.`);
+              return;
+            }
+            
+            setMaintenanceMessage("Cargando centros y solicitudes...");
+            setMaintenanceProgress(30);
+            
+            // Forzar una carga completa de datos
+            try {
+              await cargarDatosDesdeFirebase();
+              console.log("Datos cargados correctamente para el panel de admin");
+              
+              setMaintenanceProgress(100);
+              setMaintenanceMessage("¡Datos cargados correctamente!");
+              
+              // Desactivar el modo mantenimiento después de un breve retraso
+              setTimeout(() => {
+                setIsVerificationMaintenance(false);
+              }, 1000);
+            } catch (error) {
+              console.error("Error al cargar datos para el panel de admin:", error);
+              setMaintenanceMessage(`Error al cargar datos: ${error.message}`);
+              
+              setTimeout(() => {
+                setIsVerificationMaintenance(false);
+              }, 2000);
+            }
+            
+            cargaCompletadaRef.current = true;
+            cargandoRef.current = false;
             return;
           }
           
-          setMaintenanceMessage("Cargando centros y solicitudes...");
-          setMaintenanceProgress(30);
+          // Solo activamos modo mantenimiento si hay solicitudes pendientes
+          // o si estamos en modo admin (para el resto de la aplicación)
+          const solicitudesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
+          const hayPendientes = !solicitudesSnapshot.empty;
           
-          // Forzar una carga completa de datos
-          try {
-            await cargarDatosDesdeFirebase();
-            console.log("Datos cargados correctamente para el panel de admin");
-            
-            setMaintenanceProgress(100);
-            setMaintenanceMessage("¡Datos cargados correctamente!");
-            
-            // Desactivar el modo mantenimiento después de un breve retraso
-            setTimeout(() => {
-              setIsVerificationMaintenance(false);
-            }, 1000);
-          } catch (error) {
-            console.error("Error al cargar datos para el panel de admin:", error);
-            setMaintenanceMessage(`Error al cargar datos: ${error.message}`);
-            
-            setTimeout(() => {
-              setIsVerificationMaintenance(false);
-            }, 2000);
+          if (hayPendientes || isAdmin) {
+        setIsVerificationMaintenance(true);
+        setMaintenanceMessage("Iniciando sistema y verificando conexión...");
+        setMaintenanceProgress(5);
           }
-          
-          cargaCompletadaRef.current = true;
-          cargandoRef.current = false;
-          return;
-        }
-        
-        // Solo activamos modo mantenimiento si hay solicitudes pendientes
-        // o si estamos en modo admin (para el resto de la aplicación)
-        const solicitudesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
-        const hayPendientes = !solicitudesSnapshot.empty;
-        
-        if (hayPendientes || isAdmin) {
-          setIsVerificationMaintenance(true);
-          setMaintenanceMessage("Iniciando sistema y verificando conexión...");
-          setMaintenanceProgress(5);
-        }
         
         // Verificar conexión con Firebase primero
         const conexionResult = await verificarConexionFirebase();
         if (!conexionResult.success) {
-          setIsVerificationMaintenance(true); // Mostrar independientemente
+            setIsVerificationMaintenance(true); // Mostrar independientemente
           setMaintenanceMessage(`Error de conexión: ${conexionResult.message}. Intenta recargar la página.`);
           return;
         }
         
-        if (hayPendientes || isAdmin) {
-          setMaintenanceMessage("Verificando datos...");
-          setMaintenanceProgress(10);
-        }
+          if (hayPendientes || isAdmin) {
+        setMaintenanceMessage("Verificando datos...");
+        setMaintenanceProgress(10);
+          }
         
         // Resto del código de inicialización...
         // Comprobar si ya hay datos en Firebase
@@ -1581,6 +1595,16 @@ function App() {
         }, 2000);
       } finally {
         cargandoRef.current = false;
+        }
+      } catch (error) {
+        console.error("Error durante la inicialización:", error);
+        setMaintenanceMessage(`Error: ${error.message}`);
+        
+        // Intentar desactivar modo mantenimiento después de un error
+        setTimeout(() => {
+          setIsVerificationMaintenance(false);
+          showNotification("Error durante la inicialización: " + error.message, "error");
+        }, 2000);
       }
     };
     
@@ -1720,15 +1744,15 @@ function App() {
         
         // Verificar y corregir asignaciones solo si no estamos respetando las existentes
         if (!respetarAsignacionesExistentes) {
-          try {
-            const verificacionResult = await verificarYCorregirAsignacionesWrapper();
-            
-            if (verificacionResult && verificacionResult.corregidos > 0) {
-              console.log(`Corregidas ${verificacionResult.corregidos} asignaciones con exceso`);
-              setProcessingMessage(prevMsg => `${prevMsg} Corregidas ${verificacionResult.corregidos} asignaciones con exceso.`);
-            }
-          } catch (verificacionError) {
-            console.error("Error en verificación de asignaciones:", verificacionError);
+        try {
+          const verificacionResult = await verificarYCorregirAsignacionesWrapper();
+          
+          if (verificacionResult && verificacionResult.corregidos > 0) {
+            console.log(`Corregidas ${verificacionResult.corregidos} asignaciones con exceso`);
+            setProcessingMessage(prevMsg => `${prevMsg} Corregidas ${verificacionResult.corregidos} asignaciones con exceso.`);
+          }
+        } catch (verificacionError) {
+          console.error("Error en verificación de asignaciones:", verificacionError);
           }
         }
         
@@ -1861,24 +1885,24 @@ function App() {
       
       // Añadir/actualizar la solicitud en la colección de solicitudes pendientes
       try {
-        if (existingRequestId) {
-          // Actualizar la solicitud existente
+          if (existingRequestId) {
+            // Actualizar la solicitud existente
           await updateDoc(doc(db, "solicitudesPendientes", existingRequestId), {
-            centrosSeleccionados: selectedCenters,
-            timestamp: serverTimestamp()
-          });
-          console.log(`Actualizada solicitud existente ${existingRequestId} para orden ${orderNumberNumeric}`);
-        } else {
-          // Crear una nueva solicitud
-          const newRequest = {
-            orden: orderNumberNumeric,
+              centrosSeleccionados: selectedCenters,
+              timestamp: serverTimestamp()
+            });
+            console.log(`Actualizada solicitud existente ${existingRequestId} para orden ${orderNumberNumeric}`);
+          } else {
+            // Crear una nueva solicitud
+            const newRequest = {
+              orden: orderNumberNumeric,
             centrosIds: selectedCenters,
-            timestamp: serverTimestamp()
-          };
-          
+              timestamp: serverTimestamp()
+            };
+            
           await setDoc(doc(collection(db, "solicitudesPendientes")), newRequest);
-          console.log(`Creada nueva solicitud para orden ${orderNumberNumeric}`);
-        }
+            console.log(`Creada nueva solicitud para orden ${orderNumberNumeric}`);
+          }
         
         console.log(`Solicitud para orden ${orderNumberNumeric} enviada correctamente`);
         showNotification(`Solicitud para orden ${orderNumberNumeric} enviada correctamente. Será procesada automáticamente.`, "success");
@@ -2418,8 +2442,8 @@ function App() {
             localStorage.setItem('ultimaVerificacionDiaria', Date.now().toString());
             console.log('Verificación diaria completada y marcada como ejecutada hoy');
             // Reprogramar para la próxima verificación
-            programarVerificacionDiaria();
-          });
+          programarVerificacionDiaria();
+        });
         } else {
           console.log('Saltando verificación, ya se ejecutó hoy');
           programarVerificacionDiaria();
@@ -2797,115 +2821,132 @@ function App() {
   // Función para verificar y corregir asignaciones
   const verificarYCorregirAsignacionesWrapper = async () => {
     try {
-      // Verificar si ya se ejecutó la verificación hoy
+      // Comprobar si ya se ejecutó hoy
       const verificarSiYaEjecutado = () => {
-        const ultimaVerificacion = localStorage.getItem('ultimaVerificacionDiaria');
-        if (ultimaVerificacion) {
-          const fechaUltimaVerificacion = new Date(Number(ultimaVerificacion));
-          const ahora = new Date();
+        try {
+          const ultimaVerificacionStr = localStorage.getItem('ultimaVerificacionAsignaciones');
           
-          // Comparar fecha (ignorando la hora)
-          const esHoy = fechaUltimaVerificacion.getDate() === ahora.getDate() &&
-                       fechaUltimaVerificacion.getMonth() === ahora.getMonth() &&
-                       fechaUltimaVerificacion.getFullYear() === ahora.getFullYear();
-          
-          if (esHoy) {
-            console.log(`La verificación diaria ya se ejecutó hoy a las ${fechaUltimaVerificacion.toLocaleTimeString()}`);
-            return true;
+          if (ultimaVerificacionStr) {
+            const ultimaVerificacion = new Date(ultimaVerificacionStr);
+            const ahora = new Date();
+            
+            // Comparar solo las fechas (día/mes/año), no la hora
+            if (ultimaVerificacion.toDateString() === ahora.toDateString()) {
+              return true; // Ya se ejecutó hoy
+            }
           }
+          
+          return false;
+        } catch (error) {
+          console.error("Error al verificar ejecución previa:", error);
+          return false;
         }
-        return false;
       };
       
-      // Si ya se ejecutó hoy, mostrar mensaje y no continuar
+      // Salir si ya se ejecutó
       if (verificarSiYaEjecutado()) {
-        showNotification("La verificación de asignaciones ya se ejecutó hoy. Solo se permite una vez al día.", "info");
-        return { success: true, message: "Verificación ya ejecutada hoy", yaRealizada: true };
+        console.log("La verificación de asignaciones ya se ejecutó hoy.");
+        return;
       }
       
-      setMaintenanceProgress(0);
+      // Activar modo mantenimiento
+      setMaintenanceMessage("Verificando y corrigiendo asignaciones existentes...");
+      setMaintenanceProgress(10);
       setIsVerificationMaintenance(true);
-      setMaintenanceMessage('Iniciando verificación de asignaciones...');
       
-      // Esperar un momento para que se muestre la pantalla de mantenimiento
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Pausa para mostrar pantalla
+      await new Promise(resolve => setTimeout(resolve, 1000));
       
+      try {
+        // Cargar en memoria primero para tener datos actualizados
+        setMaintenanceMessage("Cargando datos actuales...");
+        setMaintenanceProgress(20);
+        await cargarDatosDesdeFirebase();
+        
+        // Verificar si hay centros y asignaciones
+        if (availablePlazas.length === 0) {
+          setMaintenanceMessage("No hay centros disponibles. Cargando desde CSV...");
+          setMaintenanceProgress(30);
+          
+          const csvResponse = await fetch(process.env.PUBLIC_URL + '/plazas.csv');
+          if (csvResponse.ok) {
+            // Mejor no limpiar la colección, solo cargar o actualizar datos
+            // await limpiarColeccion("centros"); // Asegurar que está vacío
+            await cargarDesdePlazasCSV();
+          } else {
+            throw new Error("No se encontró el archivo CSV de centros");
+          }
+        }
+        
       // Asegurar que availablePlazas sea un array
       if (!availablePlazas || !Array.isArray(availablePlazas)) {
         console.error("Error: availablePlazas debe ser un array", availablePlazas);
-        setMaintenanceMessage("Error: No hay datos de centros disponibles");
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        setIsVerificationMaintenance(false);
+          setMaintenanceMessage("Error: No hay datos de centros disponibles");
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          setIsVerificationMaintenance(false);
         showNotification("Error: No hay datos de centros disponibles", "error");
         return;
       }
-      
-      setMaintenanceProgress(20);
-      setMaintenanceMessage('Analizando datos de centros y plazas...');
-      await new Promise(resolve => setTimeout(resolve, 500));
 
-      // Asegurar que assignments sea un array
-      if (!assignments || !Array.isArray(assignments)) {
-        console.error("Error: assignments debe ser un array", assignments);
-        setMaintenanceMessage("Error: No hay datos de asignaciones");
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        setIsVerificationMaintenance(false);
-        showNotification("Error: No hay datos de asignaciones", "error");
-        return;
-      }
-      
-      setMaintenanceProgress(40);
-      setMaintenanceMessage('Comprobando excesos de asignaciones en centros...');
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      // Encontrar centros con exceso de asignaciones
-      const centrosConExceso = availablePlazas.filter(centro => centro.asignadas > centro.plazas);
-      
-      if (centrosConExceso.length === 0) {
-        setMaintenanceProgress(100);
-        setMaintenanceMessage('No se encontraron centros con exceso de asignaciones. Todo está correcto.');
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        setIsVerificationMaintenance(false);
-        showNotification("Verificación completada: No hay centros con exceso de asignaciones", "success");
+        setMaintenanceProgress(40);
+        setMaintenanceMessage('Comprobando excesos de asignaciones en centros...');
+        await new Promise(resolve => setTimeout(resolve, 500));
         
-        // Marcar como ejecutado para hoy
-        localStorage.setItem('ultimaVerificacionDiaria', Date.now().toString());
-        return { success: true, message: "No hay centros con exceso", corregidos: 0 };
-      }
-      
-      // Mostrar información sobre los centros con exceso
-      setMaintenanceProgress(60);
-      setMaintenanceMessage(`Encontrados ${centrosConExceso.length} centros con exceso de asignaciones. Comenzando reasignación...`);
-      await new Promise(resolve => setTimeout(resolve, 1000));
+        // Encontrar centros con exceso de asignaciones
+        const centrosConExceso = availablePlazas.filter(centro => centro.asignadas > centro.plazas);
+        
+        if (centrosConExceso.length === 0) {
+          setMaintenanceProgress(100);
+          setMaintenanceMessage('No se encontraron centros con exceso de asignaciones. Todo está correcto.');
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          setIsVerificationMaintenance(false);
+          showNotification("Verificación completada: No hay centros con exceso de asignaciones", "success");
+          
+          // Marcar como ejecutado para hoy
+          localStorage.setItem('ultimaVerificacionDiaria', Date.now().toString());
+          return { success: true, message: "No hay centros con exceso", corregidos: 0 };
+        }
+        
+        // Mostrar información sobre los centros con exceso
+        setMaintenanceProgress(60);
+        setMaintenanceMessage(`Encontrados ${centrosConExceso.length} centros con exceso de asignaciones. Comenzando reasignación...`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
 
       // Llamar a la función original con los parámetros validados
       const resultado = await verificarYCorregirAsignaciones(availablePlazas, assignments, db);
-      
-      setMaintenanceProgress(90);
-      setMaintenanceMessage(resultado.success 
-        ? `${resultado.message}. Actualizando interfaz...` 
-        : `Error durante la verificación: ${resultado.message}`);
-      
-      // Recargar datos desde Firebase después de las correcciones
-      await cargarDatosDesdeFirebase();
-      
-      setMaintenanceProgress(100);
-      setMaintenanceMessage(resultado.success 
-        ? `Verificación completada exitosamente. Se corrigieron ${resultado.corregidos} asignaciones (${resultado.reasignados} reasignadas).` 
-        : `Error durante la verificación: ${resultado.message}`);
-      
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      setIsVerificationMaintenance(false);
+        
+        setMaintenanceProgress(90);
+        setMaintenanceMessage(resultado.success 
+          ? `${resultado.message}. Actualizando interfaz...` 
+          : `Error durante la verificación: ${resultado.message}`);
+        
+        // Recargar datos desde Firebase después de las correcciones
+        await cargarDatosDesdeFirebase();
+        
+        setMaintenanceProgress(100);
+        setMaintenanceMessage(resultado.success 
+          ? `Verificación completada exitosamente. Se corrigieron ${resultado.corregidos} asignaciones (${resultado.reasignados} reasignadas).` 
+          : `Error durante la verificación: ${resultado.message}`);
+        
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        setIsVerificationMaintenance(false);
       
       if (resultado.success) {
         showNotification(resultado.message, "success");
-        // Marcar como ejecutado para hoy
-        localStorage.setItem('ultimaVerificacionDiaria', Date.now().toString());
+          // Marcar como ejecutado para hoy
+          localStorage.setItem('ultimaVerificacionDiaria', Date.now().toString());
       } else {
         showNotification(resultado.message || "Error al verificar asignaciones", "error");
       }
-      
-      return resultado;
+        
+        return resultado;
+    } catch (error) {
+      console.error("Error al verificar asignaciones:", error);
+        setMaintenanceMessage(`Error al verificar asignaciones: ${error.message}`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        setIsVerificationMaintenance(false);
+        showNotification("Error al verificar asignaciones: " + error.message, "error");
+      }
     } catch (error) {
       console.error("Error al verificar asignaciones:", error);
       setMaintenanceMessage(`Error al verificar asignaciones: ${error.message}`);
@@ -3538,36 +3579,36 @@ function App() {
             >
               🔄 Verificar Asignaciones Hoy
             </button>
-          </div>
+      </div>
         )}
-        
-        <div style={styles.tabs}>
-          <div 
-            style={{
-              ...styles.tab,
-              ...(activeTab === 'asignaciones' ? styles.activeTab : styles.inactiveTab)
-            }}
-            onClick={() => setActiveTab('asignaciones')}
-          >
-            📋 Historial de Asignaciones
-          </div>
-          <div 
-            style={{
-              ...styles.tab,
-              ...(activeTab === 'solicitudes' ? styles.activeTab : styles.inactiveTab)
-            }}
-            onClick={() => setActiveTab('solicitudes')}
-          >
-            🔍 Solicitudes Pendientes
-          </div>
-          <div 
-            style={{
-              ...styles.tab,
-              ...(activeTab === 'plazas' ? styles.activeTab : styles.inactiveTab)
-            }}
-            onClick={() => setActiveTab('plazas')}
-          >
-            🏢 Plazas Disponibles
+      
+      <div style={styles.tabs}>
+        <div 
+          style={{
+            ...styles.tab,
+            ...(activeTab === 'asignaciones' ? styles.activeTab : styles.inactiveTab)
+          }}
+          onClick={() => setActiveTab('asignaciones')}
+        >
+          📋 Historial de Asignaciones
+        </div>
+        <div 
+          style={{
+            ...styles.tab,
+            ...(activeTab === 'solicitudes' ? styles.activeTab : styles.inactiveTab)
+          }}
+          onClick={() => setActiveTab('solicitudes')}
+        >
+          🔍 Solicitudes Pendientes
+        </div>
+        <div 
+          style={{
+            ...styles.tab,
+            ...(activeTab === 'plazas' ? styles.activeTab : styles.inactiveTab)
+          }}
+          onClick={() => setActiveTab('plazas')}
+        >
+          🏢 Plazas Disponibles
           </div>
         </div>
       </div>

@@ -506,11 +506,17 @@ export const procesarSolicitud = async (solicitud, availablePlazas, db) => {
     // Crear la asignación en Firestore
     const batch = writeBatch(db);
     
+    // Asegurar que el centro tenga un nombre válido para mostrar
+    const nombreCentroMostrar = centroAsignado.nombre || 
+                               centroAsignado.centro || 
+                               centroAsignado.nombreCentro || 
+                               `Centro ${centroAsignadoId}`;
+    
     // Crear nuevo documento de asignación
     const nuevaAsignacion = {
       numeroOrden: solicitud.orden || 0,
       centerId: centroAsignadoId,
-      nombreCentro: centroAsignado.nombre,
+      nombreCentro: nombreCentroMostrar,
       timestamp: Date.now(),
       fechaAsignacion: new Date().toISOString(),
       municipio: centroAsignado.municipio || "",
@@ -519,7 +525,7 @@ export const procesarSolicitud = async (solicitud, availablePlazas, db) => {
         {
           accion: "asignación inicial",
           timestamp: Date.now(),
-          detalles: `Asignado a ${centroAsignado.nombre}`
+          detalles: `Asignado a ${nombreCentroMostrar}`
         }
       ]
     };

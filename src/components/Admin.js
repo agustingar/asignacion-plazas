@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { writeBatch, doc, collection, serverTimestamp, onSnapshot, query, where, addDoc, updateDoc, getDocs, deleteDoc } from "firebase/firestore";
+import * as XLSX from 'xlsx';
 
 /**
  * Componente que muestra el panel de administración
@@ -43,6 +44,9 @@ const Admin = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [searchTermSolicitudes, setSearchTermSolicitudes] = useState('');
   const [internalProcessingMessage, setInternalProcessingMessage] = useState('');
+  const [centrosNuevos, setCentrosNuevos] = useState([]);
+  const [mostrarComparacion, setMostrarComparacion] = useState(false);
+  const [seleccionados, setSeleccionados] = useState({});
   
   // Si no está autenticado, mostrar formulario de login
   if (!isAdminAuthenticated) {
@@ -245,6 +249,21 @@ const Admin = ({
 
   // Función para buscar información del centro
   const encontrarCentro = (assignment) => {
+    // Para debug: verificar qué campos tiene la asignación
+    if (process.env.NODE_ENV === 'development') {
+      console.log('Datos de asignación:', {
+        id: assignment.id,
+        docId: assignment.docId,
+        centerId: assignment.centerId,
+        nombreCentro: assignment.nombreCentro,
+        centerName: assignment.centerName,
+        centro: assignment.centro,
+        centre: assignment.centre,
+        municipality: assignment.municipio,
+        order: assignment.order || assignment.numeroOrden
+      });
+    }
+    
     // Validar que la asignación no sea undefined o null
     if (!assignment) {
       console.warn("encontrarCentro: assignment es undefined o null");
@@ -328,6 +347,529 @@ const Admin = ({
     return centroInfo;
   };
   
+  // Función para comparar centros del archivo con los existentes
+  const compararCentros = async (file) => {
+    try {
+      setInternalProcessingMessage("Analizando archivo...");
+      
+      // Obtener centros existentes
+      const centrosExistentesSnapshot = await getDocs(collection(db, "centros"));
+      
+      // Crear mapas de búsqueda para comparación rápida
+      const centrosExistentesPorCodigo = {};
+      const centrosExistentesPorNombre = {};
+      
+      centrosExistentesSnapshot.forEach(doc => {
+        const centro = doc.data();
+        if (centro.codigo) {
+          centrosExistentesPorCodigo[centro.codigo.toLowerCase()] = {
+            ...centro,
+            docId: doc.id
+          };
+        }
+        if (centro.centro) {
+          // Normalizar nombre para búsqueda
+          const nombreNormalizado = centro.centro.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+          centrosExistentesPorNombre[nombreNormalizado] = {
+            ...centro,
+            docId: doc.id
+          };
+        }
+      });
+      
+      // Procesar archivo según su tipo
+      let centrosDelArchivo = [];
+      const fileName = file.name.toLowerCase();
+      
+      if (fileName.endsWith('.xlsx')) {
+        // Procesar Excel
+        const data = await file.arrayBuffer();
+        const workbook = XLSX.read(data, { type: 'array' });
+        
+        // Obtener la primera hoja
+        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+        
+        // Convertir a JSON
+        const jsonData = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
+        
+        // Buscar encabezados (pueden estar en diferentes posiciones)
+        let headerRow = -1;
+        for (let i = 0; i < Math.min(20, jsonData.length); i++) {
+          const row = jsonData[i];
+          if (Array.isArray(row) && row.some(cell => 
+            typeof cell === 'string' && 
+            (cell.toLowerCase().includes('codigo') || 
+             cell.toLowerCase().includes('centro') || 
+             cell.toLowerCase().includes('municipio') ||
+             cell.toLowerCase().includes('cod') ||
+             cell.toLowerCase().includes('cent'))
+          )) {
+            headerRow = i;
+            break;
+          }
+        }
+        
+        if (headerRow === -1) {
+          throw new Error("No se encontró una fila de encabezado válida en el Excel. Prueba con otro archivo o formato.");
+        }
+        
+        // Analizar encabezados para encontrar índices de columnas importantes
+        const headers = jsonData[headerRow];
+        console.log("Encabezados encontrados:", headers);
+        
+        const getColumnIndex = (keywords) => {
+          // Primero intentar una coincidencia exacta
+          let index = headers.findIndex(h => 
+            typeof h === 'string' && 
+            keywords.some(k => h.toUpperCase() === k.toUpperCase())
+          );
+          
+          // Si no hay coincidencia exacta, buscar coincidencia parcial
+          if (index === -1) {
+            index = headers.findIndex(h => 
+              typeof h === 'string' && 
+              keywords.some(k => h.toUpperCase().includes(k.toUpperCase()))
+            );
+          }
+          
+          return index;
+        };
+        
+        const codigoIdx = getColumnIndex(['CODIGO', 'CÓDIGO', 'COD', 'CODCENTRO', 'CODIGO_CENTRO']);
+        const centroIdx = getColumnIndex(['CENTRO', 'CENT', 'NOMBRE', 'NOMBRE_CENTRO', 'NOMBRECENTRO', 'NOM_CENTRO']);
+        const municipioIdx = getColumnIndex(['MUNICIPIO', 'MUN', 'LOCALIDAD', 'LOCAL', 'CIUDAD']);
+        const plazasIdx = getColumnIndex(['PLAZAS', 'PLAZA', 'PLAZ', 'NUM_PLAZAS', 'PLAZAS_DISPONIBLES']);
+        
+        console.log("Índices de columnas:", { 
+          codigo: codigoIdx, 
+          centro: centroIdx, 
+          municipio: municipioIdx, 
+          plazas: plazasIdx 
+        });
+        
+        if (codigoIdx === -1 && centroIdx === -1) {
+          throw new Error("No se encontraron las columnas necesarias (código o centro). Se necesita al menos una de estas columnas.");
+        }
+        
+        // Procesar filas de datos
+        for (let i = headerRow + 1; i < jsonData.length; i++) {
+          const row = jsonData[i];
+          if (!Array.isArray(row)) continue;
+          
+          const codigo = codigoIdx !== -1 && codigoIdx < row.length ? (row[codigoIdx]?.toString().trim() || "") : "";
+          const centro = centroIdx !== -1 && centroIdx < row.length ? (row[centroIdx]?.toString().trim() || "") : "";
+          const municipio = municipioIdx !== -1 && municipioIdx < row.length ? (row[municipioIdx]?.toString().trim() || "") : "";
+          
+          // Extraer plazas si está disponible
+          let plazas = 1;
+          if (plazasIdx !== -1 && plazasIdx < row.length && row[plazasIdx] !== undefined) {
+            const plazasValue = parseFloat(row[plazasIdx]);
+            if (!isNaN(plazasValue) && plazasValue > 0) {
+              plazas = plazasValue;
+            }
+          }
+          
+          // Solo necesitamos al menos un código o nombre de centro
+          if ((codigo && codigo.length > 0) || (centro && centro.length > 0)) {
+            centrosDelArchivo.push({
+              codigo: codigo,
+              centro: centro || codigo, // Si no hay centro, usamos el código como nombre
+              municipio: municipio,
+              plazas: plazas
+            });
+          }
+        }
+      } else {
+        // Procesar CSV
+        const text = await file.text();
+        const lines = text.split('\n')
+          .map(line => line.replace(/"/g, '').trim())
+          .filter(Boolean);
+        
+        // Detectar el tipo de separador (punto y coma, coma o tabulador)
+        let separator = ';';
+        const firstLine = lines[0];
+        if (firstLine) {
+          if (firstLine.includes('\t')) {
+            separator = '\t';
+            console.log("Formato detectado: CSV con separador de tabulaciones");
+          } else if (firstLine.includes(',') && !firstLine.includes(';')) {
+            separator = ',';
+            console.log("Formato detectado: CSV con separador de comas");
+          } else {
+            console.log("Formato detectado: CSV con separador de punto y coma");
+          }
+        }
+        
+        // Buscar encabezados
+        let headerRow = -1;
+        for (let i = 0; i < Math.min(20, lines.length); i++) {
+          const line = lines[i].toLowerCase();
+          if (line.includes('codigo') || 
+              line.includes('centro') || 
+              line.includes('municipio') || 
+              line.includes('cod') || 
+              line.includes('cent')) {
+            headerRow = i;
+            break;
+          }
+        }
+        
+        if (headerRow === -1) {
+          throw new Error("No se encontró una línea de encabezado válida en el CSV. Prueba con otro archivo o formato.");
+        }
+        
+        // Analizar encabezados
+        const headers = lines[headerRow].split(separator);
+        console.log("Encabezados CSV encontrados:", headers);
+        
+        const getColumnIndex = (keywords) => {
+          // Primero intentar una coincidencia exacta
+          let index = headers.findIndex(h => 
+            typeof h === 'string' && 
+            keywords.some(k => h.toUpperCase() === k.toUpperCase())
+          );
+          
+          // Si no hay coincidencia exacta, buscar coincidencia parcial
+          if (index === -1) {
+            index = headers.findIndex(h => 
+              typeof h === 'string' && 
+              keywords.some(k => h.toUpperCase().includes(k.toUpperCase()))
+            );
+          }
+          
+          return index;
+        };
+        
+        const codigoIdx = getColumnIndex(['CODIGO', 'CÓDIGO', 'COD', 'CODCENTRO', 'CODIGO_CENTRO']);
+        const centroIdx = getColumnIndex(['CENTRO', 'CENT', 'NOMBRE', 'NOMBRE_CENTRO', 'NOMBRECENTRO', 'NOM_CENTRO']);
+        const municipioIdx = getColumnIndex(['MUNICIPIO', 'MUN', 'LOCALIDAD', 'LOCAL', 'CIUDAD']);
+        const plazasIdx = getColumnIndex(['PLAZAS', 'PLAZA', 'PLAZ', 'NUM_PLAZAS', 'PLAZAS_DISPONIBLES']);
+        
+        console.log("Índices de columnas CSV:", { 
+          codigo: codigoIdx, 
+          centro: centroIdx, 
+          municipio: municipioIdx, 
+          plazas: plazasIdx 
+        });
+        
+        if (codigoIdx === -1 && centroIdx === -1) {
+          throw new Error("No se encontraron las columnas necesarias (código o centro). Se necesita al menos una de estas columnas.");
+        }
+        
+        // Procesar líneas de datos
+        for (let i = headerRow + 1; i < lines.length; i++) {
+          const parts = lines[i].split(separator);
+          
+          const codigo = codigoIdx !== -1 && codigoIdx < parts.length ? (parts[codigoIdx]?.trim() || "") : "";
+          const centro = centroIdx !== -1 && centroIdx < parts.length ? (parts[centroIdx]?.trim() || "") : "";
+          const municipio = municipioIdx !== -1 && municipioIdx < parts.length ? (parts[municipioIdx]?.trim() || "") : "";
+          
+          // Extraer plazas si está disponible
+          let plazas = 1;
+          if (plazasIdx !== -1 && plazasIdx < parts.length && parts[plazasIdx] !== undefined) {
+            const plazasValue = parseFloat(parts[plazasIdx]);
+            if (!isNaN(plazasValue) && plazasValue > 0) {
+              plazas = plazasValue;
+            }
+          }
+          
+          // Solo necesitamos al menos un código o nombre de centro
+          if ((codigo && codigo.length > 0) || (centro && centro.length > 0)) {
+            centrosDelArchivo.push({
+              codigo: codigo,
+              centro: centro || codigo, // Si no hay centro, usamos el código como nombre
+              municipio: municipio,
+              plazas: plazas
+            });
+          }
+        }
+      }
+      
+      console.log(`Se encontraron ${centrosDelArchivo.length} centros en el archivo`);
+      
+      // Identificar centros nuevos (no existentes en la base de datos)
+      const nuevos = centrosDelArchivo.filter(centro => {
+        const codigoNormalizado = centro.codigo.toLowerCase();
+        const nombreNormalizado = centro.centro.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        
+        return !centrosExistentesPorCodigo[codigoNormalizado] && 
+               !centrosExistentesPorNombre[nombreNormalizado];
+      });
+      
+      // Actualizar estado con los centros nuevos
+      setCentrosNuevos(nuevos);
+      
+      // Inicializar selección (todos seleccionados por defecto)
+      const seleccionInicial = {};
+      nuevos.forEach((centro, index) => {
+        seleccionInicial[index] = true;
+      });
+      setSeleccionados(seleccionInicial);
+      
+      setMostrarComparacion(true);
+      setInternalProcessingMessage("");
+      
+      return {
+        total: centrosDelArchivo.length,
+        nuevos: nuevos.length
+      };
+    } catch (error) {
+      console.error("Error al comparar centros:", error);
+      showNotification(`Error al analizar archivo: ${error.message}`, "error");
+      setInternalProcessingMessage("");
+      return null;
+    }
+  };
+  
+  // Función para añadir centros seleccionados a la base de datos
+  const añadirCentrosSeleccionados = async () => {
+    try {
+      setInternalProcessingMessage("Añadiendo centros seleccionados...");
+      
+      // Filtrar solo los centros seleccionados
+      const centrosAñadir = centrosNuevos.filter((_, index) => seleccionados[index]);
+      
+      if (centrosAñadir.length === 0) {
+        showNotification("No hay centros seleccionados para añadir", "warning");
+        setInternalProcessingMessage("");
+        return;
+      }
+      
+      // Obtener ID para nuevos centros
+      const centrosSnapshot = await getDocs(collection(db, "centros"));
+      let nextId = centrosSnapshot.size + 1;
+      
+      // Añadir los centros en batches
+      const BATCH_SIZE = 100;
+      let procesados = 0;
+      
+      for (let i = 0; i < centrosAñadir.length; i += BATCH_SIZE) {
+        const batch = writeBatch(db);
+        const lote = centrosAñadir.slice(i, Math.min(i + BATCH_SIZE, centrosAñadir.length));
+        
+        for (const centro of lote) {
+          const docRef = doc(collection(db, "centros"));
+          batch.set(docRef, {
+            id: (nextId++).toString(),
+            codigo: centro.codigo,
+            centro: centro.centro,
+            nombre: centro.centro,
+            localidad: centro.municipio,
+            municipio: centro.municipio,
+            plazas: centro.plazas,
+            plazasTotal: centro.plazas,
+            asignadas: 0,
+            plazasOcupadas: 0,
+            plazasDisponibles: centro.plazas,
+            docId: docRef.id,
+            timestamp: serverTimestamp()
+          });
+          procesados++;
+        }
+        
+        await batch.commit();
+        setInternalProcessingMessage(`Añadiendo centros: ${procesados}/${centrosAñadir.length}`);
+      }
+      
+      // Recargar datos
+      await cargarDatosDesdeFirebase();
+      
+      showNotification(`Se han añadido ${procesados} centros correctamente`, "success");
+      setMostrarComparacion(false);
+      setCentrosNuevos([]);
+      setSeleccionados({});
+      setInternalProcessingMessage("");
+    } catch (error) {
+      console.error("Error al añadir centros:", error);
+      showNotification(`Error al añadir centros: ${error.message}`, "error");
+      setInternalProcessingMessage("");
+    }
+  };
+  
+  // Añadir botón y sección de importación de centros
+  const renderSeccionImportacionCentros = () => {
+    return (
+      <div style={{
+        backgroundColor: 'white',
+        borderRadius: '10px',
+        padding: '20px',
+        boxShadow: '0 2px 10px rgba(0,0,0,0.05)',
+        marginBottom: '20px'
+      }}>
+        <h3 style={{ marginTop: 0, color: '#2c3e50', marginBottom: '15px' }}>
+          Importación y Comparación de Centros
+        </h3>
+        
+        {!mostrarComparacion ? (
+          <div>
+            <p style={{ marginBottom: '20px' }}>
+              Selecciona un archivo Excel o CSV para comparar con los centros existentes y añadir los nuevos.
+            </p>
+            
+            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '10px' }}>
+              <input
+                type="file"
+                id="fileInput"
+                accept=".csv,.xlsx"
+                style={{ display: 'none' }}
+                onChange={async (e) => {
+                  if (e.target.files && e.target.files.length > 0) {
+                    const file = e.target.files[0];
+                    await compararCentros(file);
+                  }
+                }}
+              />
+              <button
+                onClick={() => document.getElementById('fileInput').click()}
+                style={{
+                  padding: '10px 20px',
+                  backgroundColor: '#3498db',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '5px',
+                  cursor: 'pointer',
+                  fontSize: '14px'
+                }}
+              >
+                Seleccionar Archivo
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div>
+            <div style={{ marginBottom: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h4 style={{ margin: 0 }}>Centros Nuevos Encontrados: {centrosNuevos.length}</h4>
+              <div>
+                <button
+                  onClick={() => {
+                    const nuevoEstado = {};
+                    centrosNuevos.forEach((_, idx) => { nuevoEstado[idx] = true; });
+                    setSeleccionados(nuevoEstado);
+                  }}
+                  style={{
+                    padding: '5px 10px',
+                    backgroundColor: '#2ecc71',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '3px',
+                    cursor: 'pointer',
+                    marginRight: '10px',
+                    fontSize: '12px'
+                  }}
+                >
+                  Seleccionar Todos
+                </button>
+                <button
+                  onClick={() => {
+                    const nuevoEstado = {};
+                    centrosNuevos.forEach((_, idx) => { nuevoEstado[idx] = false; });
+                    setSeleccionados(nuevoEstado);
+                  }}
+                  style={{
+                    padding: '5px 10px',
+                    backgroundColor: '#e74c3c',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '3px',
+                    cursor: 'pointer',
+                    fontSize: '12px'
+                  }}
+                >
+                  Deseleccionar Todos
+                </button>
+              </div>
+            </div>
+            
+            <div style={{ 
+              maxHeight: '400px', 
+              overflowY: 'auto', 
+              border: '1px solid #eee',
+              borderRadius: '5px',
+              marginBottom: '15px'
+            }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ backgroundColor: '#f8f9fa', position: 'sticky', top: 0 }}>
+                    <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #eee' }}>Selec.</th>
+                    <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #eee' }}>Código</th>
+                    <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #eee' }}>Centro</th>
+                    <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #eee' }}>Municipio</th>
+                    <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #eee' }}>Plazas</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {centrosNuevos.map((centro, index) => (
+                    <tr key={index} style={{ borderBottom: '1px solid #eee' }}>
+                      <td style={{ padding: '8px' }}>
+                        <input
+                          type="checkbox"
+                          checked={seleccionados[index] || false}
+                          onChange={() => {
+                            setSeleccionados(prev => ({
+                              ...prev,
+                              [index]: !prev[index]
+                            }));
+                          }}
+                        />
+                      </td>
+                      <td style={{ padding: '8px' }}>{centro.codigo}</td>
+                      <td style={{ padding: '8px' }}>{centro.centro}</td>
+                      <td style={{ padding: '8px' }}>{centro.municipio}</td>
+                      <td style={{ padding: '8px' }}>{centro.plazas}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <button
+                onClick={() => {
+                  setMostrarComparacion(false);
+                  setCentrosNuevos([]);
+                  setSeleccionados({});
+                }}
+                style={{
+                  padding: '10px 20px',
+                  backgroundColor: '#f1f1f1',
+                  color: '#333',
+                  border: 'none',
+                  borderRadius: '5px',
+                  cursor: 'pointer'
+                }}
+              >
+                Cancelar
+              </button>
+              
+              <button
+                onClick={añadirCentrosSeleccionados}
+                style={{
+                  padding: '10px 20px',
+                  backgroundColor: '#2ecc71',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '5px',
+                  cursor: 'pointer'
+                }}
+                disabled={internalProcessingMessage !== ""}
+              >
+                {internalProcessingMessage ? (
+                  <span className="processing-btn">
+                    <span className="processing-indicator"></span>
+                    Procesando...
+                  </span>
+                ) : (
+                  `Añadir ${Object.values(seleccionados).filter(Boolean).length} centros seleccionados`
+                )}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+  
   // Renderizar el panel de administración
   return (
     <div style={{
@@ -364,46 +906,21 @@ const Admin = ({
         `}
       </style>
       
-      <h1 style={{ textAlign: 'center', marginBottom: '20px' }}>Panel de Administración</h1>
+      <h2 style={{ marginBottom: '10px', color: '#333' }}>Panel de Administración</h2>
       
-      {/* Información del panel de administración */}
-      <div style={{ 
-        backgroundColor: '#f8f9fa', 
-        padding: '15px', 
-        borderRadius: '10px',
-        marginBottom: '20px',
-        textAlign: 'center',
-        border: '1px solid #e9ecef'
-      }}>
-        <h3 style={{ marginTop: 0, color: '#2c3e50' }}>Bienvenido al Panel de Administración</h3>
-        <p>
-          Desde aquí puede gestionar las solicitudes pendientes sin que aparezca la pantalla de mantenimiento
-          para los usuarios del sistema. Puede procesar todas las solicitudes a la vez o una por una.
-        </p>
-        <p style={{ fontWeight: 'bold', color: '#3498db' }}>
-          El sistema procesa solicitudes por orden de prioridad, desplazando asignaciones si es necesario.
-        </p>
-      </div>
+      {/* Sección de importación de centros */}
+      {renderSeccionImportacionCentros()}
       
       {/* Acciones administrativas */}
-      <div style={{ 
-        backgroundColor: 'white', 
-        padding: '20px', 
+      <div style={{
+        backgroundColor: 'white',
         borderRadius: '10px',
+        padding: '20px',
         boxShadow: '0 2px 10px rgba(0,0,0,0.05)',
-        marginBottom: '20px',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '15px'
+        marginBottom: '20px'
       }}>
-        <h2>Acciones de Administración</h2>
-        
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
-          gap: '15px'
-        }}>
-          {/* Botón para eliminar duplicados */}
+        <h3 style={{ marginTop: 0, color: '#2c3e50', marginBottom: '15px' }}>Acciones Administrativas</h3>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: '20px' }}>
           <button
             onClick={async () => {
               // Primero eliminar duplicados en solicitudes
@@ -597,7 +1114,11 @@ const Admin = ({
                   return (
                     <tr key={assignment.docId || assignment.id || `assignment-${index}`} style={{ borderBottom: '1px solid #eee' }}>
                       <td style={{ padding: '10px' }}>{assignment.numeroOrden || assignment.order}</td>
-                      <td style={{ padding: '10px' }}>{assignment.nombreCentro || assignment.centerName}</td>
+                      <td style={{ padding: '10px' }}>
+                        {assignment.nombreCentro || assignment.centerName || 
+                         (centroInfo && (centroInfo.nombre || centroInfo.centro)) || 
+                         assignment.centro || assignment.centre || assignment.centerId || "Centro sin nombre"}
+                      </td>
                       <td style={{ padding: '10px' }}>
                         <div style={{ 
                           padding: '5px',
@@ -813,24 +1334,41 @@ const Admin = ({
                           onClick={async () => {
                             try {
                               // Mostrar mensaje de procesamiento
-                              setInternalProcessingMessage(`Procesando solicitud ${solicitud.orden}...`);
+                              setInternalProcessingMessage(`Procesando solicitud ${solicitud.orden || "desconocida"}...`);
                               
-                              // Validar solicitud
-                              if (!solicitud || !solicitud.orden) {
-                                throw new Error("Datos de solicitud incompletos");
+                              // Validar solicitud de forma más robusta
+                              if (!solicitud) {
+                                throw new Error("La solicitud no existe");
+                              }
+                              
+                              // Validar y establecer valores predeterminados
+                              const ordenSolicitud = solicitud.orden || '';
+                              const centrosIds = solicitud.centrosIds || [];
+                              
+                              if (!ordenSolicitud) {
+                                console.warn("Procesando solicitud sin número de orden:", solicitud);
                               }
                               
                               // Verificar si hay centros seleccionados
-                              if (!solicitud.centrosIds || !Array.isArray(solicitud.centrosIds) || solicitud.centrosIds.length === 0) {
+                              if (!Array.isArray(centrosIds) || centrosIds.length === 0) {
                                 throw new Error("La solicitud no tiene centros seleccionados");
                               }
+                              
+                              // Crear objeto de solicitud normalizado
+                              const solicitudNormalizada = {
+                                ...solicitud,
+                                orden: ordenSolicitud,
+                                centrosIds: centrosIds
+                              };
+                              
+                              console.log("Procesando solicitud normalizada:", solicitudNormalizada);
                               
                               // Importar la función procesarSolicitud directamente
                               const { procesarSolicitud } = await import('../utils/assignmentUtils');
                               
                               // Procesar esta solicitud específica
                               const resultado = await procesarSolicitud(
-                                solicitud, 
+                                solicitudNormalizada, 
                                 availablePlazas, 
                                 db
                               );
@@ -854,7 +1392,7 @@ const Admin = ({
                               // Mostrar notificación según resultado
                               setInternalProcessingMessage("");
                               if (resultado.success) {
-                                showNotification(`Solicitud ${solicitud.orden} procesada correctamente`, "success");
+                                showNotification(`Solicitud ${ordenSolicitud} procesada correctamente`, "success");
                               } else if (resultado.noAsignable) {
                                 showNotification(`No se pudo asignar la solicitud: ${resultado.message}`, "warning");
                               } else {
@@ -876,7 +1414,7 @@ const Admin = ({
                           }}
                           disabled={loadingProcess || internalProcessingMessage}
                         >
-                          {internalProcessingMessage && internalProcessingMessage.includes(`Procesando solicitud ${solicitud.orden}`) ? (
+                          {internalProcessingMessage && internalProcessingMessage.includes(`Procesando solicitud ${solicitud.orden || "desconocida"}`) ? (
                             <span className="processing-btn">
                               <span className="processing-indicator"></span>
                               Procesando...
@@ -929,7 +1467,7 @@ const Admin = ({
         }}>
           <h3 style={{ margin: 0, fontSize: '16px', color: '#2c3e50' }}>Resumen de plazas</h3>
           <button
-            onClick={() => {
+            onClick={async () => {
               setInternalProcessingMessage("Recalculando plazas disponibles...");
               
               // Recalcular plazas disponibles para cada centro
@@ -938,7 +1476,7 @@ const Admin = ({
                 
                 // Contar asignaciones para este centro
                 const asignacionesCentro = assignments.filter(
-                  a => a.centerId === centro.id || a.nombreCentro === centro.nombre
+                  a => a.centerId === centro.id || a.id === centro.id || a.nombreCentro === centro.nombre
                 ).length;
                 
                 return {
@@ -949,8 +1487,31 @@ const Admin = ({
                 };
               });
               
-              // Actualizar el estado local temporalmente hasta la próxima recarga completa
-              setInternalProcessingMessage("Plazas disponibles actualizadas correctamente");
+              // Actualizar en la base de datos
+              try {
+                const batch = writeBatch(db);
+                
+                for (const centro of updatedAvailablePlazas) {
+                  if (centro.docId) {
+                    batch.update(doc(db, "centros", centro.docId), {
+                      asignadas: centro.asignadas,
+                      plazasOcupadas: centro.plazasOcupadas
+                    });
+                  }
+                }
+                
+                await batch.commit();
+                setInternalProcessingMessage("Actualizando datos desde Firebase...");
+                
+                // Recargar datos desde Firebase para reflejar los cambios
+                await cargarDatosDesdeFirebase();
+                
+                setInternalProcessingMessage("Plazas disponibles actualizadas correctamente");
+              } catch (error) {
+                console.error("Error al actualizar plazas en la BD:", error);
+                setInternalProcessingMessage("Error al actualizar en la BD: " + error.message);
+              }
+              
               setTimeout(() => setInternalProcessingMessage(""), 2000);
             }}
             style={{
