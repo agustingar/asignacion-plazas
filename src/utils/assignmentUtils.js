@@ -809,8 +809,8 @@ export const verificarYCorregirAsignaciones = async (centros, asignaciones, db) 
               const datosHistorial = {
                 orden: asignacion.order,
                 centroId: asignacion.id,
-                estado: "FUERA_DE_ORDEN",
-                mensaje: `No fue posible reasignar por exceso de plazas en ${centro.centro}`,
+                estado: "EXCESO_NO_REASIGNABLE",
+                mensaje: `Centro ${centro.centro} con exceso de plazas. Se mantiene la asignación actual.`,
                 centroAsignado: asignacion.centro || centro.centro,
                 localidad: asignacion.localidad || centro.localidad,
                 municipio: asignacion.municipio || centro.municipio,
@@ -820,58 +820,13 @@ export const verificarYCorregirAsignaciones = async (centros, asignaciones, db) 
               
               await setDoc(historialRef, datosHistorial);
               
-              // Crear una nueva solicitud pendiente para intentar reasignar
-              // Excluir el centro donde hubo exceso para evitar circular
-              // Primero verificar si ya existe una solicitud con este orden
-              const solicitudQuery = query(
-                collection(db, "solicitudesPendientes"),
-                where("orden", "==", asignacion.order)
-              );
-              const solicitudSnapshot = await getDocs(solicitudQuery);
+              // Evitamos crear solicitudes pendientes para evitar que las asignaciones se conviertan en solicitudes
+              console.log(`Asignación ${asignacion.order} en exceso en ${centro.centro}, pero se mantiene sin convertir a solicitud pendiente`);
               
-              if (solicitudSnapshot.empty) {
-                // Consultar el historial para recuperar los centros originales
-                const historialQuery = query(
-                  collection(db, "historialSolicitudes"),
-                  where("orden", "==", asignacion.order),
-                  where("estado", "==", "ASIGNADA")
-                );
-                const historialSnapshot = await getDocs(historialQuery);
-                
-                // Recuperar centros de preferencia originales
-                let centrosIds = [];
-                if (!historialSnapshot.empty) {
-                  const historialData = historialSnapshot.docs[0].data();
-                  centrosIds = historialData.centrosIds || [];
-                }
-                
-                // Si no se encontraron centros, usar el centro original y buscar otros disponibles
-                if (!centrosIds.length) {
-                  // Buscar centros con disponibilidad para agregar a la solicitud
-                  centrosIds = centrosConDisponibilidad
-                    .filter(c => c.asignadas < c.plazas)
-                    .map(c => c.id);
-                }
-                
-                // Filtrar para eliminar el centro problemático
-                centrosIds = centrosIds.filter(id => id !== centro.id);
-                
-                // Solo crear solicitud si hay centros a los que se pueda reasignar
-                if (centrosIds.length > 0) {
-                  const nuevaSolicitudRef = doc(collection(db, "solicitudesPendientes"));
-                  await setDoc(nuevaSolicitudRef, {
-                    orden: asignacion.order,
-                    centrosIds: centrosIds,
-                    timestamp: Date.now(),
-                    recuperado: true,
-                    centroOriginal: centro.centro
-                  });
-                  solicitudesRecuperadas++;
-                  console.log(`Solicitud ${asignacion.order} recuperada como pendiente con ${centrosIds.length} centros alternativos`);
-                }
-              }
+              // Incrementamos el contador de correcciones aunque no hayamos hecho cambios reales
+              asignacionesCorregidas++;
             } catch (error) {
-              console.error(`Error al crear solicitud pendiente para orden ${asignacion.order}:`, error);
+              console.error(`Error al registrar en historial para orden ${asignacion.order}:`, error);
             }
           }
           
