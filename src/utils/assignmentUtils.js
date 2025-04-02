@@ -344,16 +344,23 @@ export const procesarSolicitudes = async (
     for (const operacion of historialOperaciones) {
       try {
         const historialRef = doc(collection(db, "historialSolicitudes"));
-        await setDoc(historialRef, {
+        
+        // Crear objeto con solo campos que tengan un valor definido
+        const historialData = {
           orden: operacion.orden,
           estado: operacion.tipo,
-          centroId: operacion.centroId,
-          centroAsignado: operacion.centro,
-          centroAnterior: operacion.centroAnterior,
-          mensaje: operacion.mensaje,
           fechaHistorico: new Date().toISOString(),
           timestamp: Date.now()
-        });
+        };
+        
+        // Añadir campos solo si existen y no son undefined
+        if (operacion.centroId !== undefined) historialData.centroId = operacion.centroId;
+        if (operacion.centro !== undefined) historialData.centroAsignado = operacion.centro;
+        if (operacion.centroAnterior !== undefined) historialData.centroAnterior = operacion.centroAnterior;
+        if (operacion.mensaje !== undefined) historialData.mensaje = operacion.mensaje;
+        
+        // Guardar en Firestore asegurando que no hay campos undefined
+        await setDoc(historialRef, historialData);
       } catch (error) {
         console.error(`Error al registrar historial para orden ${operacion.orden}:`, error);
       }

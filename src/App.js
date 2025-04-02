@@ -1081,7 +1081,9 @@ function App() {
   }, [loadingProcess, solicitudes.length, isMaintenanceMode]);
   
   // Función para procesar todas las solicitudes pendientes
-  const procesarTodasLasSolicitudes = async () => {
+  const procesarTodasLasSolicitudes = async (options = {}) => {
+    const { respetarAsignacionesExistentes = true } = options;
+    
     // Evitar procesamiento simultáneo
     if (processingRef.current) {
       console.log("Ya hay un procesamiento en curso. Espera a que termine.");
@@ -1113,13 +1115,31 @@ function App() {
         centrosIds: doc.data().centrosIds || doc.data().centrosSeleccionados || []
       }));
       
-      console.log(`Procesando ${solicitudesPendientes.length} solicitudes pendientes...`);
-      setProcessingMessage(`Procesando ${solicitudesPendientes.length} solicitudes pendientes...`);
+      // Ordenar las solicitudes por número de orden (menor a mayor)
+      const solicitudesOrdenadas = solicitudesPendientes.sort((a, b) => {
+        return Number(a.orden) - Number(b.orden);
+      });
+      
+      console.log(`Procesando ${solicitudesOrdenadas.length} solicitudes pendientes ordenadas por prioridad...`);
+      setProcessingMessage(`Procesando ${solicitudesOrdenadas.length} solicitudes pendientes...`);
+      
+      // Modificar la forma en que procesamos las asignaciones
+      let assignmentsToUse = assignments;
+      
+      // Si está configurado para respetar asignaciones existentes, 
+      // proporcionamos un array vacío para que no se procesen las existentes
+      if (respetarAsignacionesExistentes) {
+        console.log("Modo ejecución automática: Se respetarán las asignaciones existentes");
+        // Pasamos un array vacío como asignaciones existentes para que no se modifiquen
+        assignmentsToUse = [];
+      } else {
+        console.log("Modo ejecución manual: Se procesarán todas las asignaciones según prioridad");
+      }
       
       // Procesar todas las solicitudes en orden
       const resultado = await procesarSolicitudes(
-        solicitudesPendientes, 
-        assignments,
+        solicitudesOrdenadas, 
+        assignmentsToUse, // Pasar asignaciones vacías o completas según configuración
         availablePlazas,
         setProcessingMessage
       );
@@ -1131,16 +1151,18 @@ function App() {
         console.log("Procesamiento completado:", resultado.message);
         setProcessingMessage(resultado.message);
         
-        // Verificar y corregir asignaciones
-        try {
-          const verificacionResult = await verificarYCorregirAsignacionesWrapper();
-          
-          if (verificacionResult && verificacionResult.corregidos > 0) {
-            console.log(`Corregidas ${verificacionResult.corregidos} asignaciones con exceso`);
-            setProcessingMessage(prevMsg => `${prevMsg} Corregidas ${verificacionResult.corregidos} asignaciones con exceso.`);
+        // Verificar y corregir asignaciones solo si no estamos respetando las existentes
+        if (!respetarAsignacionesExistentes) {
+          try {
+            const verificacionResult = await verificarYCorregirAsignacionesWrapper();
+            
+            if (verificacionResult && verificacionResult.corregidos > 0) {
+              console.log(`Corregidas ${verificacionResult.corregidos} asignaciones con exceso`);
+              setProcessingMessage(prevMsg => `${prevMsg} Corregidas ${verificacionResult.corregidos} asignaciones con exceso.`);
+            }
+          } catch (verificacionError) {
+            console.error("Error en verificación de asignaciones:", verificacionError);
           }
-        } catch (verificacionError) {
-          console.error("Error en verificación de asignaciones:", verificacionError);
         }
         
         // Actualizar última fecha de procesamiento
@@ -1167,7 +1189,7 @@ function App() {
           if (cantidadPendientes < 5) {
             console.log("Realizando un segundo intento automático para procesar solicitudes restantes...");
             setTimeout(() => {
-              procesarTodasLasSolicitudes();
+              procesarTodasLasSolicitudes({respetarAsignacionesExistentes});
             }, 3000);
           }
         } else {
@@ -1239,7 +1261,7 @@ function App() {
       // Verificar si ya existe una asignación para este número de orden
       try {
         const existingAssignmentSnapshot = await getDocs(
-          query(collection(db, "asignaciones"), where("orden", "==", orderNumberNumeric))
+          query(collection(db, "asignaciones"), where("order", "==", orderNumberNumeric))
         );
         
         if (!existingAssignmentSnapshot.empty) {
@@ -1270,36 +1292,44 @@ function App() {
         return false;
       }
       
-      // Usar una transacción para garantizar atomicidad
+      // Añadir/actualizar la solicitud en la colección de solicitudes pendientes
       try {
-        await runTransaction(db, async (transaction) => {
-          if (existingRequestId) {
-            // Actualizar la solicitud existente
-            const requestRef = doc(db, "solicitudesPendientes", existingRequestId);
-            transaction.update(requestRef, {
-              centrosSeleccionados: selectedCenters,
-              timestamp: serverTimestamp()
-            });
-            console.log(`Actualizada solicitud existente ${existingRequestId} para orden ${orderNumberNumeric}`);
-          } else {
-            // Crear una nueva solicitud
-            const newRequest = {
-              orden: orderNumberNumeric,
-              centrosSeleccionados: selectedCenters,
-              timestamp: serverTimestamp()
-            };
-            
-            const requestRef = doc(collection(db, "solicitudesPendientes"));
-            transaction.set(requestRef, newRequest);
-            console.log(`Creada nueva solicitud para orden ${orderNumberNumeric}`);
-          }
-        });
+        if (existingRequestId) {
+          // Actualizar la solicitud existente
+          await updateDoc(doc(db, "solicitudesPendientes", existingRequestId), {
+            centrosSeleccionados: selectedCenters,
+            timestamp: serverTimestamp()
+          });
+          console.log(`Actualizada solicitud existente ${existingRequestId} para orden ${orderNumberNumeric}`);
+        } else {
+          // Crear una nueva solicitud
+          const newRequest = {
+            orden: orderNumberNumeric,
+            centrosSeleccionados: selectedCenters,
+            timestamp: serverTimestamp()
+          };
+          
+          await setDoc(doc(collection(db, "solicitudesPendientes")), newRequest);
+          console.log(`Creada nueva solicitud para orden ${orderNumberNumeric}`);
+        }
         
         console.log(`Solicitud para orden ${orderNumberNumeric} enviada correctamente`);
-        showNotification(`Solicitud para orden ${orderNumberNumeric} enviada correctamente`, "success");
+        showNotification(`Solicitud para orden ${orderNumberNumeric} enviada correctamente. Será procesada automáticamente.`, "success");
         
-        // Recargar datos después de la operación
+        // Recargar datos después de la operación SOLO para mostrar la nueva solicitud pendiente
+        // NO procesamos la solicitud inmediatamente
         await cargarDatosDesdeFirebase();
+        
+        // Registrar en historial
+        const historialRef = doc(collection(db, "historialSolicitudes"));
+        await setDoc(historialRef, {
+          orden: orderNumberNumeric,
+          centrosIds: selectedCenters,
+          estado: "PENDIENTE",
+          mensaje: "Solicitud añadida a la cola de procesamiento",
+          fechaHistorico: new Date().toISOString(),
+          timestamp: Date.now()
+        });
         
         // Limpiar los campos del formulario
         setOrderNumber('');
@@ -1309,9 +1339,9 @@ function App() {
         setActiveTab('solicitudes');
         
         return true;
-      } catch (transactionError) {
-        console.error("Error en transacción:", transactionError);
-        showNotification(`Error al procesar la solicitud: ${transactionError.message}`, "error");
+      } catch (error) {
+        console.error("Error al guardar solicitud:", error);
+        showNotification(`Error al procesar la solicitud: ${error.message}`, "error");
         return false;
       }
     } catch (error) {
@@ -1789,11 +1819,7 @@ function App() {
       return false;
     };
     
-    // Marcar como ejecutado
-    const marcarComoEjecutado = () => {
-      localStorage.setItem('ultimaVerificacionDiaria', Date.now().toString());
-    };
-    
+    // Programar la verificación a las 2 AM, solo si no se ha ejecutado hoy
     const programarVerificacionDiaria = () => {
       const ahora = new Date();
       const horaVerificacion = new Date();
@@ -1811,15 +1837,18 @@ function App() {
     
       // Programar la verificación a las 2 AM
       const timeoutId = setTimeout(() => {
-        console.log('Ejecutando verificación diaria programada (2:00 AM)');
+        console.log('Comprobando si se debe ejecutar la verificación diaria (2:00 AM)');
         
         // Solo ejecutar si no se ha hecho hoy
         if (!verificarSiYaEjecutado()) {
-          verificarYCorregirAsignacionesWrapper().then((resultado) => {
-            if (resultado && resultado.success) {
-              marcarComoEjecutado();
-            }
-            // Reprogramar para la próxima verificación después de completar
+          console.log('Iniciando verificación diaria programada (2:00 AM)');
+          
+          // Solo procesar las solicitudes pendientes, sin tocar las asignaciones existentes
+          // Este es el comportamiento predeterminado ahora
+          procesarTodasLasSolicitudes({ respetarAsignacionesExistentes: true }).then(() => {
+            localStorage.setItem('ultimaVerificacionDiaria', Date.now().toString());
+            console.log('Verificación diaria completada y marcada como ejecutada hoy');
+            // Reprogramar para la próxima verificación
             programarVerificacionDiaria();
           });
         } else {
@@ -1830,10 +1859,6 @@ function App() {
       
       return timeoutId;
     };
-    
-    // Guardar la hora actual para evitar reprogramaciones frecuentes
-    const fechaActual = new Date();
-    console.log(`Configurando verificación diaria a las 2:00 AM. Hora actual: ${fechaActual.toLocaleTimeString()}`);
     
     // Iniciar la programación
     const timeoutId = programarVerificacionDiaria();
@@ -1851,8 +1876,29 @@ function App() {
     const ejecutarLimpiezaInicial = async () => {
       console.log("Iniciando limpieza inicial de duplicados...");
       
+      // Verificar si ya se ha ejecutado hoy
+      const verificarSiYaEjecutado = () => {
+        const ultimaVerificacion = localStorage.getItem('ultimaVerificacionDiaria');
+        if (ultimaVerificacion) {
+          const fechaUltimaVerificacion = new Date(Number(ultimaVerificacion));
+          const ahora = new Date();
+          
+          // Comparar fecha (ignorando la hora)
+          const esHoy = fechaUltimaVerificacion.getDate() === ahora.getDate() &&
+                      fechaUltimaVerificacion.getMonth() === ahora.getMonth() &&
+                      fechaUltimaVerificacion.getFullYear() === ahora.getFullYear();
+          
+          if (esHoy) {
+            console.log(`La verificación diaria ya se ejecutó hoy a las ${fechaUltimaVerificacion.toLocaleTimeString()}`);
+            return true;
+          }
+        }
+        return false;
+      };
+      
+      // Solo ejecutar limpieza de duplicados, no la verificación completa
       if (!isProcessing && !loadingProcess) {
-        // Limpiar duplicados en solicitudes y asignaciones
+        // Limpiar duplicados en solicitudes y asignaciones (sin tocar asignaciones existentes)
         await eliminarSolicitudesDuplicadas();
         
         // Verificar si ya se ha ejecutado la limpieza del historial
@@ -1865,13 +1911,8 @@ function App() {
       }
     };
     
-    // Ejecutar limpieza solo al iniciar la aplicación
+    // Ejecutar limpieza solo al iniciar la aplicación, sin verificar asignaciones
     ejecutarLimpiezaInicial();
-    
-    // NOTA: Eliminamos el setInterval que ejecutaba esta función cada minuto
-    // para evitar comprobaciones frecuentes con alto volumen de usuarios
-    
-    // No hay nada que limpiar en el return porque ya no usamos setInterval
     
   }, [isProcessing, loadingProcess]); // Mantener las dependencias para que se vuelva a ejecutar si el estado cambia
 
@@ -2466,8 +2507,8 @@ function App() {
       setShowPasswordModal(false);
       setAdminPassword('');
       setPasswordError(false);
-      // Ejecutar verificación
-      verificarYCorregirAsignacionesWrapper();
+      // Ejecutar verificación manual (no respeta asignaciones existentes)
+      procesarTodasLasSolicitudes({ respetarAsignacionesExistentes: false });
     } else {
       setPasswordError(true);
       setTimeout(() => setPasswordError(false), 3000);
