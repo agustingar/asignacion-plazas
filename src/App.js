@@ -507,67 +507,188 @@ function App() {
     console.log("Iniciando carga de datos desde Firebase...");
     
     try {
-      // Cargar centros
-      const centrosSnapshot = await getDocs(collection(db, "centrosTrabajo"));
+      // DIAGNÓSTICO: Verificar qué colecciones existen
+      console.log("Verificando colecciones disponibles en Firebase...");
+      
+      // Cargar centros - probar diferentes nombres de colección
+      console.log("Intentando cargar centros...");
+      let centrosSnapshot = await getDocs(collection(db, "centros"));
+      
+      if (centrosSnapshot.empty) {
+        console.warn("⚠️ No se encontraron centros en la colección 'centros'");
+        // Intentar con nombre alternativo
+        const centrosAltRef = collection(db, "centrosTrabajo");
+        centrosSnapshot = await getDocs(centrosAltRef);
+        
+        if (centrosSnapshot.empty) {
+          console.error("❌ No se encontraron centros en ninguna colección");
+        } else {
+          console.log("✅ Se encontraron centros en la colección 'centrosTrabajo':", centrosSnapshot.size);
+        }
+      } else {
+        console.log("✅ Se encontraron centros en la colección 'centros':", centrosSnapshot.size);
+      }
+      
+      // Cargar asignaciones para calcular correctamente las plazas asignadas
+      console.log("Intentando cargar asignaciones para contar plazas ocupadas...");
+      let asignacionesSnapshot = await getDocs(collection(db, "asignaciones"));
+      
+      if (asignacionesSnapshot.empty) {
+        console.warn("⚠️ No se encontraron asignaciones en la colección 'asignaciones'");
+        // Intentar con nombre alternativo
+        const asignacionesAltRef = collection(db, "asignacionesActuales");
+        asignacionesSnapshot = await getDocs(asignacionesAltRef);
+        
+        if (asignacionesSnapshot.empty) {
+          console.error("❌ No se encontraron asignaciones en ninguna colección");
+        } else {
+          console.log("✅ Se encontraron asignaciones en la colección 'asignacionesActuales':", asignacionesSnapshot.size);
+        }
+      } else {
+        console.log("✅ Se encontraron asignaciones en la colección 'asignaciones':", asignacionesSnapshot.size);
+      }
+      
+      // Contar asignaciones por centro
+      const asignacionesPorCentro = {};
+      asignacionesSnapshot.forEach(doc => {
+        const data = doc.data();
+        if (data && data.centerId) {
+          const centroId = data.centerId;
+          asignacionesPorCentro[centroId] = (asignacionesPorCentro[centroId] || 0) + 1;
+        }
+      });
+      
+      console.log("Conteo de asignaciones por centro:", asignacionesPorCentro);
+      
       let centrosData = {};
       centrosSnapshot.forEach(doc => {
         const data = doc.data();
+        console.log("Centro encontrado:", doc.id, data);
+        
+        // Determinar el número total de plazas
+        const plazasTotal = parseInt(data.plazas || data.plazasTotal || 0, 10);
+        
+        // Obtener asignaciones actuales para este centro desde nuestro conteo
+        const plazasAsignadas = asignacionesPorCentro[doc.id] || 0;
+        
+        // Calcular plazas disponibles
+        const plazasDisponibles = Math.max(0, plazasTotal - plazasAsignadas);
+        
         centrosData[doc.id] = {
           id: doc.id,
-          nombre: data.nombre || "",
-          plazasDisponibles: parseInt(data.plazasDisponibles || 0, 10),
-          plazasOcupadas: parseInt(data.plazasOcupadas || 0, 10),
-          plazasTotal: parseInt(data.plazasTotal || 0, 10),
+          nombre: data.nombre || data.centro || "Centro sin nombre",
+          // Usar nombres de campos para compatibilidad con PlazasDisponibles.js
+          plazas: plazasTotal,
+          asignadas: plazasAsignadas,
+          // También mantener campos normalizados
+          plazasDisponibles: plazasDisponibles,
+          plazasOcupadas: plazasAsignadas,
+          plazasTotal: plazasTotal,
           direccion: data.direccion || "",
-          codigoCentro: data.codigoCentro || "",
+          codigoCentro: data.codigoCentro || data.id || "",
           estadoCentro: data.estadoCentro || "Activo"
         };
       });
       
-      // Cargar asignaciones actuales
-      const asignacionesSnapshot = await getDocs(collection(db, "asignacionesActuales"));
+      // Si no se encontraron centros, intentar crear algunos por defecto para diagnóstico
+      if (Object.keys(centrosData).length === 0) {
+        console.warn("⚠️ Creando centros de prueba para diagnóstico");
+        centrosData["centro1"] = {
+          id: "centro1",
+          nombre: "Centro de Prueba 1",
+          plazas: 10,
+          asignadas: 0,
+          plazasDisponibles: 10,
+          plazasOcupadas: 0,
+          plazasTotal: 10,
+          direccion: "Dirección de prueba",
+          codigoCentro: "CP001",
+          estadoCentro: "Activo"
+        };
+        
+        centrosData["centro2"] = {
+          id: "centro2",
+          nombre: "Centro de Prueba 2",
+          plazas: 7,
+          asignadas: 2,
+          plazasDisponibles: 5,
+          plazasOcupadas: 2,
+          plazasTotal: 7,
+          direccion: "Otra dirección",
+          codigoCentro: "CP002",
+          estadoCentro: "Activo"
+        };
+      }
+      
+      console.log("Centros procesados:", Object.keys(centrosData).length);
+      
+      // Cargar asignaciones para mostrar en el panel de admin
+      console.log("Procesando asignaciones para mostrar...");
+      
       let asignacionesData = {};
       asignacionesSnapshot.forEach(doc => {
         const data = doc.data();
-        if (data && data.centerId) {
+        console.log("Asignación encontrada:", doc.id, data);
+        if (data) {
           asignacionesData[doc.id] = {
             id: doc.id,
-            numeroOrden: data.numeroOrden || 0,
-            centerId: data.centerId || "",
-            centroPrevio: data.centroPrevio || "",
-            nombreCentro: centrosData[data.centerId]?.nombre || "Centro no encontrado",
+            numeroOrden: data.order || data.numeroOrden || 0,
+            centerId: data.centerId || data.centro || "",
+            centroPrevio: data.centroPrevio || data.centroAnterior || "",
+            nombreCentro: centrosData[data.centerId]?.nombre || data.centerName || "Centro no encontrado",
             timestamp: data.timestamp || Date.now(),
             fechaAsignacion: data.fechaAsignacion || new Date().toISOString()
           };
         }
       });
       
+      console.log("Asignaciones procesadas:", Object.keys(asignacionesData).length);
+      
       // Cargar solicitudes pendientes
-      const solicitudesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
+      console.log("Intentando cargar solicitudes pendientes...");
+      const solicitudesRef = collection(db, "solicitudesPendientes");
+      const solicitudesSnapshot = await getDocs(solicitudesRef);
+      
+      if (solicitudesSnapshot.empty) {
+        console.warn("⚠️ No se encontraron solicitudes pendientes");
+      } else {
+        console.log("✅ Se encontraron solicitudes pendientes:", solicitudesSnapshot.size);
+      }
+      
       let solicitudesData = {};
       solicitudesSnapshot.forEach(doc => {
         const data = doc.data();
+        console.log("Solicitud encontrada:", doc.id, data);
         solicitudesData[doc.id] = {
           id: doc.id,
-          numeroOrden: data.numeroOrden || 0,
-          centerId: data.centerId || "",
-          centroPrevio: data.centroPrevio || "",
-          nombreCentro: centrosData[data.centerId]?.nombre || "Centro no encontrado",
+          numeroOrden: data.orden || data.numeroOrden || 0,
+          centrosIds: data.centrosIds || data.centrosSeleccionados || [],
           timestamp: data.timestamp || Date.now(),
           fechaSolicitud: data.fechaSolicitud || new Date().toISOString(),
           estado: data.estado || "Pendiente"
         };
       });
       
+      console.log("Solicitudes procesadas:", Object.keys(solicitudesData).length);
+      
       // Cargar historial
-      const historialSnapshot = await getDocs(collection(db, "historialSolicitudes"));
+      console.log("Intentando cargar historial...");
+      const historialRef = collection(db, "historialSolicitudes");
+      const historialSnapshot = await getDocs(historialRef);
+      
+      if (historialSnapshot.empty) {
+        console.warn("⚠️ No se encontró historial de solicitudes");
+      } else {
+        console.log("✅ Se encontró historial de solicitudes:", historialSnapshot.size);
+      }
+      
       let historialData = [];
       historialSnapshot.forEach(doc => {
         const data = doc.data();
         historialData.push({
           id: doc.id,
-          numeroOrden: data.numeroOrden || 0,
-          centerId: data.centerId || "",
+          numeroOrden: data.orden || data.numeroOrden || 0,
+          centerId: data.centerId || data.centro || "",
           centroPrevio: data.centroPrevio || "",
           centroAnterior: data.centroAnterior || "",
           nombreCentro: centrosData[data.centerId]?.nombre || "Centro no encontrado",
@@ -575,18 +696,26 @@ function App() {
           timestamp: data.timestamp || Date.now(),
           fechaHistorico: data.fechaHistorico || new Date().toISOString(),
           estado: data.estado || "Procesado",
-          accion: data.accion || "Asignación"
+          accion: data.accion || "Asignación",
+          mensaje: data.mensaje || ""
         });
       });
       
       // Ordenar historial por timestamp (más recientes primero)
-      historialData.sort((a, b) => b.timestamp - a.timestamp);
+      historialData.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
       
-      // Actualizar el estado
+      console.log("Historial procesado:", historialData.length, "registros");
+      
+      // Actualizar el estado con los datos normalizados
+      setAvailablePlazas(Object.values(centrosData));
+      setAssignments(Object.values(asignacionesData));
+      setSolicitudes(Object.values(solicitudesData));
+      setHistorialSolicitudes(historialData);
+      
+      // Actualizar también los estados nuevos
       setCentros(centrosData);
       setAsignaciones(asignacionesData);
       setSolicitudesPendientes(solicitudesData);
-      setHistorialSolicitudes(historialData);
       
       // Calcular contadores
       const totalAsignaciones = Object.keys(asignacionesData).length;
@@ -606,13 +735,23 @@ function App() {
         plazasDisponiblesPorCentro[centro.id] = {
           id: centro.id,
           nombre: centro.nombre,
+          plazas: centro.plazas,
+          asignadas: centro.asignadas,
           plazasDisponibles: centro.plazasDisponibles,
+          plazasTotal: centro.plazasTotal,
           codigoCentro: centro.codigoCentro,
           estadoCentro: centro.estadoCentro
         };
       });
       
       setPlazasDisponibles(plazasDisponiblesPorCentro);
+      
+      console.log("Datos de plazas actualizados. Totales:", {
+        totalCentros: Object.keys(centrosData).length,
+        totalPlazas: Object.values(centrosData).reduce((sum, c) => sum + c.plazasTotal, 0),
+        plazasAsignadas: Object.values(centrosData).reduce((sum, c) => sum + c.asignadas, 0),
+        plazasDisponibles: Object.values(centrosData).reduce((sum, c) => sum + c.plazasDisponibles, 0)
+      });
       
       console.log("Datos cargados correctamente:", {
         centros: totalCentros,
@@ -624,6 +763,7 @@ function App() {
       return true;
     } catch (error) {
       console.error("Error al cargar datos desde Firebase:", error);
+      console.error("Detalles del error:", error.code, error.message, error.stack);
       return false;
     }
   };
@@ -3281,7 +3421,7 @@ function App() {
                         <td style={{ padding: '10px' }}>{assignment.order}</td>
                         <td style={{ padding: '10px' }}>{assignment.centerName}</td>
                         <td style={{ padding: '10px' }}>
-                          {plazasDisponibles} / {plazasTotal}
+                          <strong>{plazasDisponibles}</strong> disponibles / <strong>{centroInfo.asignadas || 0}</strong> asignadas / <strong>{plazasTotal}</strong> total
                         </td>
                         <td style={{ padding: '10px' }}>
                           <button 
@@ -3446,7 +3586,7 @@ function App() {
                                 backgroundColor: index === 0 ? '#f2f9ff' : 'transparent',
                                 borderRadius: '3px'
                               }}>
-                                {centro.nombre || centro.centro || `Centro ID: ${centroId}`}
+                                <strong>{plazasDisponibles}</strong> disponibles / <strong>{centro.asignadas || 0}</strong> asignadas / <strong>{centro.plazas || 0}</strong> total
                               </div>
                             );
                           })}
@@ -3543,7 +3683,11 @@ function App() {
           fontSize: '14px',
           color: '#666'
         }}>
-          <p>Plazas asignadas: {assignments.length} / Plazas disponibles: {7066 - assignments.length}</p>
+          <p>Plazas asignadas: {assignments.length} / Plazas disponibles: {
+            // Calcular el total de plazas disponibles sumando las de cada centro
+            availablePlazas.reduce((total, centro) => 
+              total + Math.max(0, (centro.plazas || 0) - (centro.asignadas || 0)), 0)
+          }</p>
           <p>Última actualización: {lastProcessed && typeof lastProcessed.getTime === 'function' ? lastProcessed.toLocaleString() : 'No disponible'}</p>
         </div>
         
@@ -3584,82 +3728,38 @@ function App() {
     <div className="App" style={styles.container}>
       {/* Modal de contraseña para administrador */}
       {showPasswordModal && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          width: '100%',
-          height: '100%',
-          backgroundColor: 'rgba(0,0,0,0.7)',
-          zIndex: 1000,
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center'
-        }}>
-          <div style={{
-            backgroundColor: 'white',
-            padding: '20px',
-            borderRadius: '8px',
-            width: '300px',
-            maxWidth: '90%'
-          }}>
-            <h3 style={{ marginTop: 0, color: '#333' }}>Autenticación Requerida</h3>
-            <p style={{ fontSize: '14px', color: '#666' }}>
-              Ingrese la contraseña de administrador para continuar.
-            </p>
-            
-            <input
-              type="password"
-              placeholder="Contraseña"
-              value={adminPassword}
-              onChange={(e) => setAdminPassword(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && handleAdminAuth()}
-              style={{
-                width: '100%',
-                padding: '10px',
-                border: passwordError ? '1px solid #e74c3c' : '1px solid #ddd',
-                borderRadius: '4px',
-                marginBottom: '10px'
-              }}
-            />
-            
-            {passwordError && (
-              <p style={{ color: '#e74c3c', fontSize: '12px', marginTop: 0 }}>
-                Contraseña incorrecta. Inténtelo de nuevo.
-              </p>
-            )}
-            
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
-              <button
-                onClick={() => {
-                  setShowPasswordModal(false);
-                  setAdminPassword('');
-                  setPasswordError(false);
-                }}
-                style={{
-                  padding: '8px 15px',
-                  backgroundColor: '#f1f1f1',
-                  border: 'none',
-                  borderRadius: '4px',
-                  cursor: 'pointer'
-                }}
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={handleAdminAuth}
-                style={{
-                  padding: '8px 15px',
-                  backgroundColor: '#3498db',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '4px',
-                  cursor: 'pointer'
-                }}
-              >
-                Verificar
-              </button>
-            </div>
+        <div className="modal-backdrop">
+          <div className="modal-content password-modal">
+            <h3>Verificación de Administrador</h3>
+            <p>Ingrese la contraseña para ejecutar la verificación</p>
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              handleAdminAuth();
+            }}>
+              <input 
+                type="password" 
+                value={adminPassword}
+                onChange={(e) => setAdminPassword(e.target.value)}
+                placeholder="Contraseña"
+              />
+              {passwordError && <p className="error-message">{passwordError}</p>}
+              <div className="modal-actions">
+                <button 
+                  type="button" 
+                  className="modal-button cancel" 
+                  onClick={() => {
+                    setShowPasswordModal(false);
+                    setAdminPassword('');
+                    setPasswordError('');
+                  }}
+                >
+                  Cancelar
+                </button>
+                <button type="submit" className="modal-button">
+                  Verificar
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

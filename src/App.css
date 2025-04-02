@@ -36,3 +36,78 @@
     transform: rotate(360deg);
   }
 }
+
+/* Estilos para la modal */
+.modal-backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.7);
+  z-index: 1000;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.modal-content {
+  background-color: #fff;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+  width: 400px;
+  max-width: 90%;
+}
+
+.password-modal form {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.password-modal input[type="password"] {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  font-size: 16px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.modal-button {
+  padding: 10px 16px;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  background-color: #4285f4;
+  color: white;
+  transition: background-color 0.2s;
+}
+
+.modal-button:hover {
+  background-color: #3367d6;
+}
+
+.modal-button.cancel {
+  background-color: #f1f1f1;
+  color: #333;
+}
+
+.modal-button.cancel:hover {
+  background-color: #e0e0e0;
+}
+
+.error-message {
+  color: #d32f2f;
+  font-size: 14px;
+  margin: 0;
+}
