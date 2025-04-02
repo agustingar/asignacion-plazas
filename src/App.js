@@ -45,6 +45,8 @@ function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [assignment, setAssignment] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
+  // Añadir un estado separado para el buscador de solicitudes
+  const [searchTermSolicitudes, setSearchTermSolicitudes] = useState('');
   
   // Estados para el popup de notificación
   const [showPopup, setShowPopup] = useState(false);
@@ -75,6 +77,10 @@ function App() {
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [adminPassword, setAdminPassword] = useState('');
   const [passwordError, setPasswordError] = useState(false);
+
+  // Añadir estados para el buscador del panel de administración
+  const [adminSearchTerm, setAdminSearchTerm] = useState('');
+  const [adminSearchFilter, setAdminSearchFilter] = useState('all'); // 'all', 'order', 'center'
 
   // Función para mostrar un popup con mensaje
   const showNotification = (message, type = 'success') => {
@@ -3056,80 +3062,139 @@ function App() {
         }}>
           <h2>Asignaciones Actuales</h2>
           
+          {/* Buscador de asignaciones */}
+          <div style={{ marginBottom: '15px' }}>
+            <input
+              type="text"
+              placeholder="Buscar por número de orden o centro..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '10px',
+                border: '1px solid #ddd',
+                borderRadius: '5px',
+                marginBottom: '10px'
+              }}
+            />
+          </div>
+          
           {assignments.length > 0 ? (
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ backgroundColor: '#f8f9fa' }}>
                   <th style={{ padding: '10px', textAlign: 'left' }}>Orden</th>
                   <th style={{ padding: '10px', textAlign: 'left' }}>Centro Asignado</th>
+                  <th style={{ padding: '10px', textAlign: 'left' }}>Plazas Disponibles</th>
                   <th style={{ padding: '10px', textAlign: 'left' }}>Acciones</th>
                 </tr>
               </thead>
               <tbody>
                 {assignments
                   .sort((a, b) => Number(a.order) - Number(b.order)) // Ordenar por número de orden
-                  .map(assignment => (
-                    <tr key={assignment.docId} style={{ borderBottom: '1px solid #eee' }}>
-                      <td style={{ padding: '10px' }}>{assignment.order}</td>
-                      <td style={{ padding: '10px' }}>{assignment.centerName}</td>
-                      <td style={{ padding: '10px' }}>
-                        <button 
-                          onClick={async () => {
-                            // Eliminar la asignación y volverla a poner como solicitud pendiente
-                            try {
-                              // Crear una nueva solicitud pendiente
-                              const nuevaSolicitud = {
-                                orden: assignment.order,
-                                centrosIds: [assignment.centerId],
-                                timestamp: serverTimestamp()
-                              };
-                              
-                              // Usar una transacción para garantizar la consistencia
-                              await runTransaction(db, async (transaction) => {
-                                // Añadir como solicitud pendiente
+                  .filter(assignment => {
+                    const searchTermLower = searchTerm.toLowerCase();
+                    return (
+                      String(assignment.order).includes(searchTermLower) ||
+                      (assignment.centerName && assignment.centerName.toLowerCase().includes(searchTermLower))
+                    );
+                  })
+                  .map(assignment => {
+                    // Buscar info del centro para mostrar plazas disponibles
+                    const centroInfo = availablePlazas.find(c => c.id === assignment.centerId) || {};
+                    const plazasDisponibles = centroInfo.plazas ? centroInfo.plazas - (centroInfo.asignadas || 0) : 'N/A';
+                    const plazasTotal = centroInfo.plazas || 'N/A';
+                    
+                    return (
+                      <tr key={assignment.docId} style={{ borderBottom: '1px solid #eee' }}>
+                        <td style={{ padding: '10px' }}>{assignment.order}</td>
+                        <td style={{ padding: '10px' }}>{assignment.centerName}</td>
+                        <td style={{ padding: '10px' }}>
+                          {plazasDisponibles} / {plazasTotal}
+                        </td>
+                        <td style={{ padding: '10px' }}>
+                          <button 
+                            onClick={async () => {
+                              // Eliminar la asignación y volverla a poner como solicitud pendiente
+                              try {
+                                // Usamos la asignación del parámetro del map en lugar del estado
+                                const currentAssignment = assignment;
+                                
+                                // Asegurar que no haya valores undefined
+                                if (!currentAssignment.order) {
+                                  showNotification("Error: No se pudo obtener el número de orden", "error");
+                                  return;
+                                }
+                                
+                                // Crear una solicitud pendiente solo con valores válidos
+                                const nuevaSolicitud = {
+                                  orden: currentAssignment.order,
+                                  // Usar un array vacío si centerId es undefined
+                                  centrosIds: currentAssignment.centerId ? [currentAssignment.centerId] : [],
+                                  // Añadir el timestamp que faltaba
+                                  timestamp: serverTimestamp()
+                                };
+                                
+                                console.log("Nueva solicitud a crear:", nuevaSolicitud);
+                                
+                                // Usar writeBatch en lugar de transaction para mayor control
+                                const batch = writeBatch(db);
+                                
+                                // Añadir la nueva solicitud pendiente
                                 const solicitudRef = doc(collection(db, "solicitudesPendientes"));
-                                transaction.set(solicitudRef, nuevaSolicitud);
+                                batch.set(solicitudRef, nuevaSolicitud);
                                 
-                                // Eliminar la asignación
-                                const asignacionRef = doc(db, "asignaciones", assignment.docId);
-                                transaction.delete(asignacionRef);
+                                // Eliminar la asignación existente
+                                const asignacionRef = doc(db, "asignaciones", currentAssignment.docId);
+                                batch.delete(asignacionRef);
                                 
-                                // Añadir al historial
-                                const historialRef = doc(collection(db, "historialSolicitudes"));
-                                transaction.set(historialRef, {
-                                  orden: assignment.order,
-                                  centroAnterior: assignment.centerId,
-                                  centroId: null,
+                                // Crear un objeto para el historial con solo campos válidos
+                                const historialData = {
+                                  orden: currentAssignment.order,
                                   estado: "REASIGNANDO",
                                   mensaje: "Reasignación manual desde el panel de administración",
                                   fechaHistorico: new Date().toISOString(),
                                   timestamp: Date.now()
-                                });
-                              });
-                              
-                              // Recargar datos
-                              await cargarDatosDesdeFirebase();
-                              showNotification(`Asignación para orden ${assignment.order} movida a solicitudes pendientes`, "success");
-                            } catch (error) {
-                              console.error("Error al reasignar:", error);
-                              showNotification(`Error al reasignar: ${error.message}`, "error");
-                            }
-                          }}
-                          style={{
-                            padding: '5px 10px',
-                            backgroundColor: '#f39c12',
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '3px',
-                            cursor: 'pointer'
-                          }}
-                          disabled={loadingProcess}
-                        >
-                          Reasignar
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                                };
+                                
+                                // Solo añadir el campo centroAnterior si centerId no es undefined
+                                if (currentAssignment.centerId) {
+                                  historialData.centroAnterior = currentAssignment.centerId;
+                                }
+                                
+                                console.log("Datos de historial a crear:", historialData);
+                                
+                                // Añadir al historial
+                                const historialRef = doc(collection(db, "historialSolicitudes"));
+                                batch.set(historialRef, historialData);
+                                
+                                // Ejecutar todos los cambios en un solo lote
+                                await batch.commit();
+                                
+                                // Recargar datos
+                                await cargarDatosDesdeFirebase();
+                                showNotification(`Asignación para orden ${currentAssignment.order} movida a solicitudes pendientes`, "success");
+                              } catch (error) {
+                                console.error("Error al reasignar:", error);
+                                showNotification(`Error al reasignar: ${error.message}`, "error");
+                              }
+                            }}
+                            style={{
+                              padding: '5px 10px',
+                              backgroundColor: '#f39c12',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '3px',
+                              cursor: 'pointer'
+                            }}
+                            disabled={loadingProcess}
+                          >
+                            Reasignar
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
               </tbody>
             </table>
           ) : (
@@ -3137,7 +3202,7 @@ function App() {
           )}
         </div>
         
-        {/* Lista de solicitudes pendientes */}
+        {/* Lista de solicitudes pendientes - con buscador */}
         <div style={{ 
           backgroundColor: 'white', 
           padding: '20px', 
@@ -3147,63 +3212,110 @@ function App() {
         }}>
           <h2>Solicitudes Pendientes</h2>
           
+          {/* Buscador de solicitudes */}
+          <div style={{ marginBottom: '15px' }}>
+            <input
+              type="text"
+              placeholder="Buscar por número de orden..."
+              value={searchTermSolicitudes}
+              onChange={(e) => setSearchTermSolicitudes(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '10px',
+                border: '1px solid #ddd',
+                borderRadius: '5px',
+                marginBottom: '10px'
+              }}
+            />
+          </div>
+          
           {solicitudes.length > 0 ? (
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ backgroundColor: '#f8f9fa' }}>
                   <th style={{ padding: '10px', textAlign: 'left' }}>Orden</th>
                   <th style={{ padding: '10px', textAlign: 'left' }}>Centros Solicitados</th>
+                  <th style={{ padding: '10px', textAlign: 'left' }}>Plazas Disponibles</th>
                   <th style={{ padding: '10px', textAlign: 'left' }}>Acciones</th>
                 </tr>
               </thead>
               <tbody>
                 {solicitudes
                   .sort((a, b) => Number(a.orden) - Number(b.orden))
-                  .map(solicitud => (
-                    <tr key={solicitud.docId} style={{ borderBottom: '1px solid #eee' }}>
-                      <td style={{ padding: '10px' }}>{solicitud.orden}</td>
-                      <td style={{ padding: '10px' }}>
-                        {solicitud.centrosIds?.map((centroId, index) => {
-                          const centro = availablePlazas.find(c => c.id === centroId);
-                          return (
-                            <span key={centroId}>
-                              {centro ? centro.nombre : centroId}
-                              {index < solicitud.centrosIds.length - 1 ? ', ' : ''}
-                            </span>
-                          );
-                        })}
-                      </td>
-                      <td style={{ padding: '10px' }}>
-                        <button 
-                          onClick={() => {
-                            // Procesar esta solicitud individualmente
-                            const solicitudesArray = [solicitud];
-                            procesarSolicitudes(
-                              solicitudesArray, 
-                              [], // No tocar asignaciones existentes
-                              availablePlazas,
-                              setProcessingMessage
-                            ).then(async () => {
-                              // Recargar datos desde Firebase
-                              await cargarDatosDesdeFirebase();
-                              showNotification(`Solicitud ${solicitud.orden} procesada`, "success");
-                            });
-                          }}
-                          style={{
-                            padding: '5px 10px',
-                            backgroundColor: '#3498db',
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '3px',
-                            cursor: 'pointer'
-                          }}
-                          disabled={loadingProcess}
-                        >
-                          Procesar
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  .filter(solicitud => {
+                    const searchTermLower = searchTermSolicitudes.toLowerCase();
+                    return String(solicitud.orden).includes(searchTermLower);
+                  })
+                  .map(solicitud => {
+                    return (
+                      <tr key={solicitud.docId} style={{ borderBottom: '1px solid #eee' }}>
+                        <td style={{ padding: '10px' }}>{solicitud.orden}</td>
+                        <td style={{ padding: '10px' }}>
+                          {solicitud.centrosIds?.map((centroId, index) => {
+                            const centro = availablePlazas.find(c => c.id === centroId);
+                            return (
+                              <div key={centroId} style={{ 
+                                marginBottom: index < solicitud.centrosIds.length - 1 ? '5px' : '0',
+                                padding: '3px',
+                                backgroundColor: index === 0 ? '#f2f9ff' : 'transparent',
+                                borderRadius: '3px'
+                              }}>
+                                {centro ? centro.nombre : centroId}
+                                {index < solicitud.centrosIds.length - 1 ? '' : ''}
+                              </div>
+                            );
+                          })}
+                        </td>
+                        <td style={{ padding: '10px' }}>
+                          {solicitud.centrosIds?.map((centroId, index) => {
+                            const centro = availablePlazas.find(c => c.id === centroId);
+                            const plazasDisponibles = centro ? centro.plazas - centro.asignadas : 'N/A';
+                            const plazasTotal = centro ? centro.plazas : 'N/A';
+                            
+                            return (
+                              <div key={centroId} style={{ 
+                                marginBottom: index < solicitud.centrosIds.length - 1 ? '5px' : '0',
+                                padding: '3px',
+                                backgroundColor: index === 0 ? '#f2f9ff' : 'transparent',
+                                borderRadius: '3px'
+                              }}>
+                                {plazasDisponibles} / {plazasTotal}
+                              </div>
+                            );
+                          })}
+                        </td>
+                        <td style={{ padding: '10px' }}>
+                          <button 
+                            onClick={() => {
+                              // Procesar esta solicitud individualmente
+                              const solicitudesArray = [solicitud];
+                              procesarSolicitudes(
+                                solicitudesArray, 
+                                [], // No tocar asignaciones existentes
+                                availablePlazas,
+                                setProcessingMessage
+                              ).then(async () => {
+                                // Recargar datos desde Firebase
+                                await cargarDatosDesdeFirebase();
+                                showNotification(`Solicitud ${solicitud.orden} procesada`, "success");
+                              });
+                            }}
+                            style={{
+                              padding: '5px 10px',
+                              backgroundColor: '#3498db',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '3px',
+                              cursor: 'pointer'
+                            }}
+                            disabled={loadingProcess}
+                          >
+                            Procesar
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
               </tbody>
             </table>
           ) : (
@@ -3251,7 +3363,8 @@ function App() {
             padding: '15px 20px',
             borderRadius: '10px',
             boxShadow: '0 3px 15px rgba(0,0,0,0.2)',
-            backgroundColor: popupType === 'success' ? '#d4edda' : popupType === 'warning' ? '#fff3cd' : '#f8d7da',
+            backgroundColor: popupType === 'success' ? '#d4edda' : 
+                            popupType === 'warning' ? '#fff3cd' : '#f8d7da',
             color: popupType === 'success' ? '#155724' : 
                   popupType === 'warning' ? '#856404' : '#721c24',
             zIndex: 1000,
