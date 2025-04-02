@@ -66,6 +66,11 @@ function App() {
   const [notification, setNotification] = useState({show: false, message: "", type: ""});
   const [ultimoProcesamientoFecha, setUltimoProcesamientoFecha] = useState("");
 
+  // Estado para el modal de contraseña
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [adminPassword, setAdminPassword] = useState('');
+  const [passwordError, setPasswordError] = useState(false);
+
   // Función para mostrar un popup con mensaje
   const showNotification = (message, type = 'success') => {
     setPopupMessage(message);
@@ -1764,6 +1769,31 @@ function App() {
     
     verificacionProgramadaRef.current = true;
     
+    // Verificar si ya se ejecutó la verificación hoy
+    const verificarSiYaEjecutado = () => {
+      const ultimaVerificacion = localStorage.getItem('ultimaVerificacionDiaria');
+      if (ultimaVerificacion) {
+        const fechaUltimaVerificacion = new Date(Number(ultimaVerificacion));
+        const ahora = new Date();
+        
+        // Comparar fecha (ignorando la hora)
+        const esHoy = fechaUltimaVerificacion.getDate() === ahora.getDate() &&
+                     fechaUltimaVerificacion.getMonth() === ahora.getMonth() &&
+                     fechaUltimaVerificacion.getFullYear() === ahora.getFullYear();
+        
+        if (esHoy) {
+          console.log(`La verificación diaria ya se ejecutó hoy a las ${fechaUltimaVerificacion.toLocaleTimeString()}`);
+          return true;
+        }
+      }
+      return false;
+    };
+    
+    // Marcar como ejecutado
+    const marcarComoEjecutado = () => {
+      localStorage.setItem('ultimaVerificacionDiaria', Date.now().toString());
+    };
+    
     const programarVerificacionDiaria = () => {
       const ahora = new Date();
       const horaVerificacion = new Date();
@@ -1782,10 +1812,20 @@ function App() {
       // Programar la verificación a las 2 AM
       const timeoutId = setTimeout(() => {
         console.log('Ejecutando verificación diaria programada (2:00 AM)');
-        verificarYCorregirAsignacionesWrapper().then(() => { // Pasar true para volcar el historial
-          // Reprogramar para la próxima verificación después de completar
+        
+        // Solo ejecutar si no se ha hecho hoy
+        if (!verificarSiYaEjecutado()) {
+          verificarYCorregirAsignacionesWrapper().then((resultado) => {
+            if (resultado && resultado.success) {
+              marcarComoEjecutado();
+            }
+            // Reprogramar para la próxima verificación después de completar
+            programarVerificacionDiaria();
+          });
+        } else {
+          console.log('Saltando verificación, ya se ejecutó hoy');
           programarVerificacionDiaria();
-        });
+        }
       }, tiempoHastaVerificacion);
       
       return timeoutId;
@@ -1807,8 +1847,12 @@ function App() {
 
   // Restaurar el intervalo para eliminar duplicados cada minuto
   useEffect(() => {
-    const limpiezaInterval = setInterval(async () => {
+    // Primera ejecución: Verificar y limpiar duplicados solo al iniciar la app
+    const ejecutarLimpiezaInicial = async () => {
+      console.log("Iniciando limpieza inicial de duplicados...");
+      
       if (!isProcessing && !loadingProcess) {
+        // Limpiar duplicados en solicitudes y asignaciones
         await eliminarSolicitudesDuplicadas();
         
         // Verificar si ya se ha ejecutado la limpieza del historial
@@ -1819,12 +1863,17 @@ function App() {
           await limpiarDuplicadosHistorial();
         }
       }
-    }, 60000); // 1 minuto
-    
-    return () => {
-      clearInterval(limpiezaInterval);
     };
-  }, [isProcessing, loadingProcess]);
+    
+    // Ejecutar limpieza solo al iniciar la aplicación
+    ejecutarLimpiezaInicial();
+    
+    // NOTA: Eliminamos el setInterval que ejecutaba esta función cada minuto
+    // para evitar comprobaciones frecuentes con alto volumen de usuarios
+    
+    // No hay nada que limpiar en el return porque ya no usamos setInterval
+    
+  }, [isProcessing, loadingProcess]); // Mantener las dependencias para que se vuelva a ejecutar si el estado cambia
 
   // Agregar función para volcar datos de historial a solicitudes pendientes
   const volcarHistorialASolicitudesPendientes = async () => {
@@ -2138,6 +2187,32 @@ function App() {
   // Función para verificar y corregir asignaciones
   const verificarYCorregirAsignacionesWrapper = async () => {
     try {
+      // Verificar si ya se ejecutó la verificación hoy
+      const verificarSiYaEjecutado = () => {
+        const ultimaVerificacion = localStorage.getItem('ultimaVerificacionDiaria');
+        if (ultimaVerificacion) {
+          const fechaUltimaVerificacion = new Date(Number(ultimaVerificacion));
+          const ahora = new Date();
+          
+          // Comparar fecha (ignorando la hora)
+          const esHoy = fechaUltimaVerificacion.getDate() === ahora.getDate() &&
+                       fechaUltimaVerificacion.getMonth() === ahora.getMonth() &&
+                       fechaUltimaVerificacion.getFullYear() === ahora.getFullYear();
+          
+          if (esHoy) {
+            console.log(`La verificación diaria ya se ejecutó hoy a las ${fechaUltimaVerificacion.toLocaleTimeString()}`);
+            return true;
+          }
+        }
+        return false;
+      };
+      
+      // Si ya se ejecutó hoy, mostrar mensaje y no continuar
+      if (verificarSiYaEjecutado()) {
+        showNotification("La verificación de asignaciones ya se ejecutó hoy. Solo se permite una vez al día.", "info");
+        return { success: true, message: "Verificación ya ejecutada hoy", yaRealizada: true };
+      }
+      
       setMaintenanceProgress(0);
       setIsVerificationMaintenance(true);
       setMaintenanceMessage('Iniciando verificación de asignaciones...');
@@ -2182,7 +2257,10 @@ function App() {
         await new Promise(resolve => setTimeout(resolve, 2000));
         setIsVerificationMaintenance(false);
         showNotification("Verificación completada: No hay centros con exceso de asignaciones", "success");
-        return;
+        
+        // Marcar como ejecutado para hoy
+        localStorage.setItem('ultimaVerificacionDiaria', Date.now().toString());
+        return { success: true, message: "No hay centros con exceso", corregidos: 0 };
       }
       
       // Mostrar información sobre los centros con exceso
@@ -2211,6 +2289,8 @@ function App() {
       
       if (resultado.success) {
         showNotification(resultado.message, "success");
+        // Marcar como ejecutado para hoy
+        localStorage.setItem('ultimaVerificacionDiaria', Date.now().toString());
       } else {
         showNotification(resultado.message || "Error al verificar asignaciones", "error");
       }
@@ -2380,8 +2460,104 @@ function App() {
     }
   };
 
+  // Función para verificar contraseña de administrador
+  const handleAdminAuth = () => {
+    if (adminPassword === 'SoyAdmin') {
+      setShowPasswordModal(false);
+      setAdminPassword('');
+      setPasswordError(false);
+      // Ejecutar verificación
+      verificarYCorregirAsignacionesWrapper();
+    } else {
+      setPasswordError(true);
+      setTimeout(() => setPasswordError(false), 3000);
+    }
+  };
+
   return (
     <div className="App" style={styles.container}>
+      {/* Modal de contraseña para administrador */}
+      {showPasswordModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          backgroundColor: 'rgba(0,0,0,0.7)',
+          zIndex: 1000,
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center'
+        }}>
+          <div style={{
+            backgroundColor: 'white',
+            padding: '20px',
+            borderRadius: '8px',
+            width: '300px',
+            maxWidth: '90%'
+          }}>
+            <h3 style={{ marginTop: 0, color: '#333' }}>Autenticación Requerida</h3>
+            <p style={{ fontSize: '14px', color: '#666' }}>
+              Ingrese la contraseña de administrador para continuar.
+            </p>
+            
+            <input
+              type="password"
+              placeholder="Contraseña"
+              value={adminPassword}
+              onChange={(e) => setAdminPassword(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && handleAdminAuth()}
+              style={{
+                width: '100%',
+                padding: '10px',
+                border: passwordError ? '1px solid #e74c3c' : '1px solid #ddd',
+                borderRadius: '4px',
+                marginBottom: '10px'
+              }}
+            />
+            
+            {passwordError && (
+              <p style={{ color: '#e74c3c', fontSize: '12px', marginTop: 0 }}>
+                Contraseña incorrecta. Inténtelo de nuevo.
+              </p>
+            )}
+            
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button
+                onClick={() => {
+                  setShowPasswordModal(false);
+                  setAdminPassword('');
+                  setPasswordError(false);
+                }}
+                style={{
+                  padding: '8px 15px',
+                  backgroundColor: '#f1f1f1',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer'
+                }}
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleAdminAuth}
+                style={{
+                  padding: '8px 15px',
+                  backgroundColor: '#3498db',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer'
+                }}
+              >
+                Verificar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    
       {/* Pantalla de mantenimiento durante la verificación */}
       {isVerificationMaintenance && (
   <div style={{
@@ -2468,8 +2644,49 @@ function App() {
       <div style={styles.header}>
         <h1 style={styles.title}>Sistema de Asignación de Plazas</h1>
         
+        {/* Botón de verificación para administrador - solo aparece si no se ha ejecutado hoy */}
+        {(() => {
+          const ultimaVerificacion = localStorage.getItem('ultimaVerificacionDiaria');
+          if (!ultimaVerificacion) return true; // Nunca se ha ejecutado
+          
+          const fechaUltimaVerificacion = new Date(Number(ultimaVerificacion));
+          const ahora = new Date();
+          
+          // Comparar fecha (ignorando la hora)
+          const noSeHaEjecutadoHoy = !(fechaUltimaVerificacion.getDate() === ahora.getDate() &&
+                     fechaUltimaVerificacion.getMonth() === ahora.getMonth() &&
+                     fechaUltimaVerificacion.getFullYear() === ahora.getFullYear());
+          
+          return noSeHaEjecutadoHoy; // Mostrar solo si no se ha ejecutado hoy
+        })() && (
+          <div style={{
+            position: 'absolute',
+            top: '20px',
+            right: '20px',
+            zIndex: 50
+          }}>
+            <button
+              onClick={() => setShowPasswordModal(true)}
+              style={{
+                padding: '12px 20px',
+                backgroundColor: '#3498db',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '15px',
+                fontWeight: '500',
+                boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+              }}
+            >
+              🔄 Verificar Asignaciones Hoy
+            </button>
+          </div>
+        )}
        
-      
       <div style={styles.tabs}>
         <div 
           style={{

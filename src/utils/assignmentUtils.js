@@ -38,135 +38,328 @@ export const procesarSolicitudes = async (
 
     setProcessingMessage && setProcessingMessage("Iniciando procesamiento de solicitudes...");
 
-    // Ordenar solicitudes por prioridad (menor número = mayor prioridad)
-    const solicitudesOrdenadas = [...solicitudes].sort((a, b) => a.orden - b.orden);
-
-    // Crear copia local de centros y resetear contador de asignadas a 0
-    const centrosActualizados = availablePlazas.map(plaza => ({ ...plaza, asignadas: 0 }));
-
+    // Primero combinar todas las solicitudes pendientes con las asignaciones existentes para ordenar por prioridad
+    const todasLasSolicitudes = [...solicitudes];
+    
+    // Convertir asignaciones existentes a formato similar para el procesamiento unificado
+    const asignacionesComoSolicitudes = assignments.map(asignacion => ({
+      orden: asignacion.order,
+      centroActual: asignacion.id,
+      estaAsignada: true,
+      docId: asignacion.docId,
+      timestamp: asignacion.timestamp || 0,
+      centro: asignacion.centro, 
+      localidad: asignacion.localidad,
+      municipio: asignacion.municipio
+    }));
+    
+    // Combinar todo lo que requiere procesamiento (solicitudes pendientes y asignaciones existentes)
+    const todasLasOperaciones = [...todasLasSolicitudes, ...asignacionesComoSolicitudes];
+    
+    // Ordenar todo por prioridad (orden numérico, menor número = mayor prioridad)
+    const operacionesOrdenadas = todasLasOperaciones.sort((a, b) => Number(a.orden) - Number(b.orden));
+    
+    setProcessingMessage && setProcessingMessage(`Procesando ${operacionesOrdenadas.length} solicitudes por prioridad...`);
+    
+    // Crear copia local de centros para trabajar
+    const centrosActualizados = availablePlazas.map(plaza => ({ 
+      ...plaza, 
+      asignadas: 0,  // Resetear contador para reasignar todo
+      asignacionesPorOrden: [] // Almacenar los números de orden asignados a cada centro
+    }));
+    
+    // Mapeo para acceso rápido por ID
+    const centrosMap = centrosActualizados.reduce((map, centro) => {
+      map[centro.id] = centro;
+      return map;
+    }, {});
+    
     // Fase 1: Eliminar asignaciones existentes y resetear contadores en Firestore
-    setProcessingMessage && setProcessingMessage("Eliminando asignaciones existentes...");
+    setProcessingMessage && setProcessingMessage("Eliminando asignaciones existentes para recalcular...");
     for (const asignacion of assignments) {
       if (asignacion.docId) {
         await deleteDoc(doc(db, "asignaciones", asignacion.docId));
       }
     }
+    
+    // Resetear contadores de asignadas en los centros
     for (const centro of centrosActualizados) {
       if (centro.docId) {
         await updateDoc(doc(db, "centros", centro.docId), { asignadas: 0 });
       }
     }
-
-    // Fase 2: Procesar cada solicitud en orden de prioridad
-    setProcessingMessage && setProcessingMessage(`Procesando ${solicitudesOrdenadas.length} solicitudes...`);
+    
+    // Fase 2: Procesar cada solicitud/asignación en estricto orden de prioridad
     let asignacionesNuevas = 0;
+    let reasignaciones = 0;
     const nuevasAsignaciones = [];
-    const centrosMap = centrosActualizados.reduce((map, centro) => {
-      map[centro.id] = centro;
-      return map;
-    }, {});
     const ordenesProcesadas = new Set();
     const solicitudesAsignadas = []; // Guardar docIds de solicitudes asignadas
-
-    for (const solicitud of solicitudesOrdenadas) {
+    const historialOperaciones = []; // Guardar operaciones para historial
+    
+    for (const operacion of operacionesOrdenadas) {
       // Evitar procesar duplicados por número de orden
-      if (ordenesProcesadas.has(solicitud.orden)) continue;
-      ordenesProcesadas.add(solicitud.orden);
-
-      let asignacionExitosa = false;
+      if (ordenesProcesadas.has(operacion.orden)) continue;
       
-      // Intentar asignar en cada centro de preferencia
-      for (const centroId of solicitud.centrosIds) {
-        const centro = centrosMap[centroId];
-        if (!centro) continue;
-
-        if (centro.asignadas < centro.plazas) {
-          try {
-            const resultado = await runTransaction(db, async (transaction) => {
-              const centroRef = doc(db, "centros", centro.docId);
-              const centroDoc = await transaction.get(centroRef);
-              const actuales = centroDoc.data().asignadas || 0;
-              if (!centroDoc.exists() || actuales >= centro.plazas) {
-                return { success: false, message: `Sin plazas en ${centro.centro}` };
-              }
-
-              const nuevaAsignacion = {
-                order: solicitud.orden,
-                id: centroId,
-                localidad: centro.localidad,
-                centro: centro.centro,
-                municipio: centro.municipio,
-                timestamp: Date.now()
-              };
-
-              const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
-              transaction.set(nuevaAsignacionRef, nuevaAsignacion);
-              transaction.update(centroRef, { asignadas: actuales + 1 });
-              
-              // Crear entrada en historial para esta asignación
-              const historialRef = doc(collection(db, "historialSolicitudes"));
-              const datosHistorial = {
-                orden: solicitud.orden,
-                centrosIds: solicitud.centrosIds,
-                estado: "ASIGNADA",
-                centroAsignado: centro.centro,
-                centroId: centroId,
-                localidad: centro.localidad,
-                municipio: centro.municipio,
-                fechaHistorico: new Date().toISOString(),
-                timestamp: Date.now()
-              };
-              transaction.set(historialRef, datosHistorial);
-              
-              return { success: true, docId: nuevaAsignacionRef.id, nuevaAsignacion };
-            });
-
-            if (resultado.success) {
-              centro.asignadas++;
-              nuevasAsignaciones.push({ ...resultado.nuevaAsignacion, docId: resultado.docId });
-              asignacionesNuevas++;
-              asignacionExitosa = true;
-              
-              // Si la solicitud tiene docId, la guardamos para eliminarla después
-              if (solicitud.docId) {
-                solicitudesAsignadas.push(solicitud.docId);
-              }
-              
-              // Se asignó la solicitud, salir del ciclo de centros
-              break;
+      setProcessingMessage && setProcessingMessage(
+        `Procesando solicitud/asignación #${operacion.orden} (procesadas: ${ordenesProcesadas.size})`
+      );
+      
+      // Intentar asignar según las preferencias/estado actual
+      let asignacionExitosa = false;
+      let centroAsignado = null;
+      
+      // Si es una asignación existente, intentar mantenerla en su centro actual 
+      if (operacion.estaAsignada && operacion.centroActual) {
+        const centro = centrosMap[operacion.centroActual];
+        if (centro && centro.asignadas < centro.plazas) {
+          // Podemos mantener la asignación actual
+          centro.asignadas++;
+          centro.asignacionesPorOrden.push(operacion.orden);
+          
+          // Crear nueva asignación con los datos actuales
+          const nuevaAsignacion = {
+            order: operacion.orden,
+            id: centro.id,
+            localidad: centro.localidad || operacion.localidad,
+            centro: centro.centro || operacion.centro,
+            municipio: centro.municipio || operacion.municipio,
+            timestamp: Date.now(),
+            mantenida: true // Indica que se mantuvo en el mismo centro
+          };
+          
+          // Guardar en Firestore como parte de la reasignación global
+          const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
+          await setDoc(nuevaAsignacionRef, nuevaAsignacion);
+          
+          nuevasAsignaciones.push({ ...nuevaAsignacion, docId: nuevaAsignacionRef.id });
+          asignacionExitosa = true;
+          centroAsignado = centro;
+          
+          // Registrar en historial la reasignación/mantenimiento
+          historialOperaciones.push({
+            tipo: "MANTENIDA",
+            orden: operacion.orden,
+            centroId: centro.id,
+            centro: centro.centro,
+            mensaje: `Asignación mantenida en ${centro.centro}`
+          });
+        }
+        // Si no hay espacio, continuará con la lógica de solicitud normal
+      }
+      
+      // Si no está asignada o no se pudo mantener, procesar como solicitud
+      if (!asignacionExitosa) {
+        // Obtener lista de centros preferidos, si está disponible
+        const centrosIds = operacion.centrosIds || 
+                            (operacion.estaAsignada ? [operacion.centroActual] : []);
+        
+        // Si no hay preferencias, intentar todos los centros por disponibilidad
+        const centrosAProbar = centrosIds.length > 0 ? 
+          centrosIds.map(id => centrosMap[id]).filter(Boolean) : 
+          centrosActualizados.sort((a, b) => (a.asignadas/a.plazas) - (b.asignadas/b.plazas));
+        
+        for (const centro of centrosAProbar) {
+          if (centro.asignadas < centro.plazas) {
+            // Hay plaza disponible para asignar directamente
+            centro.asignadas++;
+            centro.asignacionesPorOrden.push(operacion.orden);
+            
+            const nuevaAsignacion = {
+              order: operacion.orden,
+              id: centro.id,
+              localidad: centro.localidad,
+              centro: centro.centro,
+              municipio: centro.municipio,
+              timestamp: Date.now()
+            };
+            
+            const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
+            await setDoc(nuevaAsignacionRef, nuevaAsignacion);
+            
+            nuevasAsignaciones.push({ ...nuevaAsignacion, docId: nuevaAsignacionRef.id });
+            asignacionesNuevas++;
+            asignacionExitosa = true;
+            centroAsignado = centro;
+            
+            // Si la solicitud tiene docId, la guardamos para eliminarla después
+            if (!operacion.estaAsignada && operacion.docId) {
+              solicitudesAsignadas.push(operacion.docId);
             }
-          } catch (error) {
-            console.error(`Error asignando para orden ${solicitud.orden} en ${centro.centro}:`, error);
+            
+            // Registrar en historial
+            historialOperaciones.push({
+              tipo: operacion.estaAsignada ? "REASIGNADA" : "ASIGNADA",
+              orden: operacion.orden,
+              centroId: centro.id,
+              centro: centro.centro,
+              mensaje: operacion.estaAsignada ?
+                `Reasignada de ${operacion.centro || "centro anterior"} a ${centro.centro}` :
+                `Asignada a ${centro.centro}`
+            });
+            
+            break; // Terminar búsqueda de centro
+          }
+          else if (centro.asignacionesPorOrden.length > 0) {
+            // Centro lleno, verificar si podemos hacer intercambio por prioridad
+            // Encontrar la asignación de menor prioridad (mayor orden) en este centro
+            const ordenesAsignados = centro.asignacionesPorOrden;
+            const ordenMayorAsignado = Math.max(...ordenesAsignados);
+            
+            if (Number(ordenMayorAsignado) > Number(operacion.orden)) {
+              // Hay una asignación de menor prioridad, intentar reasignarla
+              console.log(`Posible desplazamiento: Orden ${operacion.orden} tiene mayor prioridad que ${ordenMayorAsignado} en ${centro.centro}`);
+              
+              // Intentar encontrar alternativas para la asignación de menor prioridad
+              const asignacionADesplazar = nuevasAsignaciones.find(
+                a => a.order == ordenMayorAsignado && a.id === centro.id
+              );
+              
+              if (asignacionADesplazar) {
+                // Buscar centro alternativo para la asignación de menor prioridad
+                let alternativaEncontrada = false;
+                
+                // Primero intentar con las preferencias originales si existen
+                const operacionDesplazada = operacionesOrdenadas.find(op => op.orden == ordenMayorAsignado);
+                const centrosAlternativos = centrosActualizados.filter(c => 
+                  c.id !== centro.id && c.asignadas < c.plazas
+                );
+                
+                if (centrosAlternativos.length > 0) {
+                  // Encontramos alternativa, podemos hacer el intercambio
+                  const centroAlternativo = centrosAlternativos[0]; // Tomar el primero disponible
+                  
+                  // 1. Asignar la solicitud actual al centro deseado
+                  // Quitar la asignación anterior del centro
+                  centro.asignacionesPorOrden = centro.asignacionesPorOrden.filter(
+                    orden => orden != ordenMayorAsignado
+                  );
+                  // Asignar la nueva solicitud
+                  centro.asignacionesPorOrden.push(operacion.orden);
+                  
+                  // 2. Crear la nueva asignación en Firestore
+                  const nuevaAsignacion = {
+                    order: operacion.orden,
+                    id: centro.id,
+                    localidad: centro.localidad,
+                    centro: centro.centro,
+                    municipio: centro.municipio,
+                    timestamp: Date.now(),
+                    priorizado: true // Indica que se asignó por prioridad
+                  };
+                  
+                  const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
+                  await setDoc(nuevaAsignacionRef, nuevaAsignacion);
+                  
+                  nuevasAsignaciones.push({ ...nuevaAsignacion, docId: nuevaAsignacionRef.id });
+                  
+                  // 3. Reasignar la asignación desplazada al centro alternativo
+                  centroAlternativo.asignadas++;
+                  centroAlternativo.asignacionesPorOrden.push(ordenMayorAsignado);
+                  
+                  const asignacionReasignada = {
+                    order: ordenMayorAsignado,
+                    id: centroAlternativo.id,
+                    localidad: centroAlternativo.localidad,
+                    centro: centroAlternativo.centro,
+                    municipio: centroAlternativo.municipio,
+                    timestamp: Date.now(),
+                    desplazada: true, // Indica que fue desplazada por una de mayor prioridad
+                    centroAnterior: centro.centro
+                  };
+                  
+                  const reasignacionRef = doc(collection(db, "asignaciones"));
+                  await setDoc(reasignacionRef, asignacionReasignada);
+                  
+                  // Eliminar la asignación original
+                  if (asignacionADesplazar.docId) {
+                    await deleteDoc(doc(db, "asignaciones", asignacionADesplazar.docId));
+                  }
+                  
+                  // Actualizar el array de nuevasAsignaciones
+                  const indice = nuevasAsignaciones.findIndex(a => 
+                    a.order == ordenMayorAsignado && a.id === centro.id
+                  );
+                  if (indice >= 0) {
+                    nuevasAsignaciones.splice(indice, 1);
+                  }
+                  nuevasAsignaciones.push({ ...asignacionReasignada, docId: reasignacionRef.id });
+                  
+                  asignacionExitosa = true;
+                  centroAsignado = centro;
+                  reasignaciones++;
+                  
+                  // Si la solicitud tiene docId, la guardamos para eliminarla después
+                  if (!operacion.estaAsignada && operacion.docId) {
+                    solicitudesAsignadas.push(operacion.docId);
+                  }
+                  
+                  // Registrar en historial
+                  historialOperaciones.push({
+                    tipo: "PRIORIZADA",
+                    orden: operacion.orden,
+                    centroId: centro.id,
+                    centro: centro.centro,
+                    mensaje: `Priorizada en ${centro.centro}, desplazando a orden ${ordenMayorAsignado}`
+                  });
+                  
+                  historialOperaciones.push({
+                    tipo: "DESPLAZADA",
+                    orden: ordenMayorAsignado,
+                    centroId: centroAlternativo.id,
+                    centro: centroAlternativo.centro,
+                    centroAnterior: centro.centro,
+                    mensaje: `Desplazada de ${centro.centro} a ${centroAlternativo.centro} por orden ${operacion.orden} de mayor prioridad`
+                  });
+                  
+                  break; // Terminamos la búsqueda de centro
+                }
+              }
+            }
           }
         }
       }
       
-      setProcessingMessage && setProcessingMessage(
-        `Procesada solicitud ${solicitud.orden} (asignaciones realizadas: ${asignacionesNuevas})`
-      );
+      // Marcar como procesada
+      ordenesProcesadas.add(operacion.orden);
       
       // Si no se pudo asignar, registrarlo en historial como NO_ASIGNABLE
-      if (!asignacionExitosa && solicitud.docId) {
-        try {
-          const historialRef = doc(collection(db, "historialSolicitudes"));
-          await setDoc(historialRef, {
-            orden: solicitud.orden,
-            centrosIds: solicitud.centrosIds,
-            estado: "NO_ASIGNABLE",
-            mensaje: "No hay plazas disponibles en ninguno de los centros solicitados",
-            fechaHistorico: new Date().toISOString(),
-            timestamp: Date.now()
-          });
-          
-          // También agregar a la lista para eliminar
-          solicitudesAsignadas.push(solicitud.docId);
-        } catch (historialError) {
-          console.error(`Error al registrar en historial para orden ${solicitud.orden}:`, historialError);
+      if (!asignacionExitosa) {
+        historialOperaciones.push({
+          tipo: "NO_ASIGNABLE",
+          orden: operacion.orden,
+          mensaje: "No hay plazas disponibles en ninguno de los centros solicitados"
+        });
+        
+        // Si es una solicitud pendiente, marcarla para eliminar
+        if (!operacion.estaAsignada && operacion.docId) {
+          solicitudesAsignadas.push(operacion.docId);
         }
       }
     }
     
-    // Fase 3: Eliminar todas las solicitudes que ya fueron procesadas
+    // Fase 3: Registrar todas las operaciones en el historial
+    setProcessingMessage && setProcessingMessage(`Registrando ${historialOperaciones.length} operaciones en el historial...`);
+    
+    for (const operacion of historialOperaciones) {
+      try {
+        const historialRef = doc(collection(db, "historialSolicitudes"));
+        await setDoc(historialRef, {
+          orden: operacion.orden,
+          estado: operacion.tipo,
+          centroId: operacion.centroId,
+          centroAsignado: operacion.centro,
+          centroAnterior: operacion.centroAnterior,
+          mensaje: operacion.mensaje,
+          fechaHistorico: new Date().toISOString(),
+          timestamp: Date.now()
+        });
+      } catch (error) {
+        console.error(`Error al registrar historial para orden ${operacion.orden}:`, error);
+      }
+    }
+    
+    // Fase 4: Eliminar todas las solicitudes que ya fueron procesadas
     if (solicitudesAsignadas.length > 0) {
       setProcessingMessage && setProcessingMessage(`Eliminando ${solicitudesAsignadas.length} solicitudes procesadas...`);
       let eliminadas = 0;
@@ -184,18 +377,32 @@ export const procesarSolicitudes = async (
         `Se eliminaron ${eliminadas} solicitudes pendientes ya procesadas.`
       );
     }
+    
+    // Fase 5: Actualizar contadores de asignaciones en los centros
+    setProcessingMessage && setProcessingMessage("Actualizando contadores en los centros...");
+    
+    for (const centro of centrosActualizados) {
+      if (centro.docId) {
+        await updateDoc(doc(db, "centros", centro.docId), { 
+          asignadas: centro.asignadas 
+        });
+      }
+    }
 
     setProcessingMessage && setProcessingMessage(
-      `Procesamiento completado. ${asignacionesNuevas} asignaciones realizadas.`
+      `Procesamiento completado. ${asignacionesNuevas} nuevas asignaciones, ${reasignaciones} reasignaciones.`
     );
 
     return { 
       success: true, 
       nuevasAsignaciones, 
       eliminadas: solicitudesAsignadas.length,
-      message: `Asignaciones procesadas correctamente. ${solicitudesAsignadas.length} solicitudes eliminadas de pendientes.` 
+      asignacionesNuevas,
+      reasignaciones,
+      message: `Asignaciones procesadas por prioridad. ${asignacionesNuevas} nuevas, ${reasignaciones} reasignaciones.` 
     };
   } catch (error) {
+    console.error("Error en procesarSolicitudes:", error);
     setProcessingMessage && setProcessingMessage("Error: " + error.message);
     return { success: false, message: error.message };
   }
