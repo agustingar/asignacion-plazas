@@ -36,6 +36,8 @@ function App() {
   
   // Añadir estado para identificar si estamos en el modo admin
   const [isAdminView, setIsAdminView] = useState(false);
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
+  const [adminAuthAttempted, setAdminAuthAttempted] = useState(false);
   
   // Estados para el formulario de solicitud
   const [orderNumber, setOrderNumber] = useState('');
@@ -881,8 +883,13 @@ function App() {
     let unsubscribe;
     
     const inicializarApp = async () => {
-      // Comprobar si estamos en modo admin
-      const isAdmin = window.location.pathname.includes('/admin');
+      // Comprobar si estamos en modo admin basado en la URL
+      // Funciona tanto en desarrollo como en GitHub Pages
+      const pathname = window.location.pathname;
+      const basePathSegments = pathname.split('/');
+      const lastSegment = basePathSegments[basePathSegments.length - 1];
+      
+      const isAdmin = lastSegment === 'admin';
       setIsAdminView(isAdmin);
       
       // Usar refs para controlar el estado de inicialización
@@ -2798,6 +2805,113 @@ function App() {
 
   // Renderizado condicional basado en la ruta
   if (isAdminView) {
+    // Si estamos en modo admin pero no autenticado
+    if (!isAdminAuthenticated) {
+      return (
+        <div style={{
+          maxWidth: '1280px',
+          margin: '0 auto',
+          padding: '20px',
+          fontFamily: 'Arial, sans-serif',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          minHeight: '100vh',
+          flexDirection: 'column'
+        }}>
+          <h1 style={{ marginBottom: '30px', color: '#2c3e50' }}>Panel de Administración</h1>
+          
+          <div style={{ 
+            backgroundColor: 'white', 
+            padding: '30px', 
+            borderRadius: '10px',
+            boxShadow: '0 4px 15px rgba(0,0,0,0.1)',
+            width: '100%',
+            maxWidth: '400px'
+          }}>
+            <h2 style={{ textAlign: 'center', marginBottom: '25px' }}>Autenticación Requerida</h2>
+            
+            {adminAuthAttempted && (
+              <div style={{
+                backgroundColor: '#f8d7da',
+                color: '#721c24',
+                padding: '10px',
+                borderRadius: '5px',
+                marginBottom: '15px',
+                textAlign: 'center'
+              }}>
+                Contraseña incorrecta. Inténtalo de nuevo.
+              </div>
+            )}
+            
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>
+                Contraseña de Administrador:
+              </label>
+              <input
+                type="password"
+                value={adminPassword}
+                onChange={(e) => setAdminPassword(e.target.value)}
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  border: '1px solid #ddd',
+                  borderRadius: '5px',
+                  fontSize: '16px'
+                }}
+                placeholder="Ingrese la contraseña"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    if (adminPassword === 'SoyAdmin') {
+                      setIsAdminAuthenticated(true);
+                    } else {
+                      setAdminAuthAttempted(true);
+                    }
+                  }
+                }}
+              />
+            </div>
+            
+            <button
+              onClick={() => {
+                if (adminPassword === 'SoyAdmin') {
+                  setIsAdminAuthenticated(true);
+                } else {
+                  setAdminAuthAttempted(true);
+                }
+              }}
+              style={{
+                width: '100%',
+                padding: '12px',
+                backgroundColor: '#3498db',
+                color: 'white',
+                border: 'none',
+                borderRadius: '5px',
+                fontSize: '16px',
+                fontWeight: 'bold',
+                cursor: 'pointer'
+              }}
+            >
+              Acceder
+            </button>
+            
+            <div style={{ marginTop: '20px', textAlign: 'center' }}>
+              <a 
+                href="/"
+                style={{
+                  color: '#3498db',
+                  textDecoration: 'none'
+                }}
+              >
+                Volver a la página principal
+              </a>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    
+    // Si ya está autenticado, mostrar el panel de administración
     return (
       <div style={{
         maxWidth: '1280px',
@@ -2826,7 +2940,113 @@ function App() {
           </p>
         </div>
         
-        {/* Sección de procesamiento de solicitudes pendientes */}
+        {/* Acciones administrativas */}
+        <div style={{ 
+          backgroundColor: 'white', 
+          padding: '20px', 
+          borderRadius: '10px',
+          boxShadow: '0 2px 10px rgba(0,0,0,0.05)',
+          marginBottom: '20px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '15px'
+        }}>
+          <h2>Acciones de Administración</h2>
+          
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
+            gap: '15px'
+          }}>
+            {/* Botón para eliminar duplicados */}
+            <button
+              onClick={async () => {
+                // Primero eliminar duplicados en solicitudes
+                await eliminarSolicitudesDuplicadas();
+                // Luego eliminar duplicados en historial
+                await limpiarDuplicadosHistorial();
+                showNotification("Duplicados eliminados correctamente", "success");
+              }}
+              style={{
+                padding: '15px 20px',
+                backgroundColor: '#e74c3c',
+                color: 'white',
+                border: 'none',
+                borderRadius: '5px',
+                cursor: 'pointer',
+                fontWeight: 'bold',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '10px'
+              }}
+              disabled={loadingProcess}
+            >
+              <span>🗑️</span> Eliminar Duplicados
+            </button>
+            
+            {/* Botón para reasignar plazas por orden */}
+            <button
+              onClick={() => procesarTodasLasSolicitudes({respetarAsignacionesExistentes: false})}
+              style={{
+                padding: '15px 20px',
+                backgroundColor: '#3498db',
+                color: 'white',
+                border: 'none',
+                borderRadius: '5px',
+                cursor: solicitudes.length > 0 ? 'pointer' : 'not-allowed',
+                fontWeight: 'bold',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '10px',
+                opacity: solicitudes.length > 0 ? 1 : 0.6
+              }}
+              disabled={solicitudes.length === 0 || loadingProcess}
+            >
+              <span>🔄</span> Reasignar Plazas por Orden
+            </button>
+            
+            {/* Botón para procesar siguiente */}
+            <button
+              onClick={procesarSolicitudesPorMinuto}
+              style={{
+                padding: '15px 20px',
+                backgroundColor: '#2ecc71',
+                color: 'white',
+                border: 'none',
+                borderRadius: '5px',
+                cursor: solicitudes.length > 0 ? 'pointer' : 'not-allowed',
+                fontWeight: 'bold',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '10px',
+                opacity: solicitudes.length > 0 ? 1 : 0.6
+              }}
+              disabled={solicitudes.length === 0 || loadingProcess}
+            >
+              <span>▶️</span> Procesar Siguiente Solicitud
+            </button>
+          </div>
+        </div>
+        
+        {processingMessage && (
+          <div style={{ 
+            marginTop: '15px', 
+            padding: '15px', 
+            backgroundColor: '#f8f9fa', 
+            borderRadius: '5px', 
+            fontStyle: 'italic',
+            marginBottom: '20px',
+            textAlign: 'center',
+            border: '1px solid #e9ecef'
+          }}>
+            <strong>Estado:</strong> {processingMessage}
+          </div>
+        )}
+        
+        {/* Sección de asignaciones actuales */}
         <div style={{ 
           backgroundColor: 'white', 
           padding: '20px', 
@@ -2834,55 +3054,86 @@ function App() {
           boxShadow: '0 2px 10px rgba(0,0,0,0.05)',
           marginBottom: '20px'
         }}>
-          <h2>Procesar Solicitudes Pendientes</h2>
+          <h2>Asignaciones Actuales</h2>
           
-          <div>
-            <p>Solicitudes pendientes: <strong>{solicitudes.length}</strong></p>
-            
-            {/* Botón para procesar todas las solicitudes pendientes */}
-            <button 
-              onClick={() => procesarTodasLasSolicitudes({respetarAsignacionesExistentes: false})}
-              style={{
-                padding: '10px 20px',
-                backgroundColor: solicitudes.length > 0 ? '#3498db' : '#cccccc',
-                color: 'white',
-                border: 'none',
-                borderRadius: '5px',
-                cursor: solicitudes.length > 0 ? 'pointer' : 'not-allowed',
-                marginRight: '10px'
-              }}
-              disabled={solicitudes.length === 0 || loadingProcess}
-            >
-              {loadingProcess ? 'Procesando...' : 'Procesar todas las solicitudes'}
-            </button>
-            
-            {/* Botón para procesar solo la siguiente solicitud */}
-            <button 
-              onClick={procesarSolicitudesPorMinuto}
-              style={{
-                padding: '10px 20px',
-                backgroundColor: solicitudes.length > 0 ? '#2ecc71' : '#cccccc',
-                color: 'white',
-                border: 'none',
-                borderRadius: '5px',
-                cursor: solicitudes.length > 0 ? 'pointer' : 'not-allowed'
-              }}
-              disabled={solicitudes.length === 0 || loadingProcess}
-            >
-              {loadingProcess ? 'Procesando...' : 'Procesar siguiente solicitud'}
-            </button>
-          </div>
-          
-          {processingMessage && (
-            <div style={{ 
-              marginTop: '15px', 
-              padding: '10px', 
-              backgroundColor: '#f8f9fa', 
-              borderRadius: '5px', 
-              fontStyle: 'italic' 
-            }}>
-              {processingMessage}
-            </div>
+          {assignments.length > 0 ? (
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ backgroundColor: '#f8f9fa' }}>
+                  <th style={{ padding: '10px', textAlign: 'left' }}>Orden</th>
+                  <th style={{ padding: '10px', textAlign: 'left' }}>Centro Asignado</th>
+                  <th style={{ padding: '10px', textAlign: 'left' }}>Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {assignments
+                  .sort((a, b) => Number(a.order) - Number(b.order)) // Ordenar por número de orden
+                  .map(assignment => (
+                    <tr key={assignment.docId} style={{ borderBottom: '1px solid #eee' }}>
+                      <td style={{ padding: '10px' }}>{assignment.order}</td>
+                      <td style={{ padding: '10px' }}>{assignment.centerName}</td>
+                      <td style={{ padding: '10px' }}>
+                        <button 
+                          onClick={async () => {
+                            // Eliminar la asignación y volverla a poner como solicitud pendiente
+                            try {
+                              // Crear una nueva solicitud pendiente
+                              const nuevaSolicitud = {
+                                orden: assignment.order,
+                                centrosIds: [assignment.centerId],
+                                timestamp: serverTimestamp()
+                              };
+                              
+                              // Usar una transacción para garantizar la consistencia
+                              await runTransaction(db, async (transaction) => {
+                                // Añadir como solicitud pendiente
+                                const solicitudRef = doc(collection(db, "solicitudesPendientes"));
+                                transaction.set(solicitudRef, nuevaSolicitud);
+                                
+                                // Eliminar la asignación
+                                const asignacionRef = doc(db, "asignaciones", assignment.docId);
+                                transaction.delete(asignacionRef);
+                                
+                                // Añadir al historial
+                                const historialRef = doc(collection(db, "historialSolicitudes"));
+                                transaction.set(historialRef, {
+                                  orden: assignment.order,
+                                  centroAnterior: assignment.centerId,
+                                  centroId: null,
+                                  estado: "REASIGNANDO",
+                                  mensaje: "Reasignación manual desde el panel de administración",
+                                  fechaHistorico: new Date().toISOString(),
+                                  timestamp: Date.now()
+                                });
+                              });
+                              
+                              // Recargar datos
+                              await cargarDatosDesdeFirebase();
+                              showNotification(`Asignación para orden ${assignment.order} movida a solicitudes pendientes`, "success");
+                            } catch (error) {
+                              console.error("Error al reasignar:", error);
+                              showNotification(`Error al reasignar: ${error.message}`, "error");
+                            }
+                          }}
+                          style={{
+                            padding: '5px 10px',
+                            backgroundColor: '#f39c12',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '3px',
+                            cursor: 'pointer'
+                          }}
+                          disabled={loadingProcess}
+                        >
+                          Reasignar
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          ) : (
+            <p>No hay asignaciones.</p>
           )}
         </div>
         
@@ -3001,7 +3252,8 @@ function App() {
             borderRadius: '10px',
             boxShadow: '0 3px 15px rgba(0,0,0,0.2)',
             backgroundColor: popupType === 'success' ? '#d4edda' : popupType === 'warning' ? '#fff3cd' : '#f8d7da',
-            color: popupType === 'success' ? '#155724' : popupType === 'warning' ? '#856404' : '#721c24',
+            color: popupType === 'success' ? '#155724' : 
+                  popupType === 'warning' ? '#856404' : '#721c24',
             zIndex: 1000,
             maxWidth: '350px',
             animation: 'slideIn 0.3s ease'
@@ -3234,34 +3486,6 @@ function App() {
             </button>
           </div>
         )}
-        
-        {/* Enlace al panel de administración */}
-        <div style={{
-          position: 'absolute',
-          top: '20px',
-          left: '20px',
-          zIndex: 50
-        }}>
-          <a
-            href="/admin"
-            style={{
-              padding: '12px 20px',
-              backgroundColor: '#2c3e50',
-              color: 'white',
-              border: 'none',
-              borderRadius: '6px',
-              textDecoration: 'none',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '15px',
-              fontWeight: '500',
-              boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
-            }}
-          >
-            🔧 Panel de Administración
-          </a>
-        </div>
         
         <div style={styles.tabs}>
           <div 
