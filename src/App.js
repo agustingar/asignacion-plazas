@@ -2515,6 +2515,271 @@ function App() {
     }
   };
 
+  // Agregar un efecto para el reseteo automático de contadores
+  useEffect(() => {
+    // Verificar si es hora de resetear los contadores automáticamente
+    const checkContadoresReset = () => {
+      const ahora = Date.now();
+      const ultimoReset = lastCounterResetRef.current;
+      
+      // Resetear contadores cada 60 minutos (3600000 ms) o si nunca se ha hecho
+      if (ultimoReset === 0 || (ahora - ultimoReset) > 3600000) {
+        resetearContadores();
+      }
+    };
+    
+    // Verificar cuando cambia assignments por primera vez o cuando hay más de 10 asignaciones
+    if (assignments.length > 10) {
+      checkContadoresReset();
+    }
+    
+    // También configurar un intervalo para verificar cada 15 minutos
+    const intervalId = setInterval(() => {
+      checkContadoresReset();
+    }, 900000); // 15 minutos
+    
+    return () => clearInterval(intervalId);
+  }, [assignments.length]);
+
+  // Función para procesar solicitudes pendientes cada minuto, priorizando por número de orden
+  // sin rehacer todas las asignaciones existentes
+  const procesarSolicitudesPorMinuto = async () => {
+    // Evitar procesamiento simultáneo
+    if (processingRef.current) {
+      console.log("Ya hay un procesamiento en curso. Se omite la verificación por minuto.");
+      return false;
+    }
+    
+    try {
+      // Verificar si hay solicitudes pendientes
+      const solicitudesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
+      
+      if (solicitudesSnapshot.empty) {
+        console.log("No hay solicitudes pendientes para procesar en la verificación por minuto.");
+        return true;
+      }
+      
+      // Convertir a array y normalizar propiedades
+      const solicitudesPendientes = solicitudesSnapshot.docs.map(doc => ({
+        ...doc.data(),
+        docId: doc.id,
+        centrosIds: doc.data().centrosIds || doc.data().centrosSeleccionados || []
+      }));
+      
+      console.log(`Verificación por minuto: Procesando ${solicitudesPendientes.length} solicitudes pendientes...`);
+      
+      // Ordenar solicitudes por número de orden (menor a mayor = mayor prioridad)
+      const solicitudesOrdenadas = solicitudesPendientes.sort((a, b) => {
+        return Number(a.orden) - Number(b.orden);
+      });
+      
+      // Obtener asignaciones actuales
+      const asignacionesSnapshot = await getDocs(collection(db, "asignaciones"));
+      const asignacionesExistentes = asignacionesSnapshot.docs.map(doc => ({
+        ...doc.data(),
+        docId: doc.id
+      }));
+      
+      // Crear mapa de centros y sus asignaciones actuales
+      const centrosAsignados = {};
+      asignacionesExistentes.forEach(asignacion => {
+        if (asignacion.centerId) {
+          if (!centrosAsignados[asignacion.centerId]) {
+            centrosAsignados[asignacion.centerId] = [];
+          }
+          centrosAsignados[asignacion.centerId].push(asignacion);
+        }
+      });
+      
+      // Crear mapa de órdenes y sus asignaciones
+      const ordenesAsignadas = new Map();
+      asignacionesExistentes.forEach(asignacion => {
+        if (asignacion.order) {
+          ordenesAsignadas.set(asignacion.order, asignacion);
+        }
+      });
+      
+      // Variables para contabilizar cambios
+      let asignacionesNuevas = 0;
+      let reasignacionesPorPrioridad = 0;
+      
+      // Procesamos en lotes para mayor eficiencia
+      const batch = writeBatch(db);
+      
+      // Procesar cada solicitud pendiente en orden de prioridad
+      for (const solicitud of solicitudesOrdenadas) {
+        const ordenSolicitud = Number(solicitud.orden);
+        
+        // Verificar si ya tiene una asignación
+        if (ordenesAsignadas.has(ordenSolicitud)) {
+          console.log(`La orden ${ordenSolicitud} ya tiene una asignación.`);
+          // Eliminar la solicitud pendiente ya que ya está asignada
+          batch.delete(doc(db, "solicitudesPendientes", solicitud.docId));
+          continue;
+        }
+        
+        // Buscar centro disponible entre los seleccionados
+        let centroAsignado = null;
+        let asignacionDesplazada = null;
+        
+        // Iteramos por los centros en orden de preferencia
+        for (const centroId of solicitud.centrosIds) {
+          // Verificar si hay plazas disponibles en este centro
+          const centroInfo = availablePlazas.find(c => c.id === centroId);
+          
+          if (!centroInfo) continue; // Centro no existe
+          
+          // Comprobar si hay plazas disponibles
+          if (centroInfo.asignadas < centroInfo.plazas) {
+            // Hay plazas disponibles, asignar directamente
+            centroAsignado = centroId;
+            break;
+          } else {
+            // No hay plazas disponibles, verificar si podemos desplazar por prioridad
+            // Obtener todas las asignaciones para este centro
+            const asignacionesCentro = centrosAsignados[centroId] || [];
+            
+            // Buscar la asignación con el número de orden más alto (menor prioridad)
+            const asignacionMenorPrioridad = asignacionesCentro.reduce((prev, current) => {
+              const prevOrder = Number(prev.order || 0);
+              const currentOrder = Number(current.order || 0);
+              return currentOrder > prevOrder ? current : prev;
+            }, { order: 0 });
+            
+            // Si existe y tiene menor prioridad (número mayor) que la solicitud actual
+            if (asignacionMenorPrioridad.order && Number(asignacionMenorPrioridad.order) > ordenSolicitud) {
+              centroAsignado = centroId;
+              asignacionDesplazada = asignacionMenorPrioridad;
+              break;
+            }
+          }
+        }
+        
+        // Si no se encontró un centro disponible, continuar con la siguiente solicitud
+        if (!centroAsignado) {
+          console.log(`No se encontró plaza disponible para la orden ${ordenSolicitud}.`);
+          continue;
+        }
+        
+        // Obtener información del centro asignado
+        const centroInfo = availablePlazas.find(c => c.id === centroAsignado);
+        
+        // Si hay una asignación a desplazar
+        if (asignacionDesplazada) {
+          console.log(`Desplazando asignación de orden ${asignacionDesplazada.order} para asignar orden ${ordenSolicitud} en centro ${centroAsignado}`);
+          
+          // Eliminar la asignación desplazada
+          batch.delete(doc(db, "asignaciones", asignacionDesplazada.docId));
+          
+          // Crear una nueva solicitud pendiente para la orden desplazada
+          const nuevaSolicitudDesplazada = {
+            orden: asignacionDesplazada.order,
+            centrosIds: [asignacionDesplazada.centerId], // Usar el centro actual como preferencia
+            timestamp: serverTimestamp(),
+            desplazada: true, // Marcar como desplazada para seguimiento
+            desplazadaPor: ordenSolicitud // Registrar qué orden la desplazó
+          };
+          
+          // Añadir la solicitud desplazada a solicitudes pendientes
+          const nuevaSolicitudRef = doc(collection(db, "solicitudesPendientes"));
+          batch.set(nuevaSolicitudRef, nuevaSolicitudDesplazada);
+          
+          // Registrar en historial la desplazada
+          const historialDesplazadaRef = doc(collection(db, "historialSolicitudes"));
+          batch.set(historialDesplazadaRef, {
+            orden: asignacionDesplazada.order,
+            centroAnterior: asignacionDesplazada.centerId,
+            centroId: null,
+            estado: "DESPLAZADA",
+            mensaje: `Desplazada por orden ${ordenSolicitud} de mayor prioridad`,
+            fechaHistorico: new Date().toISOString(),
+            timestamp: Date.now()
+          });
+          
+          reasignacionesPorPrioridad++;
+        }
+        
+        // Crear la nueva asignación para la solicitud actual
+        const nuevaAsignacion = {
+          order: ordenSolicitud,
+          centerId: centroAsignado,
+          centerName: centroInfo ? centroInfo.nombre : "Centro Desconocido",
+          timestamp: serverTimestamp()
+        };
+        
+        // Añadir la nueva asignación
+        const asignacionRef = doc(collection(db, "asignaciones"));
+        batch.set(asignacionRef, nuevaAsignacion);
+        
+        // Eliminar la solicitud pendiente que ya se asignó
+        batch.delete(doc(db, "solicitudesPendientes", solicitud.docId));
+        
+        // Registrar en historial
+        const historialRef = doc(collection(db, "historialSolicitudes"));
+        batch.set(historialRef, {
+          orden: ordenSolicitud,
+          centroId: centroAsignado,
+          estado: asignacionDesplazada ? "PRIORIZADA" : "ASIGNADA",
+          mensaje: asignacionDesplazada 
+            ? `Asignada con prioridad, desplazando orden ${asignacionDesplazada.order}` 
+            : "Asignada durante procesamiento regular",
+          fechaHistorico: new Date().toISOString(),
+          timestamp: Date.now()
+        });
+        
+        asignacionesNuevas++;
+      }
+      
+      // Si no hay cambios, no necesitamos hacer nada
+      if (asignacionesNuevas === 0 && reasignacionesPorPrioridad === 0) {
+        console.log("Verificación por minuto: No se realizaron cambios en las asignaciones.");
+        return true;
+      }
+      
+      // Aplicar todos los cambios en una sola operación
+      await batch.commit();
+      
+      console.log(`Verificación por minuto completada: ${asignacionesNuevas} nuevas asignaciones, ${reasignacionesPorPrioridad} reasignaciones por prioridad.`);
+      
+      // Si hubo cambios, recargar los datos
+      if (asignacionesNuevas > 0 || reasignacionesPorPrioridad > 0) {
+        await cargarDatosDesdeFirebase();
+        setUltimoProcesamientoFecha(new Date().toLocaleString());
+        
+        // Mostrar notificación solo si hubo cambios significativos
+        if (asignacionesNuevas + reasignacionesPorPrioridad > 0) {
+          showNotification(`Procesamiento automático: ${asignacionesNuevas} nuevas asignaciones, ${reasignacionesPorPrioridad} reasignaciones por prioridad.`, "success");
+        }
+      }
+      
+      return true;
+    } catch (error) {
+      console.error("Error en procesamiento por minuto:", error);
+      return false;
+    }
+  };
+
+  // Configurar un intervalo para procesar solicitudes cada minuto
+  useEffect(() => {
+    console.log("Configurando verificación de solicitudes cada minuto...");
+    
+    // Ejecutar la primera verificación tras 30 segundos (dar tiempo a cargar datos)
+    const timeoutId = setTimeout(() => {
+      procesarSolicitudesPorMinuto();
+    }, 30000);
+    
+    // Configurar intervalo para ejecutar cada minuto
+    const intervalId = setInterval(() => {
+      procesarSolicitudesPorMinuto();
+    }, 60000); // Cada minuto
+    
+    // Limpiar al desmontar
+    return () => {
+      clearTimeout(timeoutId);
+      clearInterval(intervalId);
+    };
+  }, []); // Sin dependencias para ejecutar solo una vez al montar
+
   return (
     <div className="App" style={styles.container}>
       {/* Modal de contraseña para administrador */}
