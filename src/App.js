@@ -1926,8 +1926,9 @@ function App() {
       margin: '0 auto',
       padding: '20px',
       backgroundColor: '#f8f9fa',
-      minHeight: '100vh',
-      fontFamily: 'Arial, sans-serif'
+      minHeight: 'calc(100vh - 120px)', // Ajustar para dejar espacio para el footer
+      fontFamily: 'Arial, sans-serif',
+      position: 'relative'
     },
     header: {
       textAlign: 'center',
