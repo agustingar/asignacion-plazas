@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import './App.css';
 import { collection, onSnapshot, addDoc, updateDoc, doc, getDocs, query, deleteDoc, setDoc, runTransaction, orderBy, where, writeBatch, limit, serverTimestamp } from "firebase/firestore";
 import { db } from './utils/firebaseConfig';
@@ -81,6 +81,18 @@ function App() {
   // Añadir estados para el buscador del panel de administración
   const [adminSearchTerm, setAdminSearchTerm] = useState('');
   const [adminSearchFilter, setAdminSearchFilter] = useState('all'); // 'all', 'order', 'center'
+
+  // Añadir los estados que faltan en los hooks al inicio del componente
+  const [centros, setCentros] = useState({});
+  const [asignaciones, setAsignaciones] = useState({});
+  const [solicitudesPendientes, setSolicitudesPendientes] = useState({});
+  const [plazasDisponibles, setPlazasDisponibles] = useState({});
+  const [contadores, setContadores] = useState({
+    asignaciones: 0,
+    pendientes: 0,
+    centros: 0,
+    historial: 0
+  });
 
   // Función para mostrar un popup con mensaje
   const showNotification = (message, type = 'success') => {
@@ -492,31 +504,127 @@ function App() {
 
   // Función para cargar datos directamente desde Firebase
   const cargarDatosDesdeFirebase = async () => {
+    console.log("Iniciando carga de datos desde Firebase...");
+    
     try {
       // Cargar centros
-      const centrosSnapshot = await getDocs(collection(db, "centros"));
-      const centrosData = centrosSnapshot.docs.map(doc => ({ ...doc.data(), docId: doc.id }));
-      setAvailablePlazas(centrosData);
+      const centrosSnapshot = await getDocs(collection(db, "centrosTrabajo"));
+      let centrosData = {};
+      centrosSnapshot.forEach(doc => {
+        const data = doc.data();
+        centrosData[doc.id] = {
+          id: doc.id,
+          nombre: data.nombre || "",
+          plazasDisponibles: parseInt(data.plazasDisponibles || 0, 10),
+          plazasOcupadas: parseInt(data.plazasOcupadas || 0, 10),
+          plazasTotal: parseInt(data.plazasTotal || 0, 10),
+          direccion: data.direccion || "",
+          codigoCentro: data.codigoCentro || "",
+          estadoCentro: data.estadoCentro || "Activo"
+        };
+      });
       
-      // Cargar asignaciones
-      const asignacionesSnapshot = await getDocs(collection(db, "asignaciones"));
-      const asignacionesData = asignacionesSnapshot.docs.map(doc => ({ ...doc.data(), docId: doc.id }));
-      setAssignments(asignacionesData);
+      // Cargar asignaciones actuales
+      const asignacionesSnapshot = await getDocs(collection(db, "asignacionesActuales"));
+      let asignacionesData = {};
+      asignacionesSnapshot.forEach(doc => {
+        const data = doc.data();
+        if (data && data.centerId) {
+          asignacionesData[doc.id] = {
+            id: doc.id,
+            numeroOrden: data.numeroOrden || 0,
+            centerId: data.centerId || "",
+            centroPrevio: data.centroPrevio || "",
+            nombreCentro: centrosData[data.centerId]?.nombre || "Centro no encontrado",
+            timestamp: data.timestamp || Date.now(),
+            fechaAsignacion: data.fechaAsignacion || new Date().toISOString()
+          };
+        }
+      });
       
       // Cargar solicitudes pendientes
       const solicitudesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
-      const solicitudesData = solicitudesSnapshot.docs.map(doc => ({ ...doc.data(), docId: doc.id }));
-      setSolicitudes(solicitudesData);
+      let solicitudesData = {};
+      solicitudesSnapshot.forEach(doc => {
+        const data = doc.data();
+        solicitudesData[doc.id] = {
+          id: doc.id,
+          numeroOrden: data.numeroOrden || 0,
+          centerId: data.centerId || "",
+          centroPrevio: data.centroPrevio || "",
+          nombreCentro: centrosData[data.centerId]?.nombre || "Centro no encontrado",
+          timestamp: data.timestamp || Date.now(),
+          fechaSolicitud: data.fechaSolicitud || new Date().toISOString(),
+          estado: data.estado || "Pendiente"
+        };
+      });
       
-      // Cargar historial de solicitudes
+      // Cargar historial
       const historialSnapshot = await getDocs(collection(db, "historialSolicitudes"));
-      const historialData = historialSnapshot.docs.map(doc => ({ ...doc.data(), docId: doc.id }));
+      let historialData = [];
+      historialSnapshot.forEach(doc => {
+        const data = doc.data();
+        historialData.push({
+          id: doc.id,
+          numeroOrden: data.numeroOrden || 0,
+          centerId: data.centerId || "",
+          centroPrevio: data.centroPrevio || "",
+          centroAnterior: data.centroAnterior || "",
+          nombreCentro: centrosData[data.centerId]?.nombre || "Centro no encontrado",
+          nombreCentroAnterior: data.centroAnterior ? (centrosData[data.centroAnterior]?.nombre || "Centro no encontrado") : "",
+          timestamp: data.timestamp || Date.now(),
+          fechaHistorico: data.fechaHistorico || new Date().toISOString(),
+          estado: data.estado || "Procesado",
+          accion: data.accion || "Asignación"
+        });
+      });
+      
+      // Ordenar historial por timestamp (más recientes primero)
+      historialData.sort((a, b) => b.timestamp - a.timestamp);
+      
+      // Actualizar el estado
+      setCentros(centrosData);
+      setAsignaciones(asignacionesData);
+      setSolicitudesPendientes(solicitudesData);
       setHistorialSolicitudes(historialData);
+      
+      // Calcular contadores
+      const totalAsignaciones = Object.keys(asignacionesData).length;
+      const totalPendientes = Object.keys(solicitudesData).length;
+      const totalCentros = Object.keys(centrosData).length;
+      
+      setContadores({
+        asignaciones: totalAsignaciones,
+        pendientes: totalPendientes,
+        centros: totalCentros,
+        historial: historialData.length
+      });
+      
+      // Actualizar plazas disponibles para mostrar en el dashboard
+      let plazasDisponiblesPorCentro = {};
+      Object.values(centrosData).forEach(centro => {
+        plazasDisponiblesPorCentro[centro.id] = {
+          id: centro.id,
+          nombre: centro.nombre,
+          plazasDisponibles: centro.plazasDisponibles,
+          codigoCentro: centro.codigoCentro,
+          estadoCentro: centro.estadoCentro
+        };
+      });
+      
+      setPlazasDisponibles(plazasDisponiblesPorCentro);
+      
+      console.log("Datos cargados correctamente:", {
+        centros: totalCentros,
+        asignaciones: totalAsignaciones,
+        pendientes: totalPendientes,
+        historial: historialData.length
+      });
       
       return true;
     } catch (error) {
       console.error("Error al cargar datos desde Firebase:", error);
-      throw error;
+      return false;
     }
   };
   
@@ -890,7 +998,6 @@ function App() {
     
     const inicializarApp = async () => {
       // Comprobar si estamos en modo admin basado en la URL
-      // Funciona tanto en desarrollo como en GitHub Pages
       const pathname = window.location.pathname;
       const basePathSegments = pathname.split('/');
       const lastSegment = basePathSegments[basePathSegments.length - 1];
@@ -906,8 +1013,52 @@ function App() {
       cargandoRef.current = true;
       
       try {
+        // Si es el panel de admin, forzar la carga de todos los datos independientemente
+        // de si hay solicitudes pendientes o no
+        if (isAdmin) {
+          setIsVerificationMaintenance(true);
+          setMaintenanceMessage("Cargando datos para el panel de administración...");
+          setMaintenanceProgress(5);
+          
+          // Verificar conexión con Firebase primero
+          const conexionResult = await verificarConexionFirebase();
+          if (!conexionResult.success) {
+            setIsVerificationMaintenance(true); // Mostrar independientemente
+            setMaintenanceMessage(`Error de conexión: ${conexionResult.message}. Intenta recargar la página.`);
+            return;
+          }
+          
+          setMaintenanceMessage("Cargando centros y solicitudes...");
+          setMaintenanceProgress(30);
+          
+          // Forzar una carga completa de datos
+          try {
+            await cargarDatosDesdeFirebase();
+            console.log("Datos cargados correctamente para el panel de admin");
+            
+            setMaintenanceProgress(100);
+            setMaintenanceMessage("¡Datos cargados correctamente!");
+            
+            // Desactivar el modo mantenimiento después de un breve retraso
+            setTimeout(() => {
+              setIsVerificationMaintenance(false);
+            }, 1000);
+          } catch (error) {
+            console.error("Error al cargar datos para el panel de admin:", error);
+            setMaintenanceMessage(`Error al cargar datos: ${error.message}`);
+            
+            setTimeout(() => {
+              setIsVerificationMaintenance(false);
+            }, 2000);
+          }
+          
+          cargaCompletadaRef.current = true;
+          cargandoRef.current = false;
+          return;
+        }
+        
         // Solo activamos modo mantenimiento si hay solicitudes pendientes
-        // o si estamos en modo admin
+        // o si estamos en modo admin (para el resto de la aplicación)
         const solicitudesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
         const hayPendientes = !solicitudesSnapshot.empty;
         
@@ -1334,7 +1485,7 @@ function App() {
           // Crear una nueva solicitud
           const newRequest = {
             orden: orderNumberNumeric,
-            centrosSeleccionados: selectedCenters,
+            centrosIds: selectedCenters,
             timestamp: serverTimestamp()
           };
           
@@ -1349,15 +1500,16 @@ function App() {
         // NO procesamos la solicitud inmediatamente
         await cargarDatosDesdeFirebase();
         
-        // Registrar en historial
+        // Registrar en historial - Usar formato de fecha correcto para evitar "invalid date"
+        const ahora = new Date();
         const historialRef = doc(collection(db, "historialSolicitudes"));
         await setDoc(historialRef, {
           orden: orderNumberNumeric,
           centrosIds: selectedCenters,
           estado: "PENDIENTE",
           mensaje: "Solicitud añadida a la cola de procesamiento",
-          fechaHistorico: new Date().toISOString(),
-          timestamp: Date.now()
+          fechaHistorico: ahora.toISOString(), // Usar formato ISO estándar
+          timestamp: ahora.getTime() // Usar timestamp numérico
         });
         
         // Limpiar los campos del formulario
@@ -3101,9 +3253,28 @@ function App() {
                   })
                   .map(assignment => {
                     // Buscar info del centro para mostrar plazas disponibles
-                    const centroInfo = availablePlazas.find(c => c.id === assignment.centerId) || {};
-                    const plazasDisponibles = centroInfo.plazas ? centroInfo.plazas - (centroInfo.asignadas || 0) : 'N/A';
-                    const plazasTotal = centroInfo.plazas || 'N/A';
+                    let centroInfo = availablePlazas.find(c => c.id === assignment.centerId);
+                    
+                    // Si no se encuentra por id, intentar encontrarlo por nombre
+                    if (!centroInfo && assignment.centerName) {
+                      centroInfo = availablePlazas.find(c => 
+                        (c.nombre && c.nombre.toLowerCase() === assignment.centerName.toLowerCase()) || 
+                        (c.centro && c.centro.toLowerCase() === assignment.centerName.toLowerCase())
+                      );
+                    }
+                    
+                    // Si aún no se encuentra, crear un objeto vacío con valores por defecto
+                    if (!centroInfo) {
+                      centroInfo = {
+                        id: assignment.centerId || "desconocido",
+                        nombre: assignment.centerName || "Centro desconocido",
+                        plazas: 0,
+                        asignadas: 0
+                      };
+                    }
+                    
+                    const plazasDisponibles = Math.max(0, (centroInfo.plazas || 0) - (centroInfo.asignadas || 0));
+                    const plazasTotal = centroInfo.plazas || 0;
                     
                     return (
                       <tr key={assignment.docId} style={{ borderBottom: '1px solid #eee' }}>
@@ -3149,12 +3320,14 @@ function App() {
                                 batch.delete(asignacionRef);
                                 
                                 // Crear un objeto para el historial con solo campos válidos
+                                // Usar una única fecha para mantener consistencia
+                                const ahora = new Date();
                                 const historialData = {
                                   orden: currentAssignment.order,
                                   estado: "REASIGNANDO",
                                   mensaje: "Reasignación manual desde el panel de administración",
-                                  fechaHistorico: new Date().toISOString(),
-                                  timestamp: Date.now()
+                                  fechaHistorico: ahora.toISOString(), // Formato ISO estándar
+                                  timestamp: ahora.getTime() // Timestamp numérico
                                 };
                                 
                                 // Solo añadir el campo centroAnterior si centerId no es undefined
@@ -3252,7 +3425,20 @@ function App() {
                         <td style={{ padding: '10px' }}>{solicitud.orden}</td>
                         <td style={{ padding: '10px' }}>
                           {solicitud.centrosIds?.map((centroId, index) => {
-                            const centro = availablePlazas.find(c => c.id === centroId);
+                            // Buscar centro con más opciones de matching
+                            let centro = availablePlazas.find(c => c.id === centroId);
+                            
+                            // Si no se encuentra el centro por id, crear un objeto por defecto
+                            if (!centro) {
+                              centro = {
+                                id: centroId,
+                                nombre: `Centro ID: ${centroId}`,
+                                plazas: 0,
+                                asignadas: 0
+                              };
+                              console.log(`Centro no encontrado para ID: ${centroId}, usando valores por defecto`);
+                            }
+                            
                             return (
                               <div key={centroId} style={{ 
                                 marginBottom: index < solicitud.centrosIds.length - 1 ? '5px' : '0',
@@ -3260,17 +3446,24 @@ function App() {
                                 backgroundColor: index === 0 ? '#f2f9ff' : 'transparent',
                                 borderRadius: '3px'
                               }}>
-                                {centro ? centro.nombre : centroId}
-                                {index < solicitud.centrosIds.length - 1 ? '' : ''}
+                                {centro.nombre || centro.centro || `Centro ID: ${centroId}`}
                               </div>
                             );
                           })}
                         </td>
                         <td style={{ padding: '10px' }}>
                           {solicitud.centrosIds?.map((centroId, index) => {
-                            const centro = availablePlazas.find(c => c.id === centroId);
-                            const plazasDisponibles = centro ? centro.plazas - centro.asignadas : 'N/A';
-                            const plazasTotal = centro ? centro.plazas : 'N/A';
+                            // Buscar centro con más opciones de matching
+                            let centro = availablePlazas.find(c => c.id === centroId);
+                            
+                            // Si no se encuentra el centro por id, crear un objeto por defecto
+                            if (!centro) {
+                              centro = { plazas: 0, asignadas: 0 };
+                            }
+                            
+                            // Calcular plazas disponibles y formatear para la visualización
+                            const plazasDisponibles = Math.max(0, (centro.plazas || 0) - (centro.asignadas || 0));
+                            const plazasTotal = centro.plazas || 0;
                             
                             return (
                               <div key={centroId} style={{ 

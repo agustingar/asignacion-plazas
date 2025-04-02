@@ -73,7 +73,7 @@ export const procesarSolicitudes = async (
       map[centro.id] = centro;
       return map;
     }, {});
-    
+
     // Fase 1: Eliminar asignaciones existentes y resetear contadores en Firestore
     setProcessingMessage && setProcessingMessage("Eliminando asignaciones existentes para recalcular...");
     for (const asignacion of assignments) {
@@ -88,7 +88,7 @@ export const procesarSolicitudes = async (
         await updateDoc(doc(db, "centros", centro.docId), { asignadas: 0 });
       }
     }
-    
+
     // Fase 2: Procesar cada solicitud/asignación en estricto orden de prioridad
     let asignacionesNuevas = 0;
     let reasignaciones = 0;
@@ -96,7 +96,7 @@ export const procesarSolicitudes = async (
     const ordenesProcesadas = new Set();
     const solicitudesAsignadas = []; // Guardar docIds de solicitudes asignadas
     const historialOperaciones = []; // Guardar operaciones para historial
-    
+
     for (const operacion of operacionesOrdenadas) {
       // Evitar procesar duplicados por número de orden
       if (ordenesProcesadas.has(operacion.orden)) continue;
@@ -164,21 +164,21 @@ export const procesarSolicitudes = async (
             // Hay plaza disponible para asignar directamente
             centro.asignadas++;
             centro.asignacionesPorOrden.push(operacion.orden);
-            
-            const nuevaAsignacion = {
+
+              const nuevaAsignacion = {
               order: operacion.orden,
               id: centro.id,
-              localidad: centro.localidad,
-              centro: centro.centro,
-              municipio: centro.municipio,
-              timestamp: Date.now()
-            };
-            
-            const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
+                localidad: centro.localidad,
+                centro: centro.centro,
+                municipio: centro.municipio,
+                timestamp: Date.now()
+              };
+
+              const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
             await setDoc(nuevaAsignacionRef, nuevaAsignacion);
-            
+
             nuevasAsignaciones.push({ ...nuevaAsignacion, docId: nuevaAsignacionRef.id });
-            asignacionesNuevas++;
+              asignacionesNuevas++;
             asignacionExitosa = true;
             centroAsignado = centro;
             
@@ -361,7 +361,7 @@ export const procesarSolicitudes = async (
         
         // Guardar en Firestore asegurando que no hay campos undefined
         await setDoc(historialRef, historialData);
-      } catch (error) {
+          } catch (error) {
         console.error(`Error al registrar historial para orden ${operacion.orden}:`, error);
       }
     }
@@ -922,7 +922,7 @@ export const verificarYCorregirAsignaciones = async (centros, asignaciones, db) 
     const centrosConDisponibilidad = centrosValidos.filter(centro => 
       centro.asignadas < centro.plazas
     );
-    
+
     let asignacionesCorregidas = 0;
     let asignacionesReasignadas = 0;
     let solicitudesRecuperadas = 0;
@@ -1019,20 +1019,20 @@ export const verificarYCorregirAsignaciones = async (centros, asignaciones, db) 
           if (!reasignado) {
             try {
               // Registrar en historial como FUERA_DE_ORDEN
-              const historialRef = doc(collection(db, "historialSolicitudes"));
-              const datosHistorial = {
-                orden: asignacion.order,
-                centroId: asignacion.id,
+          const historialRef = doc(collection(db, "historialSolicitudes"));
+          const datosHistorial = {
+            orden: asignacion.order,
+            centroId: asignacion.id,
                 estado: "EXCESO_NO_REASIGNABLE",
                 mensaje: `Centro ${centro.centro} con exceso de plazas. Se mantiene la asignación actual.`,
-                centroAsignado: asignacion.centro || centro.centro,
-                localidad: asignacion.localidad || centro.localidad,
-                municipio: asignacion.municipio || centro.municipio,
-                fechaHistorico: new Date().toISOString(),
-                timestamp: Date.now()
-              };
+            centroAsignado: asignacion.centro || centro.centro,
+            localidad: asignacion.localidad || centro.localidad,
+            municipio: asignacion.municipio || centro.municipio,
+            fechaHistorico: new Date().toISOString(),
+            timestamp: Date.now()
+          };
               
-              await setDoc(historialRef, datosHistorial);
+          await setDoc(historialRef, datosHistorial);
               
               // Evitamos crear solicitudes pendientes para evitar que las asignaciones se conviertan en solicitudes
               console.log(`Asignación ${asignacion.order} en exceso en ${centro.centro}, pero se mantiene sin convertir a solicitud pendiente`);
