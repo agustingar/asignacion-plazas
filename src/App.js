@@ -413,15 +413,15 @@ function App() {
           // Añadir nuevo centro
           nuevoscentros.push({
             id: String(nextId++), // Convertir a string para mantener consistencia
-            asi: asi,
-            departamento: departamento,
-            codigo: codigo,
-            centro: centro,
-            localidad: municipio,
-            municipio: municipio,
-            plazas: plazas,
-            asignadas: 0
-          });
+          asi: asi,
+          departamento: departamento,
+          codigo: codigo,
+          centro: centro,
+          localidad: municipio,
+          municipio: municipio,
+          plazas: plazas,
+          asignadas: 0
+        });
         }
         
         if ((nuevoscentros.length + centrosActualizados.length) % 100 === 0) {
@@ -2299,7 +2299,7 @@ function App() {
       }, 10 * 60 * 1000);
       
       setIsLoading(false);
-      return {
+      return { 
         duplicadas: duplicadas.length,
         eliminadas
       };
@@ -3694,8 +3694,6 @@ function App() {
           <Dashboard 
             assignments={assignments} 
             availablePlazas={availablePlazas} 
-            eliminarSolicitudesDuplicadas={eliminarSolicitudesDuplicadas}
-            limpiarDuplicadosHistorial={limpiarDuplicadosHistorial}
           />
         </div>
       )}

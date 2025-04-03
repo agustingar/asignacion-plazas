@@ -5,11 +5,9 @@ import React, { useState, useEffect } from 'react';
  * @param {Object} props - Propiedades del componente
  * @param {Array} props.assignments - Lista de asignaciones
  * @param {Array} props.availablePlazas - Lista de centros/plazas disponibles
- * @param {Function} props.eliminarSolicitudesDuplicadas - Función para eliminar solicitudes duplicadas
- * @param {Function} props.limpiarDuplicadosHistorial - Función para limpiar duplicados del historial
  * @returns {JSX.Element} - Componente Dashboard
  */
-const Dashboard = ({ assignments = [], availablePlazas = [], eliminarSolicitudesDuplicadas, limpiarDuplicadosHistorial }) => {
+const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [filtroEstado, setFiltroEstado] = useState('TODOS');
   const [error, setError] = useState('');
@@ -17,7 +15,6 @@ const Dashboard = ({ assignments = [], availablePlazas = [], eliminarSolicitudes
   const [itemsPerPage] = useState(10);
   const [sortConfig, setSortConfig] = useState({ key: 'order', direction: 'asc' });
   const [avisoVisto, setAvisoVisto] = useState(false);
-  const [procesando, setProcesando] = useState(false);
   
   // Validar que assignments sea un array
   useEffect(() => {
@@ -499,64 +496,6 @@ const Dashboard = ({ assignments = [], availablePlazas = [], eliminarSolicitudes
         <p style={{ margin: '0', fontWeight: 'bold' }}>
           Por favor, vuelva a introducir su solicitud.
         </p>
-      </div>
-      
-      {/* Botón para limpiar duplicados */}
-      <div style={{ marginBottom: '20px', textAlign: 'right' }}>
-        <button
-          onClick={async () => {
-            if (window.confirm("¿Está seguro de que desea eliminar todas las asignaciones duplicadas? Esta acción no se puede deshacer.")) {
-              try {
-                setProcesando(true);
-                
-                // Ejecutar limpieza de duplicados
-                const resultadoSolicitudes = await eliminarSolicitudesDuplicadas();
-                const resultadoHistorial = await limpiarDuplicadosHistorial();
-                
-                // Mostrar resultado
-                const mensaje = `
-                  Proceso completado con éxito:
-                  
-                  Solicitudes:
-                  - Duplicadas encontradas: ${resultadoSolicitudes.duplicadas}
-                  - Duplicadas eliminadas: ${resultadoSolicitudes.eliminadas}
-                  
-                  Asignaciones:
-                  - Duplicadas encontradas: ${resultadoHistorial.asignacionesDuplicadas}
-                  - Duplicadas eliminadas: ${resultadoHistorial.asignacionesEliminadas}
-                  
-                  Historial:
-                  - Duplicadas encontradas: ${resultadoHistorial.historialDuplicado}
-                  - Duplicadas eliminadas: ${resultadoHistorial.historialEliminado}
-                `;
-                
-                alert(mensaje);
-                
-              } catch (error) {
-                console.error("Error al eliminar duplicados:", error);
-                alert(`Error al eliminar duplicados: ${error.message}`);
-              } finally {
-                setProcesando(false);
-              }
-            }
-          }}
-          style={{
-            backgroundColor: '#e74c3c',
-            color: 'white',
-            padding: '10px 15px',
-            border: 'none',
-            borderRadius: '5px',
-            cursor: 'pointer',
-            fontWeight: 'bold',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            marginLeft: 'auto'
-          }}
-          disabled={procesando}
-        >
-          {procesando ? 'Procesando...' : 'Eliminar Duplicados'}
-        </button>
       </div>
       
       {/* Encabezado y estadísticas */}
