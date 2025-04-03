@@ -1,15 +1,15 @@
 {
   "files": {
     "main.css": "/asignacion-plazas/static/css/main.d2af0e0b.css",
-    "main.js": "/asignacion-plazas/static/js/main.70ef3833.js",
+    "main.js": "/asignacion-plazas/static/js/main.21f6e4cf.js",
     "static/js/453.4b8be825.chunk.js": "/asignacion-plazas/static/js/453.4b8be825.chunk.js",
     "index.html": "/asignacion-plazas/index.html",
     "main.d2af0e0b.css.map": "/asignacion-plazas/static/css/main.d2af0e0b.css.map",
-    "main.70ef3833.js.map": "/asignacion-plazas/static/js/main.70ef3833.js.map",
+    "main.21f6e4cf.js.map": "/asignacion-plazas/static/js/main.21f6e4cf.js.map",
     "453.4b8be825.chunk.js.map": "/asignacion-plazas/static/js/453.4b8be825.chunk.js.map"
   },
   "entrypoints": [
     "static/css/main.d2af0e0b.css",
-    "static/js/main.70ef3833.js"
+    "static/js/main.21f6e4cf.js"
   ]
 }
