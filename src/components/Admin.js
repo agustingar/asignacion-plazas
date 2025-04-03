@@ -2046,40 +2046,55 @@ const Admin = ({
           
           <button
             onClick={async () => {
-              // Solicitar confirmación para eliminar duplicados
-              if (window.confirm("¿Está seguro de que desea eliminar las asignaciones y solicitudes duplicadas? Esta acción no se puede deshacer.")) {
-                // Mostrar mensaje de procesamiento
-                setInternalProcessingMessage("Eliminando duplicados...");
+              if (window.confirm("¿Está seguro de que desea eliminar todas las solicitudes, asignaciones e historiales duplicados? Esta acción no se puede deshacer.")) {
                 try {
-                  // Eliminar solicitudes y asignaciones duplicadas
+                  setInternalProcessingMessage("Eliminando duplicados...");
+                  
+                  // Primero eliminar solicitudes duplicadas
                   const resultadoSolicitudes = await eliminarSolicitudesDuplicadas();
                   
-                  // Eliminar duplicados en historial
+                  // Después limpiar historial y asignaciones
                   const resultadoHistorial = await limpiarDuplicadosHistorial();
+                  
+                  // Mostrar resumen de resultados
+                  const mensaje = `
+                    Proceso completado con éxito:
+                    
+                    Solicitudes:
+                    - Duplicadas encontradas: ${resultadoSolicitudes.duplicadas}
+                    - Duplicadas eliminadas: ${resultadoSolicitudes.eliminadas}
+                    
+                    Asignaciones:
+                    - Duplicadas encontradas: ${resultadoHistorial.asignacionesDuplicadas}
+                    - Duplicadas eliminadas: ${resultadoHistorial.asignacionesEliminadas}
+                    
+                    Historial:
+                    - Duplicadas encontradas: ${resultadoHistorial.historialDuplicado}
+                    - Duplicadas eliminadas: ${resultadoHistorial.historialEliminado}
+                  `;
+                  
+                  alert(mensaje);
+                  setInternalProcessingMessage("");
                   
                   // Recargar datos
                   await cargarDatosDesdeFirebase();
                   
-                  // Mostrar resultado
-                  showNotification(
-                    `Limpieza completada: Se eliminaron ${resultadoSolicitudes.eliminadosAsignaciones} asignaciones, ${resultadoSolicitudes.eliminadosSolicitudes} solicitudes y ${resultadoHistorial.eliminados} entradas de historial duplicadas`, 
-                    "success"
-                  );
                 } catch (error) {
                   console.error("Error al eliminar duplicados:", error);
-                  showNotification(`Error al eliminar duplicados: ${error.message}`, "error");
-                } finally {
+                  alert(`Error al eliminar duplicados: ${error.message}`);
                   setInternalProcessingMessage("");
                 }
               }
             }}
             style={{
-              padding: '8px 12px',
               backgroundColor: '#e74c3c',
               color: 'white',
+              padding: '10px 15px',
               border: 'none',
               borderRadius: '5px',
-              cursor: 'pointer'
+              cursor: 'pointer',
+              marginRight: '10px',
+              fontWeight: 'bold'
             }}
           >
             Eliminar Duplicados

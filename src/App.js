@@ -96,6 +96,9 @@ function App() {
     historial: 0
   });
 
+  // Estado para manejar el proceso de carga
+  const [isLoading, setIsLoading] = useState(false);
+
   // Función para mostrar un popup con mensaje
   const showNotification = (message, type = 'success') => {
     setPopupMessage(message);
@@ -2176,210 +2179,128 @@ function App() {
     }
   };
 
-  // Modificado - Mover la función eliminarSolicitudesDuplicadas antes de verificarYCorregirAsignaciones
-  // para solucionar el error de referencia circular
+  // Eliminar solicitudes duplicadas
   const eliminarSolicitudesDuplicadas = async () => {
     try {
-      console.log("Ejecutando eliminación de solicitudes y asignaciones duplicadas...");
+      setIsLoading(true);
+      console.log("Iniciando eliminación de solicitudes duplicadas...");
       
-      // PARTE 1: Eliminar solicitudes pendientes duplicadas
+      // Colección para registrar solicitudes eliminadas permanentemente
+      const solicitudesBorradasRef = collection(db, "solicitudesBorradas");
+      
       // Obtener todas las solicitudes pendientes
       const solicitudesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
+      let solicitudes = [];
       
-      // Crear un mapa para detectar duplicados por número de orden
-      const solicitudesPorOrden = {};
-      const solicitudesTotales = solicitudesSnapshot.docs.length;
-      
-      // Agrupar solicitudes por orden
-      solicitudesSnapshot.docs.forEach(doc => {
-        const solicitud = { ...doc.data(), docId: doc.id };
-        const orden = solicitud.orden;
-        
-        if (!orden) return;
-        
-        if (!solicitudesPorOrden[orden]) {
-          solicitudesPorOrden[orden] = [solicitud];
-        } else {
-          solicitudesPorOrden[orden].push(solicitud);
-        }
+      solicitudesSnapshot.forEach(doc => {
+        solicitudes.push({
+          id: doc.id,
+          ...doc.data()
+        });
       });
       
-      // Contar solicitudes duplicadas
-      let totalDuplicadosSolicitudes = 0;
-      Object.keys(solicitudesPorOrden).forEach(orden => {
-        const solicitudes = solicitudesPorOrden[orden];
-        if (solicitudes.length > 1) {
-          totalDuplicadosSolicitudes += (solicitudes.length - 1);
-        }
-      });
+      console.log(`Total de solicitudes obtenidas: ${solicitudes.length}`);
       
-      // PARTE 2: Eliminar asignaciones duplicadas
-      // Obtener todas las asignaciones
-      const asignacionesSnapshot = await getDocs(collection(db, "asignaciones"));
+      // Verificar duplicados por DNI y timestamp
+      const solicitudesPorUsuario = {};
+      const duplicadas = [];
+      const conservadas = [];
       
-      // Crear un mapa para detectar duplicados por número de orden
-      const asignacionesPorOrden = {};
-      const asignacionesTotales = asignacionesSnapshot.docs.length;
-      
-      // Agrupar asignaciones por orden
-      asignacionesSnapshot.docs.forEach(doc => {
-        const asignacion = { ...doc.data(), docId: doc.id };
-        const orden = asignacion.order;
+      for (const solicitud of solicitudes) {
+        const key = `${solicitud.dni}_${solicitud.timestamp}`;
         
-        if (!orden) return;
-        
-        if (!asignacionesPorOrden[orden]) {
-          asignacionesPorOrden[orden] = [asignacion];
-        } else {
-          asignacionesPorOrden[orden].push(asignacion);
+        if (!solicitudesPorUsuario[key]) {
+          solicitudesPorUsuario[key] = [];
         }
-      });
-      
-      // Contar asignaciones duplicadas
-      let totalDuplicadosAsignaciones = 0;
-      Object.keys(asignacionesPorOrden).forEach(orden => {
-        const asignaciones = asignacionesPorOrden[orden];
-        if (asignaciones.length > 1) {
-          totalDuplicadosAsignaciones += (asignaciones.length - 1);
-        }
-      });
-      
-      // PARTE 3: Verificar si hay duplicados en historial
-      const historialSnapshot = await getDocs(collection(db, "historialSolicitudes"));
-      const historialPorOrdenYEstado = {};
-      
-      // Agrupar historial por orden y estado para identificar duplicados más precisos
-      historialSnapshot.docs.forEach(doc => {
-        const historial = { ...doc.data(), docId: doc.id };
-        const orden = historial.orden;
-        const estado = historial.estado || 'DESCONOCIDO';
         
-        if (!orden) return;
-        
-        const key = `${orden}-${estado}`;
-        
-        if (!historialPorOrdenYEstado[key]) {
-          historialPorOrdenYEstado[key] = [historial];
-        } else {
-          historialPorOrdenYEstado[key].push(historial);
-        }
-      });
-      
-      // Contar duplicados en historial
-      let totalDuplicadosHistorial = 0;
-      Object.keys(historialPorOrdenYEstado).forEach(key => {
-        const historiales = historialPorOrdenYEstado[key];
-        if (historiales.length > 1) {
-          totalDuplicadosHistorial += (historiales.length - 1);
-        }
-      });
-      
-      // Si no hay duplicados, terminar
-      if (totalDuplicadosSolicitudes === 0 && totalDuplicadosAsignaciones === 0 && totalDuplicadosHistorial === 0) {
-        console.log("No se encontraron elementos duplicados");
-        return { 
-          eliminadosSolicitudes: 0, 
-          eliminadosAsignaciones: 0,
-          eliminadosHistorial: 0,
-          totalSolicitudes: solicitudesTotales,
-          totalAsignaciones: asignacionesTotales
-        };
+        solicitudesPorUsuario[key].push(solicitud);
       }
       
-      console.log(`Se encontraron ${totalDuplicadosSolicitudes} solicitudes duplicadas, ${totalDuplicadosAsignaciones} asignaciones duplicadas y ${totalDuplicadosHistorial} entradas duplicadas en historial`);
-      
-      const batch = writeBatch(db);
-      let eliminadosSolicitudes = 0;
-      let eliminadosAsignaciones = 0;
-      let eliminadosHistorial = 0;
-      
-      // Eliminar solicitudes duplicadas (mantener solo la más reciente)
-      for (const orden in solicitudesPorOrden) {
-        const solicitudes = solicitudesPorOrden[orden];
-        
-        if (solicitudes.length > 1) {
-          // Ordenar por timestamp descendente (más reciente primero)
-          solicitudes.sort((a, b) => {
-            const timestampA = a.timestamp || 0;
-            const timestampB = b.timestamp || 0;
-            return timestampB - timestampA;
+      // Identificar duplicados y conservar solo la última versión
+      for (const key in solicitudesPorUsuario) {
+        if (solicitudesPorUsuario[key].length > 1) {
+          // Ordenar por fecha de creación (la más reciente primero)
+          const ordenadas = solicitudesPorUsuario[key].sort((a, b) => {
+            return (b.createdAt?.toDate?.() || 0) - (a.createdAt?.toDate?.() || 0);
           });
           
-          // Mantener la solicitud más reciente y eliminar el resto
-          const solicitudesAEliminar = solicitudes.slice(1);
+          // Conservar la solicitud más reciente
+          conservadas.push(ordenadas[0]);
           
-          for (const solicitud of solicitudesAEliminar) {
-            batch.delete(doc(db, "solicitudesPendientes", solicitud.docId));
-            eliminadosSolicitudes++;
+          // Marcar el resto como duplicadas
+          for (let i = 1; i < ordenadas.length; i++) {
+            duplicadas.push(ordenadas[i]);
           }
+        } else {
+          conservadas.push(solicitudesPorUsuario[key][0]);
         }
       }
       
-      // Eliminar asignaciones duplicadas (mantener solo la más reciente)
-      for (const orden in asignacionesPorOrden) {
-        const asignaciones = asignacionesPorOrden[orden];
-        
-        if (asignaciones.length > 1) {
-          // Ordenar por timestamp descendente (más reciente primero)
-          asignaciones.sort((a, b) => {
-            const timestampA = a.timestamp || 0;
-            const timestampB = b.timestamp || 0;
-            return timestampB - timestampA;
+      console.log(`Solicitudes duplicadas encontradas: ${duplicadas.length}`);
+      
+      // Eliminar duplicados y agregar a la colección de borradas
+      let eliminadas = 0;
+      for (const solicitud of duplicadas) {
+        try {
+          const docRef = doc(db, "solicitudesPendientes", solicitud.id);
+          await deleteDoc(docRef);
+          
+          // Registrar en solicitudes borradas
+          await addDoc(solicitudesBorradasRef, {
+            solicitudId: solicitud.id,
+            dni: solicitud.dni,
+            timestamp: solicitud.timestamp,
+            eliminadaEn: serverTimestamp()
           });
           
-          // Mantener la asignación más reciente y eliminar el resto
-          const asignacionesAEliminar = asignaciones.slice(1);
-          
-          for (const asignacion of asignacionesAEliminar) {
-            batch.delete(doc(db, "asignaciones", asignacion.docId));
-            eliminadosAsignaciones++;
-          }
+          eliminadas++;
+        } catch (error) {
+          console.error(`Error al eliminar solicitud ${solicitud.id}:`, error);
         }
       }
       
-      // Eliminar historial duplicado (mantener solo el más reciente por orden y estado)
-      for (const key in historialPorOrdenYEstado) {
-        const historiales = historialPorOrdenYEstado[key];
+      // Configurar un listener para evitar recreación
+      const unsubscribe = onSnapshot(collection(db, "solicitudesPendientes"), async (snapshot) => {
+        const cambios = snapshot.docChanges();
         
-        if (historiales.length > 1) {
-          // Ordenar por timestamp descendente (más reciente primero)
-          historiales.sort((a, b) => {
-            const timestampA = a.timestamp || 0;
-            const timestampB = b.timestamp || 0;
-            return timestampB - timestampA;
-          });
-          
-          // Mantener el historial más reciente y eliminar el resto
-          const historialesAEliminar = historiales.slice(1);
-          
-          for (const historial of historialesAEliminar) {
-            batch.delete(doc(db, "historialSolicitudes", historial.docId));
-            eliminadosHistorial++;
+        for (const cambio of cambios) {
+          if (cambio.type === "added") {
+            const nuevaSolicitud = {
+              id: cambio.doc.id,
+              ...cambio.doc.data()
+            };
+            
+            // Verificar si esta solicitud estaba previamente borrada
+            const borradasQuery = query(
+              solicitudesBorradasRef, 
+              where("dni", "==", nuevaSolicitud.dni),
+              where("timestamp", "==", nuevaSolicitud.timestamp)
+            );
+            
+            const borradasSnapshot = await getDocs(borradasQuery);
+            
+            if (!borradasSnapshot.empty) {
+              console.log(`Eliminando solicitud recreada: ${nuevaSolicitud.id}`);
+              await deleteDoc(doc(db, "solicitudesPendientes", nuevaSolicitud.id));
+            }
           }
         }
-      }
+      });
       
-      // Ejecutar todas las eliminaciones como batch
-      if (eliminadosSolicitudes > 0 || eliminadosAsignaciones > 0 || eliminadosHistorial > 0) {
-        await batch.commit();
-      }
+      // Guardar referencia al unsubscribe en el estado (limitado a 10 minutos)
+      setTimeout(() => {
+        if (unsubscribe) unsubscribe();
+      }, 10 * 60 * 1000);
       
-      console.log(`Se eliminaron ${eliminadosSolicitudes} solicitudes duplicadas, ${eliminadosAsignaciones} asignaciones duplicadas y ${eliminadosHistorial} entradas duplicadas en historial`);
-      return { 
-        eliminadosSolicitudes, 
-        eliminadosAsignaciones,
-        eliminadosHistorial,
-        totalSolicitudes: solicitudesTotales,
-        totalAsignaciones: asignacionesTotales
+      setIsLoading(false);
+      return {
+        duplicadas: duplicadas.length,
+        eliminadas
       };
     } catch (error) {
-      console.error("Error al eliminar duplicados:", error);
-      return { 
-        error: error.message, 
-        eliminadosSolicitudes: 0,
-        eliminadosAsignaciones: 0,
-        eliminadosHistorial: 0
-      };
+      console.error("Error al eliminar solicitudes duplicadas:", error);
+      setIsLoading(false);
+      throw error;
     }
   };
 
@@ -2982,155 +2903,200 @@ function App() {
   // Función específica para limpiar duplicados en historialSolicitudes
   const limpiarDuplicadosHistorial = async () => {
     try {
-      // Verificar si ya se ha ejecutado con éxito
-      const historialLimpiado = localStorage.getItem('historialLimpiado');
-      if (historialLimpiado === 'true') {
-        console.log('La limpieza del historial ya se ha realizado con éxito anteriormente');
-        return { success: true, eliminados: 0, yaRealizado: true };
-      }
-
-      setProcessingMessage && setProcessingMessage("Limpiando duplicados en historial de solicitudes...");
+      setIsLoading(true);
+      console.log("Limpiando duplicados del historial y asignaciones...");
       
-      // Obtener todas las entradas del historial
-      // Usamos un enfoque más robusto para asegurar que obtenemos todos los documentos
-      const historialDocs = [];
+      // Colección para registrar elementos eliminados permanentemente
+      const elementosBorradosRef = collection(db, "elementosBorrados");
       
-      // Obtenemos hasta 10.000 documentos en cada consulta para asegurar completitud
-      const querySnapshot = await getDocs(query(
-        collection(db, "historialSolicitudes"),
-        limit(10000)
-      ));
+      // PARTE 1: Limpiar historial duplicado
+      const historialSnapshot = await getDocs(collection(db, "historialSolicitudes"));
+      let historialItems = [];
       
-      querySnapshot.forEach(doc => {
-        historialDocs.push({ ...doc.data(), docId: doc.id });
+      historialSnapshot.forEach(doc => {
+        historialItems.push({
+          id: doc.id,
+          ...doc.data()
+        });
       });
       
-      if (historialDocs.length === 0) {
-        showNotification("No hay entradas en el historial de solicitudes", "info");
-        return { success: true, eliminados: 0 };
+      // Agrupar por orden y estado
+      const historialPorClave = {};
+      const historialDuplicado = [];
+      const historialConservado = [];
+      
+      for (const item of historialItems) {
+        if (!item.orden || !item.estado) continue;
+        
+        const key = `${item.orden}_${item.estado}`;
+        
+        if (!historialPorClave[key]) {
+          historialPorClave[key] = [];
+        }
+        
+        historialPorClave[key].push(item);
       }
       
-      console.log(`Procesando ${historialDocs.length} documentos del historial`);
-      
-      // Esta vez agruparemos por:
-      // 1. Número de orden
-      // 2. Estado
-      // 3. Centro asignado (si existe)
-      // 4. Fecha (usando solo la fecha, no la hora)
-      const historialAgrupado = {};
-      
-      historialDocs.forEach(historial => {
-        const orden = historial.orden;
-        
-        if (!orden) return; // Ignorar entradas sin número de orden
-        
-        // Extraer fecha (solo día) del timestamp si existe
-        let fecha = "desconocida";
-        if (historial.timestamp) {
-          const date = new Date(historial.timestamp);
-          fecha = `${date.getFullYear()}-${date.getMonth()+1}-${date.getDate()}`;
-        } else if (historial.fechaHistorico) {
-          // Intentar extraer fecha de fechaHistorico si está en formato ISO
-          fecha = historial.fechaHistorico.split('T')[0];
-        }
-        
-        const estado = historial.estado || 'DESCONOCIDO';
-        const centroId = historial.centroId || historial.centroAsignado || 'sin-centro';
-        
-        // Clave compuesta para agrupar entradas similares
-        const key = `${orden}-${estado}-${centroId}-${fecha}`;
-        
-        if (!historialAgrupado[key]) {
-          historialAgrupado[key] = [historial];
-        } else {
-          historialAgrupado[key].push(historial);
-        }
-      });
-      
-      // Contar duplicados
-      let totalDuplicados = 0;
-      Object.values(historialAgrupado).forEach(grupo => {
-        if (grupo.length > 1) {
-          totalDuplicados += (grupo.length - 1);
-        }
-      });
-      
-      if (totalDuplicados === 0) {
-        showNotification("No se encontraron entradas duplicadas en el historial", "success");
-        // Marcar como completado
-        localStorage.setItem('historialLimpiado', 'true');
-        return { success: true, eliminados: 0 };
-      }
-      
-      console.log(`Se encontraron ${totalDuplicados} entradas duplicadas para eliminar`);
-      
-      // Para batches grandes, necesitamos dividir en múltiples operaciones
-      // Firestore tiene un límite de 500 operaciones por batch
-      const BATCH_SIZE = 450;
-      let eliminados = 0;
-      let totalOperaciones = 0;
-      let entradasAEliminar = [];
-      
-      // Recopilar todas las entradas a eliminar primero
-      for (const key in historialAgrupado) {
-        const grupo = historialAgrupado[key];
-        
-        if (grupo.length > 1) {
-          // Ordenar por timestamp descendente para mantener el más reciente
-          grupo.sort((a, b) => {
-            const timestampA = a.timestamp || 0;
-            const timestampB = b.timestamp || 0;
-            return timestampB - timestampA;
+      // Identificar duplicados en historial
+      for (const key in historialPorClave) {
+        if (historialPorClave[key].length > 1) {
+          // Ordenar por fecha (más reciente primero)
+          const ordenados = historialPorClave[key].sort((a, b) => {
+            return (b.timestamp || 0) - (a.timestamp || 0);
           });
           
-          // Mantener solo la entrada más reciente, eliminar el resto
-          entradasAEliminar.push(...grupo.slice(1));
+          // Conservar el más reciente
+          historialConservado.push(ordenados[0]);
+          
+          // Marcar el resto como duplicados
+          for (let i = 1; i < ordenados.length; i++) {
+            historialDuplicado.push(ordenados[i]);
+          }
+        } else {
+          historialConservado.push(historialPorClave[key][0]);
         }
       }
       
-      // Procesar por lotes
-      for (let i = 0; i < entradasAEliminar.length; i += BATCH_SIZE) {
-        const batch = writeBatch(db);
-        const loteActual = entradasAEliminar.slice(i, i + BATCH_SIZE);
+      // PARTE 2: Limpiar asignaciones duplicadas
+      const asignacionesSnapshot = await getDocs(collection(db, "asignaciones"));
+      let asignacionesItems = [];
+      
+      asignacionesSnapshot.forEach(doc => {
+        asignacionesItems.push({
+          id: doc.id,
+          ...doc.data()
+        });
+      });
+      
+      // Agrupar por número de orden
+      const asignacionesPorOrden = {};
+      const asignacionesDuplicadas = [];
+      const asignacionesConservadas = [];
+      
+      for (const asignacion of asignacionesItems) {
+        if (!asignacion.order && !asignacion.numeroOrden) continue;
         
-        for (const entrada of loteActual) {
-          if (entrada.docId) {
-            batch.delete(doc(db, "historialSolicitudes", entrada.docId));
-            eliminados++;
+        const orden = asignacion.order || asignacion.numeroOrden;
+        
+        if (!asignacionesPorOrden[orden]) {
+          asignacionesPorOrden[orden] = [];
+        }
+        
+        asignacionesPorOrden[orden].push(asignacion);
+      }
+      
+      // Identificar duplicados en asignaciones
+      for (const orden in asignacionesPorOrden) {
+        if (asignacionesPorOrden[orden].length > 1) {
+          // Ordenar por timestamp (más reciente primero)
+          const ordenadas = asignacionesPorOrden[orden].sort((a, b) => {
+            return (b.timestamp || 0) - (a.timestamp || 0);
+          });
+          
+          // Conservar la más reciente
+          asignacionesConservadas.push(ordenadas[0]);
+          
+          // Marcar el resto como duplicadas
+          for (let i = 1; i < ordenadas.length; i++) {
+            asignacionesDuplicadas.push(ordenadas[i]);
+          }
+        } else {
+          asignacionesConservadas.push(asignacionesPorOrden[orden][0]);
+        }
+      }
+      
+      // Eliminar duplicados y registrarlos como borrados
+      let historialEliminado = 0;
+      let asignacionesEliminadas = 0;
+      
+      // Eliminar historial duplicado
+      for (const item of historialDuplicado) {
+        try {
+          const docRef = doc(db, "historialSolicitudes", item.id);
+          await deleteDoc(docRef);
+          
+          // Registrar en elementos borrados
+          await addDoc(elementosBorradosRef, {
+            tipo: "historial",
+            itemId: item.id,
+            orden: item.orden,
+            estado: item.estado,
+            eliminadoEn: serverTimestamp()
+          });
+          
+          historialEliminado++;
+        } catch (error) {
+          console.error(`Error al eliminar historial ${item.id}:`, error);
+        }
+      }
+      
+      // Eliminar asignaciones duplicadas
+      for (const asignacion of asignacionesDuplicadas) {
+        try {
+          const docRef = doc(db, "asignaciones", asignacion.id);
+          await deleteDoc(docRef);
+          
+          // Registrar en elementos borrados
+          await addDoc(elementosBorradosRef, {
+            tipo: "asignacion",
+            itemId: asignacion.id,
+            orden: asignacion.order || asignacion.numeroOrden,
+            eliminadoEn: serverTimestamp()
+          });
+          
+          asignacionesEliminadas++;
+        } catch (error) {
+          console.error(`Error al eliminar asignación ${asignacion.id}:`, error);
+        }
+      }
+      
+      // Configurar un listener para prevenir recreación
+      const unsubscribe = onSnapshot(collection(db, "asignaciones"), async (snapshot) => {
+        const cambios = snapshot.docChanges();
+        
+        for (const cambio of cambios) {
+          if (cambio.type === "added") {
+            const nuevaAsignacion = {
+              id: cambio.doc.id,
+              ...cambio.doc.data()
+            };
+            
+            const orden = nuevaAsignacion.order || nuevaAsignacion.numeroOrden;
+            if (!orden) continue;
+            
+            // Verificar si esta asignación fue borrada previamente
+            const borradasQuery = query(
+              elementosBorradosRef, 
+              where("tipo", "==", "asignacion"),
+              where("orden", "==", orden)
+            );
+            
+            const borradasSnapshot = await getDocs(borradasQuery);
+            
+            if (!borradasSnapshot.empty) {
+              console.log(`Eliminando asignación recreada: ${nuevaAsignacion.id}`);
+              await deleteDoc(doc(db, "asignaciones", nuevaAsignacion.id));
+            }
           }
         }
-        
-        // Ejecutar el batch
-        await batch.commit();
-        totalOperaciones += loteActual.length;
-        console.log(`Procesado lote ${Math.floor(i/BATCH_SIZE) + 1}: ${loteActual.length} elementos (total ${totalOperaciones}/${entradasAEliminar.length})`);
-        
-        // Pequeña pausa para no sobrecargar Firestore
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
-        // Actualizar mensaje para informar progreso
-        setProcessingMessage && setProcessingMessage(`Limpiando duplicados: ${totalOperaciones}/${entradasAEliminar.length} (${Math.round(totalOperaciones/entradasAEliminar.length*100)}%)`);
-      }
+      });
       
-      if (eliminados > 0) {
-        console.log(`Se eliminaron ${eliminados} entradas duplicadas del historial`);
-        showNotification(`Se han eliminado ${eliminados} entradas duplicadas del historial`, "success");
-        
-        // Marcar como completado solo si se procesaron todos con éxito
-        localStorage.setItem('historialLimpiado', 'true');
-      }
+      // Desactivar listener después de 10 minutos
+      setTimeout(() => {
+        if (unsubscribe) unsubscribe();
+      }, 10 * 60 * 1000);
       
-      // Recargar datos
-      await cargarDatosDesdeFirebase();
-      
-      return { success: true, eliminados };
-      
+      setIsLoading(false);
+      return {
+        historialDuplicado: historialDuplicado.length,
+        historialEliminado,
+        asignacionesDuplicadas: asignacionesDuplicadas.length,
+        asignacionesEliminadas
+      };
     } catch (error) {
-      console.error("Error al limpiar duplicados del historial:", error);
-      showNotification(`Error al limpiar duplicados: ${error.message}`, "error");
-      return { success: false, error: error.message };
-    } finally {
-      setProcessingMessage && setProcessingMessage("");
+      console.error("Error al limpiar duplicados:", error);
+      setIsLoading(false);
+      throw error;
     }
   };
 
