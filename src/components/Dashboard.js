@@ -8,12 +8,114 @@ import React, { useState, useEffect, useMemo } from 'react';
  * @returns {JSX.Element} - Componente Dashboard
  */
 const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
+  // Hooks de estado
   const [searchTerm, setSearchTerm] = useState('');
   const [filtroEstado, setFiltroEstado] = useState('TODOS');
   const [error, setError] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(10);
   const [sortConfig, setSortConfig] = useState({ key: 'order', direction: 'asc' });
+
+  // Calcular estadísticas
+  const estadisticas = useMemo(() => {
+    const total = asignacionesFiltradas.length;
+    const centros = [...new Set(asignacionesFiltradas.map(a => a.nombreCentro || a.centro))].length;
+    const reasignados = asignacionesFiltradas.filter(a => a.reasignado).length;
+    const noAsignables = asignacionesFiltradas.filter(a => a.estadoAsignacion === "NO_ASIGNABLE").length;
+
+    return {
+      total,
+      centros,
+      reasignados,
+      noAsignables
+    };
+  }, [asignacionesFiltradas]);
+
+  // Obtener lista de estados únicos para el filtro
+  const estados = useMemo(() => {
+    return ['TODOS', ...new Set(asignacionesFiltradas
+      .filter(a => a.estado)
+      .map(a => a.estado))];
+  }, [asignacionesFiltradas]);
+  
+  // Función para ordenar asignaciones
+  const sortAssignments = useMemo(() => (asignacionesArray) => {
+    if (!asignacionesArray || !Array.isArray(asignacionesArray)) return [];
+    
+    return [...asignacionesArray].sort((a, b) => {
+      if (!a || !b) return 0;
+      
+      let aValue, bValue;
+      
+      // Manejar diferentes nombres de propiedades
+      if (sortConfig.key === 'order') {
+        aValue = a.numeroOrden !== undefined ? a.numeroOrden : a.order;
+        bValue = b.numeroOrden !== undefined ? b.numeroOrden : b.order;
+      } else if (sortConfig.key === 'centro') {
+        aValue = a.nombreCentro || a.centro || '';
+        bValue = b.nombreCentro || b.centro || '';
+      } else {
+        aValue = a[sortConfig.key];
+        bValue = b[sortConfig.key];
+      }
+      
+      // Convertir a número si es el campo 'order'
+      if (sortConfig.key === 'order') {
+        aValue = Number(aValue) || 0;
+        bValue = Number(bValue) || 0;
+      }
+      
+      if (aValue < bValue) {
+        return sortConfig.direction === 'asc' ? -1 : 1;
+      }
+      if (aValue > bValue) {
+        return sortConfig.direction === 'asc' ? 1 : -1;
+      }
+      return 0;
+    });
+  }, [sortConfig]);
+
+  // Filtrar y ordenar asignaciones
+  const asignacionesFiltradas = useMemo(() => {
+    if (!Array.isArray(assignments)) return [];
+
+    let asignacionesFiltradas = assignments;
+
+    // Filtrar por término de búsqueda
+    if (searchTerm) {
+      const searchTermLower = searchTerm.toLowerCase();
+      asignacionesFiltradas = asignacionesFiltradas.filter(asignacion => {
+        if (!asignacion) return false;
+
+        const searchFields = [
+          (asignacion.numeroOrden || asignacion.order)?.toString(),
+          asignacion.nombreCentro || asignacion.centro,
+          asignacion.localidad,
+          asignacion.municipio
+        ].filter(Boolean);
+
+        return searchFields.some(field => 
+          field.toLowerCase().includes(searchTermLower)
+        );
+      });
+    }
+
+    // Filtrar por estado si no es 'TODOS'
+    if (filtroEstado !== 'TODOS') {
+      asignacionesFiltradas = asignacionesFiltradas.filter(asignacion => 
+        asignacion && asignacion.estado === filtroEstado
+      );
+    }
+
+    // Ordenar resultados
+    return sortAssignments(asignacionesFiltradas);
+  }, [assignments, searchTerm, filtroEstado, sortAssignments]);
+
+  // Calcular paginación
+  const totalPages = Math.ceil(asignacionesFiltradas.length / itemsPerPage);
+  const indexOfLastItem = currentPage * itemsPerPage;
+  const indexOfFirstItem = indexOfLastItem - itemsPerPage;
+  const currentItems = asignacionesFiltradas.slice(indexOfFirstItem, indexOfLastItem);
   
   // Validar que assignments sea un array
   useEffect(() => {
@@ -93,90 +195,6 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
       </div>
     );
   }
-  
-  // Función para ordenar asignaciones
-  const sortAssignments = useMemo(() => {
-    return (asignacionesArray) => {
-      if (!asignacionesArray || !Array.isArray(asignacionesArray)) return [];
-      
-      return [...asignacionesArray].sort((a, b) => {
-        if (!a || !b) return 0;
-        
-        let aValue, bValue;
-        
-        // Manejar diferentes nombres de propiedades
-        if (sortConfig.key === 'order') {
-          aValue = a.numeroOrden !== undefined ? a.numeroOrden : a.order;
-          bValue = b.numeroOrden !== undefined ? b.numeroOrden : b.order;
-        } else if (sortConfig.key === 'centro') {
-          aValue = a.nombreCentro || a.centro || '';
-          bValue = b.nombreCentro || b.centro || '';
-        } else {
-          aValue = a[sortConfig.key];
-          bValue = b[sortConfig.key];
-        }
-        
-        // Convertir a número si es el campo 'order'
-        if (sortConfig.key === 'order') {
-          aValue = Number(aValue) || 0;
-          bValue = Number(bValue) || 0;
-        }
-        
-        if (aValue < bValue) {
-          return sortConfig.direction === 'asc' ? -1 : 1;
-        }
-        if (aValue > bValue) {
-          return sortConfig.direction === 'asc' ? 1 : -1;
-        }
-        return 0;
-      });
-    };
-  }, [sortConfig]);
-  
-  // Filtrar asignaciones
-  const filtrarAsignaciones = useMemo(() => {
-    if (!Array.isArray(assignments)) return [];
-
-    let asignacionesFiltradas = assignments;
-
-    // Filtrar por término de búsqueda
-    if (searchTerm) {
-      const searchTermLower = searchTerm.toLowerCase();
-      asignacionesFiltradas = asignacionesFiltradas.filter(asignacion => {
-        if (!asignacion) return false;
-
-        const searchFields = [
-          (asignacion.numeroOrden || asignacion.order)?.toString(),
-          asignacion.nombreCentro || asignacion.centro,
-          asignacion.localidad,
-          asignacion.municipio
-        ].filter(Boolean);
-
-        return searchFields.some(field => 
-          field.toLowerCase().includes(searchTermLower)
-        );
-      });
-    }
-
-    // Filtrar por estado si no es 'TODOS'
-    if (filtroEstado !== 'TODOS') {
-      asignacionesFiltradas = asignacionesFiltradas.filter(asignacion => 
-        asignacion && asignacion.estado === filtroEstado
-      );
-    }
-
-    // Ordenar resultados
-    return sortAssignments(asignacionesFiltradas);
-  }, [assignments, searchTerm, filtroEstado, sortAssignments]);
-  
-  // Obtener asignaciones filtradas y ordenadas
-  const asignacionesFiltradas = filtrarAsignaciones;
-  
-  // Calcular paginación
-  const totalPages = Math.ceil(asignacionesFiltradas.length / itemsPerPage);
-  const indexOfLastItem = currentPage * itemsPerPage;
-  const indexOfFirstItem = indexOfLastItem - itemsPerPage;
-  const currentItems = asignacionesFiltradas.slice(indexOfFirstItem, indexOfLastItem);
   
   // Cambiar página
   const handlePageChange = (pageNumber) => {
@@ -382,28 +400,6 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
       marginBottom: '8px'
     }
   };
-  
-  // Calcular estadísticas
-  const estadisticas = useMemo(() => {
-    const total = asignacionesFiltradas.length;
-    const centros = [...new Set(asignacionesFiltradas.map(a => a.nombreCentro || a.centro))].length;
-    const reasignados = asignacionesFiltradas.filter(a => a.reasignado).length;
-    const noAsignables = asignacionesFiltradas.filter(a => a.estadoAsignacion === "NO_ASIGNABLE").length;
-
-    return {
-      total,
-      centros,
-      reasignados,
-      noAsignables
-    };
-  }, [asignacionesFiltradas]);
-  
-  // Obtener lista de estados únicos para el filtro
-  const estados = useMemo(() => {
-    return ['TODOS', ...new Set(asignacionesFiltradas
-      .filter(a => a.estado)
-      .map(a => a.estado))];
-  }, [asignacionesFiltradas]);
   
   return (
     <div style={styles.container}>

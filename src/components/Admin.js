@@ -182,39 +182,77 @@ const Admin = ({
   }
   
   // Funciones del componente
-  const handleReasignar = async (assignment) => {
+  const handleReasignar = async (asignacion) => {
     try {
-      // Validar la asignación
-      if (!assignment) {
-        showNotification("Error: Asignación no válida", "error");
-        return;
+      // Validar que la asignación tenga los datos necesarios
+      if (!asignacion || !asignacion.numeroOrden || !asignacion.centro) {
+        throw new Error('Datos de asignación incompletos');
       }
+
+      // Obtener la solicitud original del historial
+      const historialRef = collection(db, 'historialSolicitudes');
+      const q = query(historialRef, where('numeroOrden', '==', asignacion.numeroOrden));
+      const historialSnapshot = await getDocs(q);
       
-      // Guardar la asignación actual para usarla después
-      setAsignacionActual(assignment);
+      if (historialSnapshot.empty) {
+        throw new Error('No se encontró la solicitud original en el historial');
+      }
+
+      const solicitudOriginal = historialSnapshot.docs[0].data();
       
-      // Preparar los centros disponibles para mostrar en el modal
-      const centrosConPlazas = availablePlazas
-        .filter(plaza => plaza && plaza.plazasDisponibles > 0)
-        .sort((a, b) => {
-          // Primero ordenar por municipio
-          if (a.municipio && b.municipio) {
-            const compMunicipio = a.municipio.localeCompare(b.municipio);
-            if (compMunicipio !== 0) return compMunicipio;
-          }
-          
-          // Luego por nombre
-          return (a.nombre || a.centro || "").localeCompare(b.nombre || b.centro || "");
+      // Obtener todos los centros disponibles
+      const centrosRef = collection(db, 'centros');
+      const centrosSnapshot = await getDocs(centrosRef);
+      
+      // Obtener las asignaciones actuales
+      const asignacionesRef = collection(db, 'asignaciones');
+      const asignacionesSnapshot = await getDocs(asignacionesRef);
+      
+      // Crear un mapa de centros ocupados
+      const centrosOcupados = new Map();
+      asignacionesSnapshot.forEach(doc => {
+        const data = doc.data();
+        if (data.centro && data.numeroOrden !== asignacion.numeroOrden) {
+          centrosOcupados.set(data.centro, true);
+        }
+      });
+
+      // Preparar centros disponibles
+      const centrosDisponibles = centrosSnapshot.docs
+        .map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }))
+        .filter(centro => {
+          // Excluir el centro actual y los centros ocupados
+          return centro.nombre !== asignacion.centro && !centrosOcupados.has(centro.nombre);
         });
-      
-      setCentrosDisponibles(centrosConPlazas);
+
+      // Ordenar centros según la prioridad original
+      const centrosOrdenados = centrosDisponibles.sort((a, b) => {
+        // Obtener la posición en la lista de prioridades original
+        const posA = solicitudOriginal.centros.indexOf(a.nombre);
+        const posB = solicitudOriginal.centros.indexOf(b.nombre);
+        
+        // Si ambos centros están en la lista original, ordenar por su posición
+        if (posA !== -1 && posB !== -1) {
+          return posA - posB;
+        }
+        // Si solo uno está en la lista, ponerlo primero
+        if (posA !== -1) return -1;
+        if (posB !== -1) return 1;
+        // Si ninguno está en la lista, mantener el orden alfabético
+        return a.nombre.localeCompare(b.nombre);
+      });
+
+      // Guardar la asignación actual y los centros disponibles
+      setAsignacionActual(asignacion);
+      setCentrosDisponibles(centrosOrdenados);
       setCentrosSeleccionadosReasignacion([]);
       setSearchTermReasignacion('');
-      
-      // Mostrar el modal
       setMostrarModalReasignacion(true);
     } catch (error) {
-      console.error("Error al preparar reasignación:", error);
+      console.error('Error al preparar reasignación:', error);
       showNotification(`Error al preparar reasignación: ${error.message}`, "error");
     }
   };
