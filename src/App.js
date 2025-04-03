@@ -2247,9 +2247,9 @@ function App() {
           
           // Registrar en solicitudes borradas
           await addDoc(solicitudesBorradasRef, {
-            solicitudId: solicitud.id,
-            dni: solicitud.dni,
-            timestamp: solicitud.timestamp,
+            solicitudId: solicitud.id || "",
+            dni: solicitud.dni || "sin_dni",
+            timestamp: solicitud.timestamp || Date.now(),
             eliminadaEn: serverTimestamp()
           });
           
@@ -2270,11 +2270,17 @@ function App() {
               ...cambio.doc.data()
             };
             
+            // Verificar que tiene los campos necesarios
+            if (!nuevaSolicitud.dni || !nuevaSolicitud.timestamp) {
+              console.log(`Solicitud incompleta (falta dni o timestamp): ${nuevaSolicitud.id}`);
+              continue;
+            }
+            
             // Verificar si esta solicitud estaba previamente borrada
             const borradasQuery = query(
               solicitudesBorradasRef, 
-              where("dni", "==", nuevaSolicitud.dni),
-              where("timestamp", "==", nuevaSolicitud.timestamp)
+              where("dni", "==", nuevaSolicitud.dni || "sin_dni"),
+              where("timestamp", "==", nuevaSolicitud.timestamp || 0)
             );
             
             const borradasSnapshot = await getDocs(borradasQuery);
@@ -3018,9 +3024,9 @@ function App() {
           // Registrar en elementos borrados
           await addDoc(elementosBorradosRef, {
             tipo: "historial",
-            itemId: item.id,
-            orden: item.orden,
-            estado: item.estado,
+            itemId: item.id || "",
+            orden: item.orden || 0,
+            estado: item.estado || "desconocido",
             eliminadoEn: serverTimestamp()
           });
           
@@ -3039,8 +3045,8 @@ function App() {
           // Registrar en elementos borrados
           await addDoc(elementosBorradosRef, {
             tipo: "asignacion",
-            itemId: asignacion.id,
-            orden: asignacion.order || asignacion.numeroOrden,
+            itemId: asignacion.id || "",
+            orden: asignacion.order || asignacion.numeroOrden || 0,
             eliminadoEn: serverTimestamp()
           });
           
@@ -3062,13 +3068,16 @@ function App() {
             };
             
             const orden = nuevaAsignacion.order || nuevaAsignacion.numeroOrden;
-            if (!orden) continue;
+            if (!orden) {
+              console.log(`Asignación sin número de orden: ${nuevaAsignacion.id}`);
+              continue;
+            }
             
             // Verificar si esta asignación fue borrada previamente
             const borradasQuery = query(
               elementosBorradosRef, 
               where("tipo", "==", "asignacion"),
-              where("orden", "==", orden)
+              where("orden", "==", orden || 0)
             );
             
             const borradasSnapshot = await getDocs(borradasQuery);
@@ -3682,7 +3691,12 @@ function App() {
       {activeTab === 'asignaciones' && (
         <div style={styles.cardContainer}>
           <h3 style={styles.sectionTitle}>Historial de Asignaciones</h3>
-          <Dashboard assignments={assignments} availablePlazas={availablePlazas} />
+          <Dashboard 
+            assignments={assignments} 
+            availablePlazas={availablePlazas} 
+            eliminarSolicitudesDuplicadas={eliminarSolicitudesDuplicadas}
+            limpiarDuplicadosHistorial={limpiarDuplicadosHistorial}
+          />
         </div>
       )}
       

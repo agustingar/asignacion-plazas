@@ -5,9 +5,11 @@ import React, { useState, useEffect } from 'react';
  * @param {Object} props - Propiedades del componente
  * @param {Array} props.assignments - Lista de asignaciones
  * @param {Array} props.availablePlazas - Lista de centros/plazas disponibles
+ * @param {Function} props.eliminarSolicitudesDuplicadas - Función para eliminar solicitudes duplicadas
+ * @param {Function} props.limpiarDuplicadosHistorial - Función para limpiar duplicados del historial
  * @returns {JSX.Element} - Componente Dashboard
  */
-const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
+const Dashboard = ({ assignments = [], availablePlazas = [], eliminarSolicitudesDuplicadas, limpiarDuplicadosHistorial }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [filtroEstado, setFiltroEstado] = useState('TODOS');
   const [error, setError] = useState('');
@@ -15,6 +17,7 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
   const [itemsPerPage] = useState(10);
   const [sortConfig, setSortConfig] = useState({ key: 'order', direction: 'asc' });
   const [avisoVisto, setAvisoVisto] = useState(false);
+  const [procesando, setProcesando] = useState(false);
   
   // Validar que assignments sea un array
   useEffect(() => {
@@ -166,7 +169,33 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
   const filtrarAsignaciones = () => {
     if (!Array.isArray(assignments)) return [];
 
-    let asignacionesFiltradas = assignments;
+    // Primero eliminar duplicados del mismo número de orden, conservando solo el más reciente
+    const asignacionesSinDuplicados = [];
+    const ordenesVistos = {};
+    
+    // Ordenar primero por timestamp (descendente) para asegurar que procesamos primero los más recientes
+    const asignacionesOrdenadas = [...assignments].sort((a, b) => {
+      // Usar el timestamp para ordenar descendentemente (más reciente primero)
+      const timestampA = a.timestamp || 0;
+      const timestampB = b.timestamp || 0;
+      return timestampB - timestampA;
+    });
+    
+    // Mantener solo la versión más reciente de cada número de orden
+    for (const asignacion of asignacionesOrdenadas) {
+      if (!asignacion) continue;
+      
+      const numeroOrden = asignacion.numeroOrden || asignacion.order;
+      if (!numeroOrden) continue;
+      
+      // Si no hemos visto este número de orden antes, lo agregamos
+      if (!ordenesVistos[numeroOrden]) {
+        ordenesVistos[numeroOrden] = true;
+        asignacionesSinDuplicados.push(asignacion);
+      }
+    }
+
+    let asignacionesFiltradas = asignacionesSinDuplicados;
 
     // Filtrar por término de búsqueda
     if (searchTerm) {
@@ -197,8 +226,32 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
     return sortAssignments(asignacionesFiltradas);
   };
   
-  // Obtener asignaciones filtradas y ordenadas
+  // Filtrar asignaciones una sola vez para reusar
   const asignacionesFiltradas = filtrarAsignaciones();
+  
+  // Eliminar duplicados del mismo número de orden para estadísticas
+  const asignacionesSinDuplicados = [];
+  const ordenesVistosEstadisticas = {};
+  
+  // Ordenar por timestamp (más reciente primero)
+  const asignacionesOrdenadasParaEstadisticas = [...assignments].sort((a, b) => {
+    const timestampA = a?.timestamp || 0;
+    const timestampB = b?.timestamp || 0;
+    return timestampB - timestampA;
+  });
+  
+  // Mantener solo la versión más reciente de cada número de orden
+  for (const asignacion of asignacionesOrdenadasParaEstadisticas) {
+    if (!asignacion) continue;
+    
+    const numeroOrden = asignacion.numeroOrden || asignacion.order;
+    if (!numeroOrden) continue;
+    
+    if (!ordenesVistosEstadisticas[numeroOrden]) {
+      ordenesVistosEstadisticas[numeroOrden] = true;
+      asignacionesSinDuplicados.push(asignacion);
+    }
+  }
   
   // Calcular paginación
   const totalPages = Math.ceil(asignacionesFiltradas.length / itemsPerPage);
@@ -413,12 +466,12 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
   
   // Calcular estadísticas
   const estadisticas = {
-    total: asignacionesFiltradas.length,
-    centros: [...new Set(asignacionesFiltradas
+    total: asignacionesSinDuplicados.length,
+    centros: [...new Set(asignacionesSinDuplicados
       .filter(a => a.estado !== "NO_ASIGNABLE") // Excluir las que no se pueden asignar
       .map(a => a.nombreCentro || a.centro))].length,
-    reasignados: asignacionesFiltradas.filter(a => a.reasignado).length,
-    noAsignables: asignacionesFiltradas.filter(a => a.estado === "NO_ASIGNABLE" || a.estado === "REASIGNACION_NO_VIABLE").length
+    reasignados: asignacionesSinDuplicados.filter(a => a.reasignado).length,
+    noAsignables: asignacionesSinDuplicados.filter(a => a.estado === "NO_ASIGNABLE" || a.estado === "REASIGNACION_NO_VIABLE").length
   };
   
   // Obtener lista de estados únicos para el filtro
@@ -446,6 +499,64 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
         <p style={{ margin: '0', fontWeight: 'bold' }}>
           Por favor, vuelva a introducir su solicitud.
         </p>
+      </div>
+      
+      {/* Botón para limpiar duplicados */}
+      <div style={{ marginBottom: '20px', textAlign: 'right' }}>
+        <button
+          onClick={async () => {
+            if (window.confirm("¿Está seguro de que desea eliminar todas las asignaciones duplicadas? Esta acción no se puede deshacer.")) {
+              try {
+                setProcesando(true);
+                
+                // Ejecutar limpieza de duplicados
+                const resultadoSolicitudes = await eliminarSolicitudesDuplicadas();
+                const resultadoHistorial = await limpiarDuplicadosHistorial();
+                
+                // Mostrar resultado
+                const mensaje = `
+                  Proceso completado con éxito:
+                  
+                  Solicitudes:
+                  - Duplicadas encontradas: ${resultadoSolicitudes.duplicadas}
+                  - Duplicadas eliminadas: ${resultadoSolicitudes.eliminadas}
+                  
+                  Asignaciones:
+                  - Duplicadas encontradas: ${resultadoHistorial.asignacionesDuplicadas}
+                  - Duplicadas eliminadas: ${resultadoHistorial.asignacionesEliminadas}
+                  
+                  Historial:
+                  - Duplicadas encontradas: ${resultadoHistorial.historialDuplicado}
+                  - Duplicadas eliminadas: ${resultadoHistorial.historialEliminado}
+                `;
+                
+                alert(mensaje);
+                
+              } catch (error) {
+                console.error("Error al eliminar duplicados:", error);
+                alert(`Error al eliminar duplicados: ${error.message}`);
+              } finally {
+                setProcesando(false);
+              }
+            }
+          }}
+          style={{
+            backgroundColor: '#e74c3c',
+            color: 'white',
+            padding: '10px 15px',
+            border: 'none',
+            borderRadius: '5px',
+            cursor: 'pointer',
+            fontWeight: 'bold',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            marginLeft: 'auto'
+          }}
+          disabled={procesando}
+        >
+          {procesando ? 'Procesando...' : 'Eliminar Duplicados'}
+        </button>
       </div>
       
       {/* Encabezado y estadísticas */}
@@ -481,8 +592,32 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
       
       {/* Alerta para detectar centros con exceso de asignaciones */}
       {(() => {
+        // Eliminar duplicados primero, igual que en filtrarAsignaciones
+        const asignacionesSinDuplicados = [];
+        const ordenesVistos = {};
+        
+        // Ordenar por timestamp (más reciente primero)
+        const asignacionesOrdenadas = [...assignments].sort((a, b) => {
+          const timestampA = a?.timestamp || 0;
+          const timestampB = b?.timestamp || 0;
+          return timestampB - timestampA;
+        });
+        
+        // Mantener solo la versión más reciente de cada número de orden
+        for (const asignacion of asignacionesOrdenadas) {
+          if (!asignacion) continue;
+          
+          const numeroOrden = asignacion.numeroOrden || asignacion.order;
+          if (!numeroOrden) continue;
+          
+          if (!ordenesVistos[numeroOrden]) {
+            ordenesVistos[numeroOrden] = true;
+            asignacionesSinDuplicados.push(asignacion);
+          }
+        }
+        
         // Verificar centros con exceso
-        const centrosConExceso = assignments
+        const centrosConExceso = asignacionesSinDuplicados
           // Filtrar asignaciones no asignables o no viables
           .filter(asignacion => {
             // Excluir aquellas con noAsignable=true o estados específicos
