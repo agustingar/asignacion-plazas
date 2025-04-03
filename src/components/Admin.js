@@ -2043,6 +2043,47 @@ const Admin = ({
           >
             Recargar Datos
           </button>
+          
+          <button
+            onClick={async () => {
+              // Solicitar confirmación para eliminar duplicados
+              if (window.confirm("¿Está seguro de que desea eliminar las asignaciones y solicitudes duplicadas? Esta acción no se puede deshacer.")) {
+                // Mostrar mensaje de procesamiento
+                setInternalProcessingMessage("Eliminando duplicados...");
+                try {
+                  // Eliminar solicitudes y asignaciones duplicadas
+                  const resultadoSolicitudes = await eliminarSolicitudesDuplicadas();
+                  
+                  // Eliminar duplicados en historial
+                  const resultadoHistorial = await limpiarDuplicadosHistorial();
+                  
+                  // Recargar datos
+                  await cargarDatosDesdeFirebase();
+                  
+                  // Mostrar resultado
+                  showNotification(
+                    `Limpieza completada: Se eliminaron ${resultadoSolicitudes.eliminadosAsignaciones} asignaciones, ${resultadoSolicitudes.eliminadosSolicitudes} solicitudes y ${resultadoHistorial.eliminados} entradas de historial duplicadas`, 
+                    "success"
+                  );
+                } catch (error) {
+                  console.error("Error al eliminar duplicados:", error);
+                  showNotification(`Error al eliminar duplicados: ${error.message}`, "error");
+                } finally {
+                  setInternalProcessingMessage("");
+                }
+              }
+            }}
+            style={{
+              padding: '8px 12px',
+              backgroundColor: '#e74c3c',
+              color: 'white',
+              border: 'none',
+              borderRadius: '5px',
+              cursor: 'pointer'
+            }}
+          >
+            Eliminar Duplicados
+          </button>
         </div>
       </div>
     );
