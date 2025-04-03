@@ -122,12 +122,27 @@ export const procesarSolicitudes = async (
           const nuevaAsignacion = {
             order: operacion.orden,
             id: centro.id,
-            localidad: centro.localidad || operacion.localidad,
-            centro: centro.centro || operacion.centro,
-            municipio: centro.municipio || operacion.municipio,
+            localidad: centro.localidad || operacion.localidad || "",
+            centro: centro.centro || operacion.centro || "",
+            municipio: centro.municipio || operacion.municipio || "",
             timestamp: Date.now(),
             mantenida: true // Indica que se mantuvo en el mismo centro
           };
+          
+          // Asegurarnos de que ningún campo tenga valor undefined
+          Object.keys(nuevaAsignacion).forEach(key => {
+            if (nuevaAsignacion[key] === undefined) {
+              console.warn(`Campo ${key} indefinido en asignación. Estableciendo valor por defecto.`);
+              
+              if (key === 'timestamp' || key === 'order') {
+                nuevaAsignacion[key] = 0;
+              } else {
+                nuevaAsignacion[key] = "";
+              }
+            }
+          });
+          
+          console.log("Documento de asignación normalizado en procesarSolicitudes:", nuevaAsignacion);
           
           // Guardar en Firestore como parte de la reasignación global
           const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
@@ -169,11 +184,26 @@ export const procesarSolicitudes = async (
               const nuevaAsignacion = {
               order: operacion.orden,
               id: centro.id,
-                localidad: centro.localidad,
-                centro: centro.centro,
-                municipio: centro.municipio,
+                localidad: centro.localidad || operacion.localidad || "",
+                centro: centro.centro || operacion.centro || "",
+                municipio: centro.municipio || operacion.municipio || "",
                 timestamp: Date.now()
               };
+
+              // Asegurarnos de que ningún campo tenga valor undefined
+              Object.keys(nuevaAsignacion).forEach(key => {
+                if (nuevaAsignacion[key] === undefined) {
+                  console.warn(`Campo ${key} indefinido en asignación. Estableciendo valor por defecto.`);
+                  
+                  if (key === 'timestamp' || key === 'order') {
+                    nuevaAsignacion[key] = 0;
+                  } else {
+                    nuevaAsignacion[key] = "";
+                  }
+                }
+              });
+
+              console.log("Documento de asignación normalizado en procesarSolicitudes:", nuevaAsignacion);
 
               const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
             await setDoc(nuevaAsignacionRef, nuevaAsignacion);
@@ -242,12 +272,27 @@ export const procesarSolicitudes = async (
                   const nuevaAsignacion = {
                     order: operacion.orden,
                     id: centro.id,
-                    localidad: centro.localidad,
-                    centro: centro.centro,
-                    municipio: centro.municipio,
+                    localidad: centro.localidad || operacion.localidad || "",
+                    centro: centro.centro || operacion.centro || "",
+                    municipio: centro.municipio || operacion.municipio || "",
                     timestamp: Date.now(),
                     priorizado: true // Indica que se asignó por prioridad
                   };
+                  
+                  // Asegurarnos de que ningún campo tenga valor undefined
+                  Object.keys(nuevaAsignacion).forEach(key => {
+                    if (nuevaAsignacion[key] === undefined) {
+                      console.warn(`Campo ${key} indefinido en asignación. Estableciendo valor por defecto.`);
+                      
+                      if (key === 'timestamp' || key === 'order') {
+                        nuevaAsignacion[key] = 0;
+                      } else {
+                        nuevaAsignacion[key] = "";
+                      }
+                    }
+                  });
+                  
+                  console.log("Documento de asignación normalizado en procesarSolicitudes:", nuevaAsignacion);
                   
                   const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
                   await setDoc(nuevaAsignacionRef, nuevaAsignacion);
@@ -348,21 +393,36 @@ export const procesarSolicitudes = async (
         
         // Crear objeto con solo campos que tengan un valor definido
         const historialData = {
-          orden: operacion.orden,
-          estado: operacion.tipo,
+          orden: operacion.orden || 0,
+          estado: operacion.tipo || "DESCONOCIDO",
           fechaHistorico: new Date().toISOString(),
-          timestamp: Date.now()
+          timestamp: Date.now(),
+          mensaje: operacion.mensaje || ""
         };
         
         // Añadir campos solo si existen y no son undefined
         if (operacion.centroId !== undefined) historialData.centroId = operacion.centroId;
         if (operacion.centro !== undefined) historialData.centroAsignado = operacion.centro;
         if (operacion.centroAnterior !== undefined) historialData.centroAnterior = operacion.centroAnterior;
-        if (operacion.mensaje !== undefined) historialData.mensaje = operacion.mensaje;
+        
+        // Verificar una última vez que no haya valores undefined
+        Object.keys(historialData).forEach(key => {
+          if (historialData[key] === undefined) {
+            console.warn(`Campo ${key} indefinido en historialData. Estableciendo valor por defecto.`);
+            
+            if (key === 'timestamp' || key === 'orden') {
+              historialData[key] = 0;
+            } else {
+              historialData[key] = "";
+            }
+          }
+        });
+        
+        console.log("Guardando registro de historial:", historialData);
         
         // Guardar en Firestore asegurando que no hay campos undefined
         await setDoc(historialRef, historialData);
-          } catch (error) {
+      } catch (error) {
         console.error(`Error al registrar historial para orden ${operacion.orden}:`, error);
       }
     }
@@ -533,6 +593,44 @@ export const procesarSolicitud = async (solicitud, availablePlazas, db) => {
             ]
           };
           
+          // Asegurarnos de que todos los campos tengan valores definidos para evitar errores de Firebase
+          // Firestore no acepta valores undefined
+          Object.keys(nuevaAsignacion).forEach(key => {
+            if (nuevaAsignacion[key] === undefined) {
+              console.warn(`Campo ${key} indefinido en nuevaAsignacion especial. Estableciendo valor por defecto.`);
+              
+              // Asignar valores por defecto según el tipo de campo
+              if (key === 'historial') {
+                nuevaAsignacion[key] = [];
+              } else if (key === 'timestamp' || key === 'numeroOrden') {
+                nuevaAsignacion[key] = 0;
+              } else {
+                nuevaAsignacion[key] = "";
+              }
+            }
+          });
+          
+          // Si hay campos anidados como historial, asegurar que sus elementos también tengan valores definidos
+          if (nuevaAsignacion.historial && Array.isArray(nuevaAsignacion.historial)) {
+            nuevaAsignacion.historial = nuevaAsignacion.historial.map(item => {
+              if (!item) return { accion: "", timestamp: Date.now(), detalles: "" };
+              
+              const historiaNormalizado = { ...item };
+              Object.keys(historiaNormalizado).forEach(key => {
+                if (historiaNormalizado[key] === undefined) {
+                  if (key === 'timestamp') {
+                    historiaNormalizado[key] = Date.now();
+                  } else {
+                    historiaNormalizado[key] = "";
+                  }
+                }
+              });
+              return historiaNormalizado;
+            });
+          }
+          
+          console.log("Documento de asignación especial normalizado:", nuevaAsignacion);
+          
           // Guardar en colección de asignaciones
           const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
           batch.set(nuevaAsignacionRef, nuevaAsignacion);
@@ -596,6 +694,44 @@ export const procesarSolicitud = async (solicitud, availablePlazas, db) => {
         }
       ]
     };
+    
+    // Asegurarnos de que todos los campos tengan valores definidos para evitar errores de Firebase
+    // Firestore no acepta valores undefined
+    Object.keys(nuevaAsignacion).forEach(key => {
+      if (nuevaAsignacion[key] === undefined) {
+        console.warn(`Campo ${key} indefinido en nuevaAsignacion. Estableciendo valor por defecto.`);
+        
+        // Asignar valores por defecto según el tipo de campo
+        if (key === 'historial') {
+          nuevaAsignacion[key] = [];
+        } else if (key === 'timestamp' || key === 'numeroOrden') {
+          nuevaAsignacion[key] = 0;
+        } else {
+          nuevaAsignacion[key] = "";
+        }
+      }
+    });
+    
+    // Si hay campos anidados como historial, asegurar que sus elementos también tengan valores definidos
+    if (nuevaAsignacion.historial && Array.isArray(nuevaAsignacion.historial)) {
+      nuevaAsignacion.historial = nuevaAsignacion.historial.map(item => {
+        if (!item) return { accion: "", timestamp: Date.now(), detalles: "" };
+        
+        const historiaNormalizado = { ...item };
+        Object.keys(historiaNormalizado).forEach(key => {
+          if (historiaNormalizado[key] === undefined) {
+            if (key === 'timestamp') {
+              historiaNormalizado[key] = Date.now();
+            } else {
+              historiaNormalizado[key] = "";
+            }
+          }
+        });
+        return historiaNormalizado;
+      });
+    }
+    
+    console.log("Documento de asignación normalizado:", nuevaAsignacion);
     
     // Guardar en colección de asignaciones
     const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
