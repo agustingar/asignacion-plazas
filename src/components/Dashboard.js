@@ -384,7 +384,8 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
   const estadisticas = {
     total: asignacionesFiltradas.length,
     centros: [...new Set(asignacionesFiltradas.map(a => a.nombreCentro || a.centro))].length,
-    reasignados: asignacionesFiltradas.filter(a => a.reasignado).length
+    reasignados: asignacionesFiltradas.filter(a => a.reasignado).length,
+    noAsignables: asignacionesFiltradas.filter(a => a.estadoAsignacion === "NO_ASIGNABLE").length
   };
   
   // Obtener lista de estados únicos para el filtro
@@ -409,6 +410,16 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
             <div style={styles.statValue}>{estadisticas.reasignados}</div>
             <div style={styles.statLabel}>Reasignaciones</div>
           </div>
+          {estadisticas.noAsignables > 0 && (
+            <div style={{
+              ...styles.statCard,
+              backgroundColor: '#fff5f5', 
+              borderLeft: '3px solid #e53e3e'
+            }}>
+              <div style={{...styles.statValue, color: '#e53e3e'}}>{estadisticas.noAsignables}</div>
+              <div style={styles.statLabel}>No asignables</div>
+            </div>
+          )}
         </div>
       </div>
       
@@ -552,7 +563,13 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
           </thead>
           <tbody>
             {currentItems.map((asignacion, index) => (
-              <tr key={asignacion.docId || index} style={asignacion.reasignado ? {backgroundColor: '#fff9fb'} : {}}>
+              <tr key={asignacion.docId || index} style={
+                asignacion.estadoAsignacion === "NO_ASIGNABLE" 
+                  ? {backgroundColor: '#fff1f0'} 
+                  : asignacion.reasignado 
+                    ? {backgroundColor: '#fff9fb'} 
+                    : {}
+              }>
                 <td style={styles.tableCell}>
                   <div style={styles.orderContainer}>
                     <div style={styles.orderBadge}>{asignacion.numeroOrden || asignacion.order}</div>
@@ -564,6 +581,20 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
                     {asignacion.reasignado && (
                       <div style={{fontSize: '12px', color: '#d53f8c', marginTop: '4px'}}>
                         Reasignado de: {asignacion.centroOriginal || asignacion.centroPrevio}
+                      </div>
+                    )}
+                    {asignacion.estadoAsignacion === "NO_ASIGNABLE" && (
+                      <div style={{
+                        fontSize: '12px', 
+                        color: '#e53e3e', 
+                        marginTop: '4px',
+                        backgroundColor: '#fff5f5',
+                        padding: '3px 6px',
+                        borderRadius: '4px',
+                        display: 'inline-block'
+                      }}>
+                        <span style={{marginRight: '4px'}}>⚠️</span>
+                        No asignable: Plaza ocupada
                       </div>
                     )}
                   </div>
@@ -587,6 +618,16 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
                     )}
                     {!asignacion.localidad && !asignacion.municipio && (
                       <span style={{color: '#a0aec0', fontStyle: 'italic'}}></span>
+                    )}
+                    {asignacion.estadoAsignacion === "NO_ASIGNABLE" && (
+                      <div style={{
+                        marginTop: '5px',
+                        fontSize: '11px',
+                        color: '#718096',
+                        fontStyle: 'italic'
+                      }}>
+                        {asignacion.mensajeEstado || 'No hay plazas disponibles en el único centro seleccionado'}
+                      </div>
                     )}
                   </div>
                 </td>
@@ -674,6 +715,65 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
         </div>
       )}
       
+      {/* Leyenda de los tipos de asignaciones */}
+      <div style={styles.leyendaContainer}>
+        <div style={styles.leyendaTitle}>Leyenda de asignaciones</div>
+        <div style={styles.leyendaItems}>
+          <div style={styles.leyendaItem}>
+            <div style={{
+              width: '16px',
+              height: '16px',
+              backgroundColor: '#fff',
+              border: '1px solid #eee',
+              borderRadius: '3px'
+            }}></div>
+            <span>Asignación normal</span>
+          </div>
+          
+          <div style={styles.leyendaItem}>
+            <div style={{
+              width: '16px',
+              height: '16px',
+              backgroundColor: '#fff9fb',
+              border: '1px solid #fdd6e7',
+              borderRadius: '3px'
+            }}></div>
+            <span>Reasignación</span>
+          </div>
+          
+          <div style={styles.leyendaItem}>
+            <div style={{
+              width: '16px',
+              height: '16px',
+              backgroundColor: '#fff1f0',
+              border: '1px solid #fcc2bd',
+              borderRadius: '3px'
+            }}></div>
+            <span>No asignable (plaza ocupada)</span>
+          </div>
+        </div>
+        
+        {estadisticas.noAsignables > 0 && (
+          <div style={{
+            marginTop: '15px',
+            padding: '10px 15px',
+            backgroundColor: '#fff5f5',
+            borderRadius: '5px',
+            fontSize: '13px',
+            color: '#742a2a',
+            borderLeft: '3px solid #e53e3e'
+          }}>
+            <strong>Información sobre asignaciones "No asignables":</strong>
+            <p style={{margin: '8px 0'}}>
+              Estas asignaciones se crean cuando una solicitud solo tiene un centro como opción y ese centro 
+              ya tiene todas sus plazas ocupadas por solicitudes con mayor prioridad (número de orden menor).
+            </p>
+            <p style={{margin: '8px 0'}}>
+              En estos casos, el sistema registra la asignación de forma especial para mantener el seguimiento.
+            </p>
+          </div>
+        )}
+      </div>
   
     </div>
   );

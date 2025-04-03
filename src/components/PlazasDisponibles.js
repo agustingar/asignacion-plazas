@@ -101,6 +101,8 @@ const PlazasDisponibles = ({
     setCentrosSeleccionados(prevSelected => {
       // Verificar si ya está seleccionado
       if (prevSelected.includes(centroId)) {
+        // Si ya está seleccionado, quitarlo
+        console.log(`Quitando centro ${centroId} de la selección`);
         return prevSelected.filter(id => id !== centroId);
       }
       
@@ -110,6 +112,8 @@ const PlazasDisponibles = ({
         return prevSelected;
       }
       
+      // Agregar centro a la selección
+      console.log(`Agregando centro ${centroId} a la selección`);
       return [...prevSelected, centroId];
     });
   };
@@ -253,9 +257,9 @@ const PlazasDisponibles = ({
   // Manejar selección de centro
   const handleCentroChange = (e) => {
     try {
-      const selectedId = Number(e.target.value);
+      const selectedId = e.target.value;
       
-      if (!selectedId || isNaN(selectedId)) {
+      if (!selectedId) {
         console.error("ID de centro inválido:", e.target.value);
         return;
       }
@@ -630,13 +634,7 @@ const PlazasDisponibles = ({
                     onClick={() => {
                       // Permitir seleccionar/deseleccionar haciendo clic en toda la fila
                       if (isMobile) {
-                        if (seleccionado) {
-                          setCentrosSeleccionados(centrosSeleccionados.filter(id => id !== plaza.id));
-                        } else {
-                          if (!centrosSeleccionados.includes(plaza.id)) {
-                            setCentrosSeleccionados([...centrosSeleccionados, plaza.id]);
-                          }
-                        }
+                        handleCentroSelection(plaza.id);
                       }
                     }}
                   >
@@ -782,7 +780,12 @@ const PlazasDisponibles = ({
               <button 
                 className="select-button" 
                 onClick={() => {
-                  handleCentroChange({ target: { value: infoModal.id } });
+                  handleCentroChange({ 
+                    target: { 
+                      value: infoModal.id,
+                      checked: !centrosSeleccionados.includes(infoModal.id)
+                    } 
+                  });
                   closeInfo();
                 }}
               >

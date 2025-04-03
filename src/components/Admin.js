@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { writeBatch, doc, collection, serverTimestamp, onSnapshot, query, where, addDoc, updateDoc, getDocs, deleteDoc } from "firebase/firestore";
 import * as XLSX from 'xlsx';
 
@@ -43,10 +43,36 @@ const Admin = ({
   const [adminPassword, setAdminPassword] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [searchTermSolicitudes, setSearchTermSolicitudes] = useState('');
-  const [internalProcessingMessage, setInternalProcessingMessage] = useState('');
+  const [internalProcessingMessage, setInternalProcessingMessage] = useState("");
   const [centrosNuevos, setCentrosNuevos] = useState([]);
   const [mostrarComparacion, setMostrarComparacion] = useState(false);
   const [seleccionados, setSeleccionados] = useState({});
+  
+  // Estados para el modal de reasignación
+  const [mostrarModalReasignacion, setMostrarModalReasignacion] = useState(false);
+  const [asignacionActual, setAsignacionActual] = useState(null);
+  const [centrosDisponibles, setCentrosDisponibles] = useState([]);
+  const [centrosSeleccionadosReasignacion, setCentrosSeleccionadosReasignacion] = useState([]);
+  const [searchTermReasignacion, setSearchTermReasignacion] = useState('');
+  
+  // Filtrar centros disponibles por término de búsqueda - Colocado antes de cualquier condición
+  const centrosFiltrados = useMemo(() => {
+    const termino = searchTermReasignacion?.toLowerCase()?.trim() || "";
+    
+    if (!termino) {
+      return centrosDisponibles;
+    }
+    
+    return centrosDisponibles.filter(centro => {
+      return (
+        (centro.nombre && centro.nombre.toLowerCase().includes(termino)) ||
+        (centro.centro && centro.centro.toLowerCase().includes(termino)) ||
+        (centro.codigo && centro.codigo.toLowerCase().includes(termino)) ||
+        (centro.municipio && centro.municipio.toLowerCase().includes(termino)) ||
+        (centro.localidad && centro.localidad.toLowerCase().includes(termino))
+      );
+    });
+  }, [centrosDisponibles, searchTermReasignacion]);
   
   // Si no está autenticado, mostrar formulario de login
   if (!isAdminAuthenticated) {
@@ -163,35 +189,75 @@ const Admin = ({
         return;
       }
       
+      // Guardar la asignación actual para usarla después
+      setAsignacionActual(assignment);
+      
+      // Preparar los centros disponibles para mostrar en el modal
+      const centrosConPlazas = availablePlazas
+        .filter(plaza => plaza && plaza.plazasDisponibles > 0)
+        .sort((a, b) => {
+          // Primero ordenar por municipio
+          if (a.municipio && b.municipio) {
+            const compMunicipio = a.municipio.localeCompare(b.municipio);
+            if (compMunicipio !== 0) return compMunicipio;
+          }
+          
+          // Luego por nombre
+          return (a.nombre || a.centro || "").localeCompare(b.nombre || b.centro || "");
+        });
+      
+      setCentrosDisponibles(centrosConPlazas);
+      setCentrosSeleccionadosReasignacion([]);
+      setSearchTermReasignacion('');
+      
+      // Mostrar el modal
+      setMostrarModalReasignacion(true);
+    } catch (error) {
+      console.error("Error al preparar reasignación:", error);
+      showNotification(`Error al preparar reasignación: ${error.message}`, "error");
+    }
+  };
+  
+  // Función para realizar la reasignación con los centros seleccionados
+  const confirmarReasignacion = async () => {
+    try {
+      if (!asignacionActual) {
+        showNotification("Error: No hay asignación seleccionada", "error");
+        return;
+      }
+      
+      if (centrosSeleccionadosReasignacion.length === 0) {
+        showNotification("Por favor, seleccione al menos un centro", "warning");
+        return;
+      }
+      
       // Mostrar mensaje de procesamiento
       setInternalProcessingMessage("Procesando reasignación...");
       
       // Usar id si docId no está disponible
-      const asignacionId = assignment.docId || assignment.id;
+      const asignacionId = asignacionActual.docId || asignacionActual.id;
       
       // Validar y extraer identificador
       if (!asignacionId) {
-        console.warn("Advertencia: La asignación no tiene identificador válido:", assignment);
+        console.warn("Advertencia: La asignación no tiene identificador válido:", asignacionActual);
         showNotification("Error: La asignación no tiene un identificador válido", "error");
         setInternalProcessingMessage("");
         return;
       }
       
       // Asegurar que hay un número de orden válido
-      if (!assignment.order && !assignment.numeroOrden) {
+      if (!asignacionActual.order && !asignacionActual.numeroOrden) {
         showNotification("Error: No se pudo obtener el número de orden", "error");
         setInternalProcessingMessage("");
         return;
       }
       
-      const ordenAsignacion = assignment.numeroOrden || assignment.order;
+      const ordenAsignacion = asignacionActual.numeroOrden || asignacionActual.order;
       
-      // Crear una solicitud pendiente
+      // Crear una solicitud pendiente con los centros seleccionados por el usuario
       const nuevaSolicitud = {
         orden: ordenAsignacion,
-        centrosIds: Array.isArray(assignment.centrosIds) 
-          ? assignment.centrosIds 
-          : (assignment.centerId ? [assignment.centerId] : []),
+        centrosIds: centrosSeleccionadosReasignacion,
         timestamp: serverTimestamp()
       };
       
@@ -219,10 +285,10 @@ const Admin = ({
       };
       
       // Agregar centroAnterior solo si hay un centerId o centro válido
-      if (assignment.centerId) {
-        historialData.centroAnterior = assignment.centerId;
-      } else if (assignment.centro && typeof assignment.centro === 'string') {
-        historialData.centroAnterior = assignment.centro;
+      if (asignacionActual.centerId) {
+        historialData.centroAnterior = asignacionActual.centerId;
+      } else if (asignacionActual.centro && typeof asignacionActual.centro === 'string') {
+        historialData.centroAnterior = asignacionActual.centro;
       }
       
       console.log("Datos de historial a crear:", historialData);
@@ -234,19 +300,60 @@ const Admin = ({
       // Ejecutar todos los cambios
       await batch.commit();
       
+      // Cerrar el modal
+      setMostrarModalReasignacion(false);
+      setAsignacionActual(null);
+      
       // Limpiar mensaje de procesamiento
       setInternalProcessingMessage("");
       
       // Recargar datos
       await cargarDatosDesdeFirebase();
-      showNotification(`Asignación para orden ${ordenAsignacion} movida a solicitudes pendientes`, "success");
+      showNotification(`Asignación para orden ${ordenAsignacion} movida a solicitudes pendientes con nuevos centros`, "success");
     } catch (error) {
       console.error("Error al reasignar:", error);
       setInternalProcessingMessage("");
       showNotification(`Error al reasignar: ${error.message}`, "error");
     }
   };
-
+  
+  // Función para manejar la selección/deselección de un centro en el modal
+  const toggleSeleccionCentro = (centroId) => {
+    setCentrosSeleccionadosReasignacion(prevSelected => {
+      // Si ya está seleccionado, lo quitamos
+      if (prevSelected.includes(centroId)) {
+        return prevSelected.filter(id => id !== centroId);
+      }
+      
+      // Si no está seleccionado, lo añadimos al final
+      return [...prevSelected, centroId];
+    });
+  };
+  
+  // Función para mover un centro hacia arriba en la lista de preferencias
+  const moverCentroArriba = (index) => {
+    if (index <= 0) return; // Ya está en la primera posición
+    
+    setCentrosSeleccionadosReasignacion(prevSelected => {
+      const newOrder = [...prevSelected];
+      // Intercambiar posiciones
+      [newOrder[index], newOrder[index - 1]] = [newOrder[index - 1], newOrder[index]];
+      return newOrder;
+    });
+  };
+  
+  // Función para mover un centro hacia abajo en la lista de preferencias
+  const moverCentroAbajo = (index) => {
+    setCentrosSeleccionadosReasignacion(prevSelected => {
+      if (index >= prevSelected.length - 1) return prevSelected; // Ya está en la última posición
+      
+      const newOrder = [...prevSelected];
+      // Intercambiar posiciones
+      [newOrder[index], newOrder[index + 1]] = [newOrder[index + 1], newOrder[index]];
+      return newOrder;
+    });
+  };
+  
   // Función para buscar información del centro
   const encontrarCentro = (assignment) => {
     // Para debug: verificar qué campos tiene la asignación
@@ -345,6 +452,36 @@ const Admin = ({
     }
     
     return centroInfo;
+  };
+  
+  // Función para contar asignaciones para un centro específico
+  const contarAsignacionesPorCentro = (centroId, nombreCentro) => {
+    if (!centroId && !nombreCentro) return 0;
+    
+    // Contar todas las coincidencias por ID y por nombre
+    return assignments.filter(a => {
+      const aId = a.centerId || a.id || "";
+      const aNombre = a.nombreCentro || a.centerName || a.centro || "";
+      
+      // Coincidencia por ID
+      if (centroId && aId === centroId) return true;
+      
+      // Coincidencia por nombre exacto
+      if (nombreCentro && aNombre.toLowerCase() === nombreCentro.toLowerCase()) return true;
+      
+      // Coincidencia con normalización
+      try {
+        if (nombreCentro && aNombre) {
+          const normalizado1 = aNombre.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+          const normalizado2 = nombreCentro.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+          if (normalizado1 === normalizado2) return true;
+        }
+      } catch (error) {
+        console.error("Error al comparar nombres normalizados:", error);
+      }
+      
+      return false;
+    }).length;
   };
   
   // Función para comparar centros del archivo con los existentes
@@ -903,6 +1040,108 @@ const Admin = ({
             border-top-color: white;
             animation: spin 1s linear infinite;
           }
+          
+          /* Estilos para el modal */
+          .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+          }
+          
+          .modal-content {
+            background-color: white;
+            border-radius: 8px;
+            padding: 25px;
+            width: 90%;
+            max-width: 800px;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+          }
+          
+          .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+          }
+          
+          .modal-close {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: #666;
+          }
+          
+          .modal-body {
+            margin-bottom: 20px;
+          }
+          
+          .modal-footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+          }
+          
+          .search-box {
+            width: 100%;
+            padding: 12px 15px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            font-size: 16px;
+          }
+          
+          .centros-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+          }
+          
+          .centro-card {
+            border: 1px solid #eee;
+            border-radius: 6px;
+            padding: 15px;
+            cursor: pointer;
+            transition: all 0.2s;
+          }
+          
+          .centro-card:hover {
+            background-color: #f7f9fc;
+          }
+          
+          .centro-card.selected {
+            background-color: #e3f2fd;
+            border-color: #2196f3;
+          }
+          
+          .selected-centros {
+            margin-top: 20px;
+            border: 1px solid #e1e1e1;
+            border-radius: 6px;
+            padding: 15px;
+            background-color: #f9f9f9;
+          }
+          
+          .centro-selected-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px;
+            margin-bottom: 5px;
+            background-color: white;
+            border-radius: 4px;
+            border: 1px solid #eee;
+          }
         `}
       </style>
       
@@ -1106,10 +1345,19 @@ const Admin = ({
                   // Buscar info del centro
                   const centroInfo = encontrarCentro(assignment);
                   
+                  // Contar manualmente las asignaciones para este centro
+                  const asignacionesParaEsteCentro = contarAsignacionesPorCentro(
+                    centroInfo.id, 
+                    centroInfo.nombre || centroInfo.centro
+                  );
+                  
                   // Cálculo estandarizado de plazas
                   const plazasTotal = centroInfo.plazasTotal || centroInfo.plazas || 0;
-                  const plazasOcupadas = centroInfo.plazasOcupadas || centroInfo.asignadas || 0;
-                  const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
+                  
+                  // Mostrar plazas disponibles sin incluir la asignación actual que estamos viendo
+                  // Usar el conteo manual para mayor precisión
+                  const plazasDisponibles = Math.max(0, plazasTotal - asignacionesParaEsteCentro);
+                  const plazasDisponiblesSinActual = Math.max(0, plazasTotal - asignacionesParaEsteCentro + 1);
                   
                   return (
                     <tr key={assignment.docId || assignment.id || `assignment-${index}`} style={{ borderBottom: '1px solid #eee' }}>
@@ -1132,24 +1380,34 @@ const Admin = ({
                             gap: '5px'
                           }}>
                             <span style={{ 
-                              color: plazasDisponibles > 0 ? '#2ecc71' : '#e74c3c',
+                              color: plazasDisponiblesSinActual > 0 ? '#2ecc71' : '#e74c3c',
                               fontWeight: 'bold'
                             }}>
-                              {plazasDisponibles}
+                              {plazasDisponiblesSinActual}
                             </span> 
                             <span>disponibles de</span> 
                             <span>{plazasTotal}</span>
                             {plazasTotal > 0 && (
                               <span style={{ 
                                 marginLeft: '5px',
-                                backgroundColor: plazasDisponibles > 0 ? '#e8f5e9' : '#ffebee',
+                                backgroundColor: plazasDisponiblesSinActual > 0 ? '#e8f5e9' : '#ffebee',
                                 padding: '0px 5px',
                                 borderRadius: '10px',
                                 fontSize: '12px'
                               }}>
-                                {Math.round((plazasDisponibles / plazasTotal) * 100)}%
+                                {Math.round((plazasDisponiblesSinActual / plazasTotal) * 100)}%
                               </span>
                             )}
+                          </div>
+                          <div style={{
+                            fontSize: '11px', 
+                            color: '#718096',
+                            marginTop: '3px',
+                            textAlign: 'center'
+                          }}>
+                            {asignacionesParaEsteCentro > 1 ? 
+                             `(${asignacionesParaEsteCentro} asignaciones totales)` : 
+                             '(1 asignación)'}
                           </div>
                           {centroInfo.municipio && (
                             <div style={{
@@ -1273,8 +1531,37 @@ const Admin = ({
                             }
                           }
                           
+                          // 4. Búsqueda por código del centro
+                          if (!centro && typeof centroId === 'string') {
+                            centro = availablePlazas.find(c => 
+                              c.codigo === centroId || 
+                              c.codigoCentro === centroId
+                            );
+                          }
+                          
+                          // 5. Si sigue sin encontrarse, intentar buscar coincidencias aproximadas
+                          if (!centro && typeof centroId === 'string' && centroId.length > 3) {
+                            centro = availablePlazas.find(c => {
+                              // Comprobar coincidencia de iniciales
+                              if (c.nombre) {
+                                const palabras = c.nombre.split(' ');
+                                const iniciales = palabras
+                                  .map(p => p.charAt(0))
+                                  .filter(i => i.match(/[A-Z]/))
+                                  .join('');
+                                
+                                return iniciales === centroId.toUpperCase();
+                              }
+                              return false;
+                            });
+                          }
+                          
                           if (!centro) {
+                            // Si no se encuentra, usar un objeto con propiedades mínimas y nombre más descriptivo
                             centro = { 
+                              id: centroId,
+                              nombre: `Centro ${centroId}`,
+                              centro: `Centro ${centroId}`,
                               plazas: 0, 
                               plazasTotal: 0,
                               asignadas: 0,
@@ -1285,7 +1572,13 @@ const Admin = ({
                           // Cálculo estandarizado de plazas disponibles
                           const plazasTotal = centro.plazasTotal || centro.plazas || 0;
                           const plazasOcupadas = centro.plazasOcupadas || centro.asignadas || 0;
-                          const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
+                          
+                          // Contar manualmente para mayor precisión
+                          const asignacionesParaEsteCentro = contarAsignacionesPorCentro(
+                            centro.id, 
+                            centro.nombre || centro.centro
+                          );
+                          const plazasDisponibles = Math.max(0, plazasTotal - asignacionesParaEsteCentro);
                           
                           return (
                             <div key={centroId} style={{ 
@@ -1296,7 +1589,12 @@ const Admin = ({
                               border: '1px solid #e6f2ff'
                             }}>
                               <div style={{ fontWeight: 'bold', fontSize: '14px' }}>
-                                {centro.nombre || "Centro desconocido"}
+                                {centro.nombre || centro.centro || centroId || "Centro desconocido"}
+                                {process.env.NODE_ENV === 'development' && !centro.nombre && !centro.centro && centroId && (
+                                  <span style={{ fontSize: '10px', color: '#999', marginLeft: '5px' }}>
+                                    (ID: {centroId})
+                                  </span>
+                                )}
                               </div>
                               <div style={{ 
                                 display: 'flex',
@@ -1325,6 +1623,17 @@ const Admin = ({
                                   </span>
                                 )}
                               </div>
+                              {asignacionesParaEsteCentro > 0 && (
+                                <div style={{
+                                  fontSize: '11px', 
+                                  color: '#718096',
+                                  marginTop: '3px',
+                                  textAlign: 'center'
+                                }}>
+                                  ({asignacionesParaEsteCentro} 
+                                  {asignacionesParaEsteCentro === 1 ? ' asignación actual' : ' asignaciones actuales'})
+                                </div>
+                              )}
                             </div>
                           );
                         })}
@@ -1470,14 +1779,81 @@ const Admin = ({
             onClick={async () => {
               setInternalProcessingMessage("Recalculando plazas disponibles...");
               
+              // Crear un mapa para contar asignaciones por centro
+              const conteoAsignacionesPorCentro = {};
+              
+              // Contar todas las asignaciones existentes por centro
+              assignments.forEach(a => {
+                // Obtener todas las posibles referencias al centro
+                const centroId = a.centerId || a.id;
+                const nombreCentro = a.nombreCentro || a.centerName || a.centro || "";
+                
+                // Incrementar conteo para este centroId
+                if (centroId) {
+                  conteoAsignacionesPorCentro[centroId] = (conteoAsignacionesPorCentro[centroId] || 0) + 1;
+                }
+                
+                // También buscar por nombre si existe
+                if (nombreCentro && nombreCentro.length > 0) {
+                  // Buscar por nombre exacto
+                  const centroEncontradoPorNombre = availablePlazas.find(c => 
+                    (c.nombre && c.nombre.toLowerCase() === nombreCentro.toLowerCase()) || 
+                    (c.centro && c.centro.toLowerCase() === nombreCentro.toLowerCase())
+                  );
+                  
+                  // Si se encuentra por nombre y es diferente al ID, contarlo
+                  if (centroEncontradoPorNombre && centroEncontradoPorNombre.id !== centroId) {
+                    conteoAsignacionesPorCentro[centroEncontradoPorNombre.id] = 
+                      (conteoAsignacionesPorCentro[centroEncontradoPorNombre.id] || 0) + 1;
+                  }
+                  
+                  // Buscar por nombre normalizado (sin acentos)
+                  try {
+                    const normalizado = nombreCentro.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+                    
+                    const centroEncontradoNormalizado = availablePlazas.find(c => {
+                      if (!c || (!c.nombre && !c.centro)) return false;
+                      
+                      const nombreCentroNormalizado = (c.nombre || c.centro || "")
+                        .toLowerCase()
+                        .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+                      
+                      return nombreCentroNormalizado === normalizado && c.id !== centroId;
+                    });
+                    
+                    if (centroEncontradoNormalizado) {
+                      conteoAsignacionesPorCentro[centroEncontradoNormalizado.id] = 
+                        (conteoAsignacionesPorCentro[centroEncontradoNormalizado.id] || 0) + 1;
+                    }
+                  } catch (error) {
+                    console.error("Error en normalización:", error);
+                  }
+                }
+              });
+              
+              console.log("Conteo de asignaciones por centro:", conteoAsignacionesPorCentro);
+              
+              // Verificar para cada centro si el conteo manual coincide
+              availablePlazas.forEach(centro => {
+                const conteoManual = contarAsignacionesPorCentro(centro.id, centro.nombre || centro.centro);
+                const conteoMapa = conteoAsignacionesPorCentro[centro.id] || 0;
+                
+                if (conteoManual !== conteoMapa) {
+                  console.warn(`Discrepancia en conteo para centro ${centro.nombre}: 
+                    - Conteo mapa: ${conteoMapa}
+                    - Conteo manual: ${conteoManual}`);
+                  
+                  // Usar el conteo mayor
+                  conteoAsignacionesPorCentro[centro.id] = Math.max(conteoManual, conteoMapa);
+                }
+              });
+              
               // Recalcular plazas disponibles para cada centro
               const updatedAvailablePlazas = availablePlazas.map(centro => {
                 const plazasTotal = centro.plazasTotal || centro.plazas || 0;
                 
-                // Contar asignaciones para este centro
-                const asignacionesCentro = assignments.filter(
-                  a => a.centerId === centro.id || a.id === centro.id || a.nombreCentro === centro.nombre
-                ).length;
+                // Obtener asignaciones para este centro desde el mapa
+                const asignacionesCentro = conteoAsignacionesPorCentro[centro.id] || 0;
                 
                 return {
                   ...centro,
@@ -1495,7 +1871,8 @@ const Admin = ({
                   if (centro.docId) {
                     batch.update(doc(db, "centros", centro.docId), {
                       asignadas: centro.asignadas,
-                      plazasOcupadas: centro.plazasOcupadas
+                      plazasOcupadas: centro.plazasOcupadas,
+                      plazasDisponibles: centro.plazasDisponibles
                     });
                   }
                 }
@@ -1619,6 +1996,223 @@ const Admin = ({
           </div>
         </footer>
       </div>
+
+      {/* Modal de Reasignación */}
+      {mostrarModalReasignacion && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h3 style={{ margin: 0, color: '#2c3e50' }}>Reasignar Asignación</h3>
+              <button 
+                className="modal-close"
+                onClick={() => setMostrarModalReasignacion(false)}
+              >
+                ×
+              </button>
+            </div>
+            
+            <div className="modal-body">
+              {asignacionActual && (
+                <div style={{ marginBottom: '20px' }}>
+                  <p style={{ margin: '0 0 10px 0', fontWeight: 'bold' }}>
+                    Orden: <span style={{ fontWeight: 'normal' }}>{asignacionActual.numeroOrden || asignacionActual.order}</span>
+                  </p>
+                  
+                  <p style={{ margin: '0 0 10px 0', fontWeight: 'bold' }}>
+                    Centro actual: <span style={{ fontWeight: 'normal' }}>{asignacionActual.nombreCentro || asignacionActual.centerName || 'Desconocido'}</span>
+                  </p>
+                  
+                  <div style={{ 
+                    backgroundColor: '#e3f2fd', 
+                    padding: '10px 15px', 
+                    borderRadius: '5px',
+                    marginBottom: '15px'
+                  }}>
+                    <p style={{ margin: '0', fontSize: '14px' }}>
+                      <strong>Instrucciones:</strong> Seleccione los centros a los que desea reasignar esta plaza en orden de preferencia.
+                      El primer centro seleccionado tendrá la mayor prioridad.
+                    </p>
+                  </div>
+                </div>
+              )}
+              
+              <h4 style={{ marginTop: '0' }}>Seleccione centros disponibles</h4>
+              
+              <input
+                type="text"
+                className="search-box"
+                placeholder="Buscar centro por nombre, código o municipio..."
+                value={searchTermReasignacion}
+                onChange={(e) => setSearchTermReasignacion(e.target.value)}
+              />
+              
+              {centrosSeleccionadosReasignacion.length > 0 && (
+                <div className="selected-centros">
+                  <h4 style={{ marginTop: '0', marginBottom: '10px' }}>Centros seleccionados (orden de preferencia)</h4>
+                  
+                  <div style={{ maxHeight: '200px', overflowY: 'auto' }}>
+                    {centrosSeleccionadosReasignacion.map((centroId, index) => {
+                      const centro = centrosDisponibles.find(c => c.id === centroId);
+                      if (!centro) return null;
+                      
+                      return (
+                        <div key={centroId} className="centro-selected-item">
+                          <div>
+                            <strong style={{ display: 'block' }}>{centro.nombre || centro.centro}</strong>
+                            <small>
+                              {centro.municipio}
+                              {centro.municipio !== centro.localidad && centro.localidad && ` - ${centro.localidad}`}
+                            </small>
+                          </div>
+                          
+                          <div style={{ display: 'flex', gap: '5px' }}>
+                            <button
+                              onClick={() => moverCentroArriba(index)}
+                              disabled={index === 0}
+                              style={{
+                                padding: '3px 8px',
+                                backgroundColor: index === 0 ? '#f0f0f0' : '#f1f8e9',
+                                border: '1px solid #ddd',
+                                borderRadius: '3px',
+                                cursor: index === 0 ? 'default' : 'pointer',
+                                color: index === 0 ? '#aaa' : '#333'
+                              }}
+                            >
+                              ↑
+                            </button>
+                            
+                            <button
+                              onClick={() => moverCentroAbajo(index)}
+                              disabled={index === centrosSeleccionadosReasignacion.length - 1}
+                              style={{
+                                padding: '3px 8px',
+                                backgroundColor: index === centrosSeleccionadosReasignacion.length - 1 ? '#f0f0f0' : '#f1f8e9',
+                                border: '1px solid #ddd',
+                                borderRadius: '3px',
+                                cursor: index === centrosSeleccionadosReasignacion.length - 1 ? 'default' : 'pointer',
+                                color: index === centrosSeleccionadosReasignacion.length - 1 ? '#aaa' : '#333'
+                              }}
+                            >
+                              ↓
+                            </button>
+                            
+                            <button
+                              onClick={() => toggleSeleccionCentro(centroId)}
+                              style={{
+                                padding: '3px 8px',
+                                backgroundColor: '#ffebee',
+                                border: '1px solid #ffcdd2',
+                                borderRadius: '3px',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              
+              <div style={{ 
+                maxHeight: '300px', 
+                overflowY: 'auto',
+                marginTop: '20px',
+                border: '1px solid #eee',
+                borderRadius: '5px',
+                padding: '10px'
+              }}>
+                <div className="centros-grid">
+                  {centrosFiltrados.map(centro => {
+                    const isSelected = centrosSeleccionadosReasignacion.includes(centro.id);
+                    
+                    return (
+                      <div
+                        key={centro.id}
+                        className={`centro-card ${isSelected ? 'selected' : ''}`}
+                        onClick={() => toggleSeleccionCentro(centro.id)}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                          <h4 style={{ margin: '0 0 5px 0', fontSize: '16px' }}>{centro.nombre || centro.centro}</h4>
+                          {isSelected && (
+                            <span style={{
+                              backgroundColor: '#2196f3',
+                              color: 'white',
+                              borderRadius: '50%',
+                              width: '24px',
+                              height: '24px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              fontSize: '12px',
+                              fontWeight: 'bold'
+                            }}>
+                              {centrosSeleccionadosReasignacion.indexOf(centro.id) + 1}
+                            </span>
+                          )}
+                        </div>
+                        
+                        <div style={{ fontSize: '13px', color: '#666', marginBottom: '5px' }}>
+                          <strong>Código:</strong> {centro.codigo || 'N/A'}
+                        </div>
+                        
+                        <div style={{ fontSize: '13px', color: '#666', marginBottom: '5px' }}>
+                          <strong>Municipio:</strong> {centro.municipio || 'N/A'}
+                          {centro.municipio !== centro.localidad && centro.localidad && ` (${centro.localidad})`}
+                        </div>
+                        
+                        <div style={{ fontSize: '13px', color: '#666' }}>
+                          <strong>Plazas disponibles:</strong> {centro.plazasDisponibles || (centro.plazas - centro.asignadas) || 0}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+            
+            <div className="modal-footer">
+              <button
+                onClick={() => setMostrarModalReasignacion(false)}
+                style={{
+                  padding: '10px 20px',
+                  backgroundColor: '#f1f1f1',
+                  color: '#333',
+                  border: 'none',
+                  borderRadius: '5px',
+                  cursor: 'pointer'
+                }}
+              >
+                Cancelar
+              </button>
+              
+              <button
+                onClick={confirmarReasignacion}
+                disabled={centrosSeleccionadosReasignacion.length === 0 || internalProcessingMessage !== ""}
+                style={{
+                  padding: '10px 20px',
+                  backgroundColor: centrosSeleccionadosReasignacion.length === 0 ? '#ccc' : '#2196f3',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '5px',
+                  cursor: centrosSeleccionadosReasignacion.length === 0 ? 'not-allowed' : 'pointer'
+                }}
+              >
+                {internalProcessingMessage ? (
+                  <span className="processing-btn">
+                    <span className="processing-indicator"></span>
+                    Procesando...
+                  </span>
+                ) : (
+                  `Confirmar Reasignación`
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

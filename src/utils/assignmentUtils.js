@@ -477,14 +477,14 @@ export const procesarSolicitud = async (solicitud, availablePlazas, db) => {
     
     // Buscar un centro con plazas disponibles según el orden de preferencia
     for (const centroId of solicitud.centrosIds) {
-      const centro = availablePlazas[centroId];
+      const centro = availablePlazas.find(c => c.id === centroId);
       
       if (!centro) {
         console.log(`Centro no encontrado: ${centroId}`);
         continue;
       }
       
-      console.log(`Verificando centro ${centro.nombre}: ${centro.plazasDisponibles} plazas disponibles`);
+      console.log(`Verificando centro ${centro.nombre || centro.centro}: ${centro.plazasDisponibles} plazas disponibles`);
       
       // Verificar si hay plazas disponibles
       if (centro.plazasDisponibles > 0) {
@@ -496,6 +496,73 @@ export const procesarSolicitud = async (solicitud, availablePlazas, db) => {
     
     // Si no hay plazas disponibles en ningún centro
     if (!centroAsignado) {
+      // Caso especial: si solo hay una opción (un centro) y está completo
+      if (solicitud.centrosIds.length === 1) {
+        const unicoCentroId = solicitud.centrosIds[0];
+        const unicoCentro = availablePlazas.find(c => c.id === unicoCentroId);
+        
+        if (unicoCentro) {
+          // Crear asignación especial marcada como "no asignable"
+          console.log(`Creando asignación especial para solicitud ${solicitud.orden} en centro ${unicoCentro.nombre || unicoCentro.centro} que está completo`);
+          
+          const batch = writeBatch(db);
+          
+          // Asegurar que el centro tenga un nombre válido para mostrar
+          const nombreCentroMostrar = unicoCentro.nombre || 
+                                    unicoCentro.centro || 
+                                    unicoCentro.nombreCentro || 
+                                    `Centro ${unicoCentroId}`;
+          
+          // Crear nuevo documento de asignación con estado especial
+          const nuevaAsignacion = {
+            numeroOrden: solicitud.orden || 0,
+            centerId: unicoCentroId,
+            nombreCentro: nombreCentroMostrar,
+            timestamp: Date.now(),
+            fechaAsignacion: new Date().toISOString(),
+            municipio: unicoCentro.municipio || "",
+            localidad: unicoCentro.localidad || "",
+            estadoAsignacion: "NO_ASIGNABLE",
+            mensajeEstado: "No hay plazas disponibles en el único centro seleccionado",
+            historial: [
+              {
+                accion: "asignación especial",
+                timestamp: Date.now(),
+                detalles: `No se pudo asignar al centro ${nombreCentroMostrar} por falta de plazas disponibles`
+              }
+            ]
+          };
+          
+          // Guardar en colección de asignaciones
+          const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
+          batch.set(nuevaAsignacionRef, nuevaAsignacion);
+          
+          // Crear entrada en historial
+          const historialRef = doc(collection(db, "historialSolicitudes"));
+          batch.set(historialRef, {
+            orden: solicitud.orden || 0,
+            estado: "NO_ASIGNABLE",
+            mensaje: `No hay plazas disponibles en el único centro seleccionado (${nombreCentroMostrar})`,
+            fechaHistorico: new Date().toISOString(),
+            timestamp: Date.now(),
+            centroAnterior: unicoCentroId
+          });
+          
+          // Ejecutar la transacción
+          await batch.commit();
+          
+          return { 
+            success: true,
+            noAsignable: true,
+            casoEspecial: true,
+            message: "Se creó una asignación especial porque el único centro seleccionado está completo",
+            centroAsignado: unicoCentro,
+            centroId: unicoCentroId,
+            asignacionId: nuevaAsignacionRef.id
+          };
+        }
+      }
+      
       return { 
         success: false, 
         message: "No hay plazas disponibles en los centros seleccionados", 
