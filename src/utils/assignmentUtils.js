@@ -119,7 +119,7 @@ export const procesarSolicitudes = async (
           centro.asignacionesPorOrden.push(operacion.orden);
           
           // Crear nueva asignación con los datos actuales
-          const nuevaAsignacion = {
+              const nuevaAsignacion = {
             order: operacion.orden,
             id: centro.id,
             localidad: centro.localidad || operacion.localidad || "",
@@ -145,7 +145,7 @@ export const procesarSolicitudes = async (
           console.log("Documento de asignación normalizado en procesarSolicitudes:", nuevaAsignacion);
           
           // Guardar en Firestore como parte de la reasignación global
-          const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
+              const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
           await setDoc(nuevaAsignacionRef, nuevaAsignacion);
           
           nuevasAsignaciones.push({ ...nuevaAsignacion, docId: nuevaAsignacionRef.id });
@@ -178,7 +178,7 @@ export const procesarSolicitudes = async (
         for (const centro of centrosAProbar) {
           if (centro.asignadas < centro.plazas) {
             // Hay plaza disponible para asignar directamente
-            centro.asignadas++;
+              centro.asignadas++;
             centro.asignacionesPorOrden.push(operacion.orden);
 
               const nuevaAsignacion = {
@@ -422,7 +422,7 @@ export const procesarSolicitudes = async (
         
         // Guardar en Firestore asegurando que no hay campos undefined
         await setDoc(historialRef, historialData);
-      } catch (error) {
+          } catch (error) {
         console.error(`Error al registrar historial para orden ${operacion.orden}:`, error);
       }
     }
@@ -636,12 +636,12 @@ export const procesarSolicitud = async (solicitud, availablePlazas, db) => {
           batch.set(nuevaAsignacionRef, nuevaAsignacion);
           
           // Crear entrada en historial
-          const historialRef = doc(collection(db, "historialSolicitudes"));
+        const historialRef = doc(collection(db, "historialSolicitudes"));
           batch.set(historialRef, {
             orden: solicitud.orden || 0,
-            estado: "NO_ASIGNABLE",
+          estado: "NO_ASIGNABLE",
             mensaje: `No hay plazas disponibles en el único centro seleccionado (${nombreCentroMostrar})`,
-            fechaHistorico: new Date().toISOString(),
+          fechaHistorico: new Date().toISOString(),
             timestamp: Date.now(),
             centroAnterior: unicoCentroId
           });

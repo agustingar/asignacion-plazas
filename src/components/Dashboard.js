@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 
 /**
  * Componente que muestra el historial de asignaciones
@@ -95,50 +95,53 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
   }
   
   // Función para ordenar asignaciones
-  const sortAssignments = (asignacionesArray) => {
-    if (!asignacionesArray || !Array.isArray(asignacionesArray)) return [];
-    
-    return [...asignacionesArray].sort((a, b) => {
-      if (!a || !b) return 0;
+  const sortAssignments = useMemo(() => {
+    return (asignacionesArray) => {
+      if (!asignacionesArray || !Array.isArray(asignacionesArray)) return [];
       
-      let aValue, bValue;
-      
-      // Manejar diferentes nombres de propiedades
-      if (sortConfig.key === 'order') {
-        aValue = a.numeroOrden !== undefined ? a.numeroOrden : a.order;
-        bValue = b.numeroOrden !== undefined ? b.numeroOrden : b.order;
-      } else if (sortConfig.key === 'centro') {
-        aValue = a.nombreCentro || a.centro || '';
-        bValue = b.nombreCentro || b.centro || '';
-      } else {
-        aValue = a[sortConfig.key];
-        bValue = b[sortConfig.key];
-      }
-      
-      // Convertir a número si es el campo 'order'
-      if (sortConfig.key === 'order') {
-        aValue = Number(aValue) || 0;
-        bValue = Number(bValue) || 0;
-      }
-      
-      if (aValue < bValue) {
-        return sortConfig.direction === 'asc' ? -1 : 1;
-      }
-      if (aValue > bValue) {
-        return sortConfig.direction === 'asc' ? 1 : -1;
-      }
-      return 0;
-    });
-  };
+      return [...asignacionesArray].sort((a, b) => {
+        if (!a || !b) return 0;
+        
+        let aValue, bValue;
+        
+        // Manejar diferentes nombres de propiedades
+        if (sortConfig.key === 'order') {
+          aValue = a.numeroOrden !== undefined ? a.numeroOrden : a.order;
+          bValue = b.numeroOrden !== undefined ? b.numeroOrden : b.order;
+        } else if (sortConfig.key === 'centro') {
+          aValue = a.nombreCentro || a.centro || '';
+          bValue = b.nombreCentro || b.centro || '';
+        } else {
+          aValue = a[sortConfig.key];
+          bValue = b[sortConfig.key];
+        }
+        
+        // Convertir a número si es el campo 'order'
+        if (sortConfig.key === 'order') {
+          aValue = Number(aValue) || 0;
+          bValue = Number(bValue) || 0;
+        }
+        
+        if (aValue < bValue) {
+          return sortConfig.direction === 'asc' ? -1 : 1;
+        }
+        if (aValue > bValue) {
+          return sortConfig.direction === 'asc' ? 1 : -1;
+        }
+        return 0;
+      });
+    };
+  }, [sortConfig]);
   
   // Filtrar asignaciones
-  const filtrarAsignaciones = () => {
+  const filtrarAsignaciones = useMemo(() => {
     if (!Array.isArray(assignments)) return [];
 
     let asignacionesFiltradas = assignments;
 
     // Filtrar por término de búsqueda
     if (searchTerm) {
+      const searchTermLower = searchTerm.toLowerCase();
       asignacionesFiltradas = asignacionesFiltradas.filter(asignacion => {
         if (!asignacion) return false;
 
@@ -150,7 +153,7 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
         ].filter(Boolean);
 
         return searchFields.some(field => 
-          field.toLowerCase().includes(searchTerm.toLowerCase())
+          field.toLowerCase().includes(searchTermLower)
         );
       });
     }
@@ -164,10 +167,10 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
 
     // Ordenar resultados
     return sortAssignments(asignacionesFiltradas);
-  };
+  }, [assignments, searchTerm, filtroEstado, sortAssignments]);
   
   // Obtener asignaciones filtradas y ordenadas
-  const asignacionesFiltradas = filtrarAsignaciones();
+  const asignacionesFiltradas = filtrarAsignaciones;
   
   // Calcular paginación
   const totalPages = Math.ceil(asignacionesFiltradas.length / itemsPerPage);
@@ -381,17 +384,26 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
   };
   
   // Calcular estadísticas
-  const estadisticas = {
-    total: asignacionesFiltradas.length,
-    centros: [...new Set(asignacionesFiltradas.map(a => a.nombreCentro || a.centro))].length,
-    reasignados: asignacionesFiltradas.filter(a => a.reasignado).length,
-    noAsignables: asignacionesFiltradas.filter(a => a.estadoAsignacion === "NO_ASIGNABLE").length
-  };
+  const estadisticas = useMemo(() => {
+    const total = asignacionesFiltradas.length;
+    const centros = [...new Set(asignacionesFiltradas.map(a => a.nombreCentro || a.centro))].length;
+    const reasignados = asignacionesFiltradas.filter(a => a.reasignado).length;
+    const noAsignables = asignacionesFiltradas.filter(a => a.estadoAsignacion === "NO_ASIGNABLE").length;
+
+    return {
+      total,
+      centros,
+      reasignados,
+      noAsignables
+    };
+  }, [asignacionesFiltradas]);
   
   // Obtener lista de estados únicos para el filtro
-  const estados = ['TODOS', ...new Set(asignacionesFiltradas
-    .filter(a => a.estado)
-    .map(a => a.estado))];
+  const estados = useMemo(() => {
+    return ['TODOS', ...new Set(asignacionesFiltradas
+      .filter(a => a.estado)
+      .map(a => a.estado))];
+  }, [asignacionesFiltradas]);
   
   return (
     <div style={styles.container}>
