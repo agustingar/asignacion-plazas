@@ -185,21 +185,47 @@ const Admin = ({
   const handleReasignar = async (asignacion) => {
     try {
       // Validar que la asignación tenga los datos necesarios
-      if (!asignacion || !asignacion.numeroOrden || !asignacion.centro) {
-        throw new Error('Datos de asignación incompletos');
+      if (!asignacion) {
+        throw new Error('La asignación no puede ser nula');
+      }
+
+      // Debug: Mostrar los datos de la asignación
+      console.log('Datos de asignación recibida:', asignacion);
+
+      // Obtener el número de orden de cualquiera de las posibles propiedades
+      const numeroOrden = asignacion.numeroOrden || asignacion.order || asignacion.orden;
+      if (!numeroOrden) {
+        console.error('Propiedades disponibles en la asignación:', Object.keys(asignacion));
+        throw new Error('No se encontró el número de orden en la asignación');
+      }
+
+      // Obtener el centro de cualquiera de las posibles propiedades
+      const centro = asignacion.centro || asignacion.nombreCentro || asignacion.centerName || asignacion.centre;
+      if (!centro) {
+        console.error('Propiedades disponibles en la asignación:', Object.keys(asignacion));
+        throw new Error('No se encontró el centro en la asignación');
       }
 
       // Obtener la solicitud original del historial
       const historialRef = collection(db, 'historialSolicitudes');
-      const q = query(historialRef, where('numeroOrden', '==', asignacion.numeroOrden));
+      const q = query(historialRef, where('numeroOrden', '==', numeroOrden));
       const historialSnapshot = await getDocs(q);
       
+      let solicitudOriginal;
       if (historialSnapshot.empty) {
-        throw new Error('No se encontró la solicitud original en el historial');
+        // Si no se encuentra en el historial, crear una nueva solicitud basada en la asignación actual
+        console.log('No se encontró la solicitud original en el historial, creando una nueva...');
+        solicitudOriginal = {
+          numeroOrden: numeroOrden,
+          centros: [centro], // Usar el centro actual como primera opción
+          estado: "PENDIENTE",
+          fechaCreacion: new Date().toISOString(),
+          timestamp: Date.now()
+        };
+      } else {
+        solicitudOriginal = historialSnapshot.docs[0].data();
       }
 
-      const solicitudOriginal = historialSnapshot.docs[0].data();
-      
       // Obtener todos los centros disponibles
       const centrosRef = collection(db, 'centros');
       const centrosSnapshot = await getDocs(centrosRef);
@@ -212,7 +238,7 @@ const Admin = ({
       const centrosOcupados = new Map();
       asignacionesSnapshot.forEach(doc => {
         const data = doc.data();
-        if (data.centro && data.numeroOrden !== asignacion.numeroOrden) {
+        if (data.centro && data.numeroOrden !== numeroOrden) {
           centrosOcupados.set(data.centro, true);
         }
       });
@@ -225,7 +251,7 @@ const Admin = ({
         }))
         .filter(centro => {
           // Excluir el centro actual y los centros ocupados
-          return centro.nombre !== asignacion.centro && !centrosOcupados.has(centro.nombre);
+          return centro.nombre !== centro && !centrosOcupados.has(centro.nombre);
         });
 
       // Ordenar centros según la prioridad original

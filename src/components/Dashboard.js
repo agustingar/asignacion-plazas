@@ -16,28 +16,6 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
   const [itemsPerPage] = useState(10);
   const [sortConfig, setSortConfig] = useState({ key: 'order', direction: 'asc' });
 
-  // Calcular estadísticas
-  const estadisticas = useMemo(() => {
-    const total = asignacionesFiltradas.length;
-    const centros = [...new Set(asignacionesFiltradas.map(a => a.nombreCentro || a.centro))].length;
-    const reasignados = asignacionesFiltradas.filter(a => a.reasignado).length;
-    const noAsignables = asignacionesFiltradas.filter(a => a.estadoAsignacion === "NO_ASIGNABLE").length;
-
-    return {
-      total,
-      centros,
-      reasignados,
-      noAsignables
-    };
-  }, [asignacionesFiltradas]);
-
-  // Obtener lista de estados únicos para el filtro
-  const estados = useMemo(() => {
-    return ['TODOS', ...new Set(asignacionesFiltradas
-      .filter(a => a.estado)
-      .map(a => a.estado))];
-  }, [asignacionesFiltradas]);
-  
   // Función para ordenar asignaciones
   const sortAssignments = useMemo(() => (asignacionesArray) => {
     if (!asignacionesArray || !Array.isArray(asignacionesArray)) return [];
@@ -110,6 +88,28 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
     // Ordenar resultados
     return sortAssignments(asignacionesFiltradas);
   }, [assignments, searchTerm, filtroEstado, sortAssignments]);
+
+  // Calcular estadísticas
+  const estadisticas = useMemo(() => {
+    const total = asignacionesFiltradas.length;
+    const centros = [...new Set(asignacionesFiltradas.map(a => a.nombreCentro || a.centro))].length;
+    const reasignados = asignacionesFiltradas.filter(a => a.reasignado).length;
+    const noAsignables = asignacionesFiltradas.filter(a => a.estadoAsignacion === "NO_ASIGNABLE").length;
+
+    return {
+      total,
+      centros,
+      reasignados,
+      noAsignables
+    };
+  }, [asignacionesFiltradas]);
+
+  // Obtener lista de estados únicos para el filtro
+  const estados = useMemo(() => {
+    return ['TODOS', ...new Set(asignacionesFiltradas
+      .filter(a => a.estado)
+      .map(a => a.estado))];
+  }, [asignacionesFiltradas]);
 
   // Calcular paginación
   const totalPages = Math.ceil(asignacionesFiltradas.length / itemsPerPage);
