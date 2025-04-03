@@ -43,10 +43,19 @@ const Admin = ({
   const [adminPassword, setAdminPassword] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [searchTermSolicitudes, setSearchTermSolicitudes] = useState('');
+  const [searchTermAsignaciones, setSearchTermAsignaciones] = useState('');
   const [internalProcessingMessage, setInternalProcessingMessage] = useState('');
   const [centrosNuevos, setCentrosNuevos] = useState([]);
   const [mostrarComparacion, setMostrarComparacion] = useState(false);
   const [seleccionados, setSeleccionados] = useState({});
+  // Estados para asignación manual
+  const [solicitudSeleccionada, setSolicitudSeleccionada] = useState(null);
+  const [centroSeleccionadoManual, setCentroSeleccionadoManual] = useState("");
+  const [modalAsignacionManual, setModalAsignacionManual] = useState(false);
+  // Estados para reasignación
+  const [asignacionParaReasignar, setAsignacionParaReasignar] = useState(null);
+  const [modalReasignacion, setModalReasignacion] = useState(false);
+  const [centroSeleccionadoReasignacion, setCentroSeleccionadoReasignacion] = useState("");
   
   // Si no está autenticado, mostrar formulario de login
   if (!isAdminAuthenticated) {
@@ -163,87 +172,55 @@ const Admin = ({
         return;
       }
       
-      // Mostrar mensaje de procesamiento
-      setInternalProcessingMessage("Procesando reasignación...");
-      
-      // Usar id si docId no está disponible
-      const asignacionId = assignment.docId || assignment.id;
-      
-      // Validar y extraer identificador
-      if (!asignacionId) {
-        console.warn("Advertencia: La asignación no tiene identificador válido:", assignment);
-        showNotification("Error: La asignación no tiene un identificador válido", "error");
-        setInternalProcessingMessage("");
-        return;
-      }
-      
-      // Asegurar que hay un número de orden válido
-      if (!assignment.order && !assignment.numeroOrden) {
-        showNotification("Error: No se pudo obtener el número de orden", "error");
-        setInternalProcessingMessage("");
-        return;
-      }
-      
+      // Buscar en el historial si esta orden tiene centros seleccionados guardados
       const ordenAsignacion = assignment.numeroOrden || assignment.order;
+
+      // Obtener centros seleccionados del historial
+      const historialSnapshot = await getDocs(
+        query(collection(db, "historialSolicitudes"), where("orden", "==", ordenAsignacion))
+      );
       
-      // Crear una solicitud pendiente
-      const nuevaSolicitud = {
-        orden: ordenAsignacion,
-        centrosIds: Array.isArray(assignment.centrosIds) 
-          ? assignment.centrosIds 
-          : (assignment.centerId ? [assignment.centerId] : []),
-        timestamp: serverTimestamp()
-      };
+      // Si no encontramos con orden, intentar con numeroOrden
+      let historialData = [];
+      historialSnapshot.forEach(doc => {
+        historialData.push(doc.data());
+      });
       
-      console.log("Nueva solicitud a crear:", nuevaSolicitud);
-      
-      // Usar writeBatch para la transacción
-      const batch = writeBatch(db);
-      
-      // Añadir la nueva solicitud pendiente
-      const solicitudRef = doc(collection(db, "solicitudesPendientes"));
-      batch.set(solicitudRef, nuevaSolicitud);
-      
-      // Eliminar la asignación existente
-      const asignacionRef = doc(db, "asignaciones", asignacionId);
-      batch.delete(asignacionRef);
-      
-      // Crear registro de historial
-      const ahora = new Date();
-      const historialData = {
-        orden: ordenAsignacion,
-        estado: "REASIGNANDO",
-        mensaje: "Reasignación manual desde el panel de administración",
-        fechaHistorico: ahora.toISOString(),
-        timestamp: ahora.getTime()
-      };
-      
-      // Agregar centroAnterior solo si hay un centerId o centro válido
-      if (assignment.centerId) {
-        historialData.centroAnterior = assignment.centerId;
-      } else if (assignment.centro && typeof assignment.centro === 'string') {
-        historialData.centroAnterior = assignment.centro;
+      // Si no encontramos nada, intentar buscar por numeroOrden
+      if (historialData.length === 0) {
+        const historialSnapshotAlt = await getDocs(
+          query(collection(db, "historialSolicitudes"), where("numeroOrden", "==", ordenAsignacion))
+        );
+        historialSnapshotAlt.forEach(doc => {
+          historialData.push(doc.data());
+        });
       }
       
-      console.log("Datos de historial a crear:", historialData);
+      // Obtener centros seleccionados del historial o usar el centro actual
+      let centrosParaSolicitud = [];
       
-      // Añadir al historial
-      const historialRef = doc(collection(db, "historialSolicitudes"));
-      batch.set(historialRef, historialData);
+      historialData.forEach(data => {
+        if (data.centrosSeleccionados && Array.isArray(data.centrosSeleccionados)) {
+          centrosParaSolicitud = data.centrosSeleccionados;
+        }
+      });
       
-      // Ejecutar todos los cambios
-      await batch.commit();
+      // Si no encontramos centros en el historial, usar el centro actual como única opción
+      if (centrosParaSolicitud.length === 0 && assignment.centerId) {
+        centrosParaSolicitud = [assignment.centerId];
+      }
       
-      // Limpiar mensaje de procesamiento
-      setInternalProcessingMessage("");
+      // Configurar estados para la reasignación
+      setAsignacionParaReasignar({
+        ...assignment,
+        centrosIdsOriginales: centrosParaSolicitud
+      });
+      setCentroSeleccionadoReasignacion("");
+      setModalReasignacion(true);
       
-      // Recargar datos
-      await cargarDatosDesdeFirebase();
-      showNotification(`Asignación para orden ${ordenAsignacion} movida a solicitudes pendientes`, "success");
     } catch (error) {
-      console.error("Error al reasignar:", error);
-      setInternalProcessingMessage("");
-      showNotification(`Error al reasignar: ${error.message}`, "error");
+      console.error("Error al preparar reasignación:", error);
+      showNotification(`Error al preparar reasignación: ${error.message}`, "error");
     }
   };
 
@@ -870,7 +847,1438 @@ const Admin = ({
     );
   };
   
-  // Renderizar el panel de administración
+  // Nueva función para abrir modal de asignación manual
+  const abrirModalAsignacionManual = (solicitud) => {
+    setSolicitudSeleccionada(solicitud);
+    setCentroSeleccionadoManual("");
+    setModalAsignacionManual(true);
+  };
+
+  // Nueva función para realizar asignación manual
+  const realizarAsignacionManual = async () => {
+    if (!solicitudSeleccionada || !centroSeleccionadoManual) {
+      showNotification("Por favor, seleccione un centro para asignar", "error");
+      return;
+    }
+
+    try {
+      setInternalProcessingMessage("Realizando asignación manual...");
+
+      // Obtener información de la orden y el centro
+      // Usar orden o numeroOrden, lo que esté disponible
+      const ordenSolicitud = solicitudSeleccionada.orden || solicitudSeleccionada.numeroOrden;
+      
+      // Verificar que tenemos un número de orden válido
+      if (!ordenSolicitud) {
+        showNotification("Error: La solicitud no tiene un número de orden válido", "error");
+        setInternalProcessingMessage("");
+        return;
+      }
+
+      const centroInfo = availablePlazas.find(c => c.id === centroSeleccionadoManual);
+
+      if (!centroInfo) {
+        showNotification("Centro no encontrado", "error");
+        setInternalProcessingMessage("");
+        return;
+      }
+
+      // Verificar si ya existe una asignación para esta orden
+      const asignacionExistente = assignments.find(a => 
+        (a.order === ordenSolicitud) || (a.numeroOrden === ordenSolicitud)
+      );
+
+      // Crear batch para todas las operaciones
+      const batch = writeBatch(db);
+
+      // Si existe una asignación, eliminarla
+      if (asignacionExistente && asignacionExistente.docId) {
+        batch.delete(doc(db, "asignaciones", asignacionExistente.docId));
+      }
+
+      // Crear nueva asignación
+      const nuevaAsignacion = {
+        order: ordenSolicitud,
+        numeroOrden: ordenSolicitud, // Añadir ambos campos para mayor compatibilidad
+        centerId: centroInfo.id,
+        centerName: centroInfo.nombre || centroInfo.centro,
+        localidad: centroInfo.localidad || '',
+        municipio: centroInfo.municipio || '',
+        centro: centroInfo.nombre || centroInfo.centro,
+        timestamp: Date.now(),
+        asignacionManual: true
+      };
+
+      // Verificar que no haya campos undefined antes de guardar
+      Object.keys(nuevaAsignacion).forEach(key => {
+        if (nuevaAsignacion[key] === undefined) {
+          console.warn(`Campo ${key} es undefined en la asignación. Se establecerá valor predeterminado.`);
+          
+          // Establecer valores predeterminados según el tipo de campo
+          if (key.includes('Id') || key === 'order' || key === 'numeroOrden') {
+            nuevaAsignacion[key] = "0"; // ID o número predeterminado como string
+          } else if (key === 'timestamp') {
+            nuevaAsignacion[key] = Date.now(); // Timestamp actual
+          } else if (typeof nuevaAsignacion[key] === 'boolean') {
+            nuevaAsignacion[key] = false; // Valor booleano predeterminado
+          } else {
+            nuevaAsignacion[key] = ""; // String vacío para otros campos
+          }
+        }
+      });
+
+      const asignacionRef = doc(collection(db, "asignaciones"));
+      batch.set(asignacionRef, nuevaAsignacion);
+
+      // Guardar en historial con todas las opciones de centros de la solicitud
+      const historialData = {
+        orden: ordenSolicitud,
+        numeroOrden: ordenSolicitud, // Añadir ambos campos para mayor compatibilidad
+        centroId: centroInfo.id,
+        estado: "ASIGNADA_MANUAL",
+        mensaje: `Asignación manual desde panel de administración a ${centroInfo.nombre || centroInfo.centro}`,
+        fechaHistorico: new Date().toISOString(),
+        timestamp: Date.now(),
+        // Guardar todas las opciones de centros de la solicitud
+        centrosSeleccionados: solicitudSeleccionada.centrosIds || solicitudSeleccionada.centrosSeleccionados || []
+      };
+
+      const historialRef = doc(collection(db, "historialSolicitudes"));
+      batch.set(historialRef, historialData);
+
+      // Eliminar la solicitud pendiente si existe
+      if (solicitudSeleccionada.docId) {
+        batch.delete(doc(db, "solicitudesPendientes", solicitudSeleccionada.docId));
+      }
+
+      // Ejecutar todas las operaciones
+      await batch.commit();
+
+      // Recargar datos
+      await cargarDatosDesdeFirebase();
+
+      showNotification(`Orden ${ordenSolicitud} asignada manualmente a ${centroInfo.nombre || centroInfo.centro}`, "success");
+      setModalAsignacionManual(false);
+      setSolicitudSeleccionada(null);
+    } catch (error) {
+      console.error("Error al realizar asignación manual:", error);
+      showNotification(`Error: ${error.message}`, "error");
+    } finally {
+      setInternalProcessingMessage("");
+    }
+  };
+
+  // Renderizar modal de asignación manual
+  const renderModalAsignacionManual = () => {
+    if (!solicitudSeleccionada) return null;
+
+    // Obtener los centros seleccionados por el usuario
+    const centrosIds = solicitudSeleccionada.centrosIds || 
+                        solicitudSeleccionada.centrosSeleccionados || [];
+    
+    // Filtrar solo los centros seleccionados que existen en availablePlazas
+    const centrosDisponibles = availablePlazas.filter(centro => 
+      centrosIds.includes(centro.id)
+    );
+
+    // Verificar si hay solicitudes con orden menor
+    const ordenActual = solicitudSeleccionada.orden || solicitudSeleccionada.numeroOrden || 0;
+    const solicitudesMenorOrden = solicitudes.filter(sol => {
+      const ordenSol = sol.orden || sol.numeroOrden || 0;
+      return ordenSol < ordenActual;
+    });
+
+    const hayOrdenMenor = solicitudesMenorOrden.length > 0;
+    const soloUnaOpcion = centrosDisponibles.length === 1;
+
+    // Calcular plazas disponibles actualizadas para cada centro
+    const centrosConPlazasActualizadas = centrosDisponibles.map(centro => {
+      // Contar cuántas asignaciones existen para este centro
+      const asignacionesParaCentro = assignments.filter(a => 
+        a.centerId === centro.id && 
+        !a.noAsignable && 
+        a.estado !== "NO_ASIGNABLE" && 
+        a.estado !== "REASIGNACION_NO_VIABLE"
+      ).length;
+      
+      // Calcular plazas disponibles
+      const plazasTotal = centro.plazasTotal || centro.plazas || 0;
+      const plazasOcupadas = centro.plazasOcupadas || centro.asignadas || asignacionesParaCentro || 0;
+      const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
+      
+      return {
+        ...centro,
+        plazasDisponiblesActualizadas: plazasDisponibles,
+        plazasOcupadasActualizadas: plazasOcupadas
+      };
+    });
+
+    // Verificar si hay al menos un centro con plazas disponibles
+    const todosLosCentrosSinPlazas = centrosConPlazasActualizadas.every(c => c.plazasDisponiblesActualizadas <= 0);
+    const hayAlMenosUnCentroConPlazas = !todosLosCentrosSinPlazas;
+
+    return (
+      <div style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        width: '100%',
+        height: '100%',
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        zIndex: 1000,
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center'
+      }}>
+        <div style={{
+          backgroundColor: 'white',
+          borderRadius: '8px',
+          padding: '20px',
+          width: '90%',
+          maxWidth: '600px',
+          maxHeight: '90vh',
+          overflow: 'auto',
+          boxShadow: '0 4px 20px rgba(0,0,0,0.2)'
+        }}>
+          <h3 style={{ borderBottom: '1px solid #eee', paddingBottom: '10px' }}>
+            Asignación Manual - Orden #{ordenActual}
+          </h3>
+          
+          {hayOrdenMenor && soloUnaOpcion && (
+            <div style={{
+              backgroundColor: '#fff3cd',
+              border: '1px solid #ffeeba',
+              borderRadius: '4px',
+              padding: '12px',
+              marginBottom: '15px',
+              color: '#856404'
+            }}>
+              <strong>¡Atención!</strong> Esta solicitud tiene menor prioridad que otras pendientes y solo tiene una opción disponible. 
+              Considere procesar primero las solicitudes con número de orden menores.
+            </div>
+          )}
+
+          {hayOrdenMenor && !soloUnaOpcion && (
+            <div style={{
+              backgroundColor: '#fff3cd',
+              border: '1px solid #ffeeba',
+              borderRadius: '4px',
+              padding: '12px',
+              marginBottom: '15px',
+              color: '#856404'
+            }}>
+              <strong>Aviso:</strong> Existen solicitudes con número de orden menor pendientes.
+            </div>
+          )}
+          
+          <p style={{ marginBottom: '20px' }}>
+            Seleccione uno de los centros preferidos por el usuario para realizar la asignación manual:
+          </p>
+          
+          <div style={{ marginBottom: '20px' }}>
+            <h4>Centros seleccionados por el usuario:</h4>
+            {centrosConPlazasActualizadas.length > 0 ? (
+              <div style={{ 
+                display: 'flex', 
+                flexDirection: 'column',
+                gap: '10px',
+                maxHeight: '300px',
+                overflow: 'auto',
+                padding: '10px',
+                border: '1px solid #eee',
+                borderRadius: '5px'
+              }}>
+                {centrosConPlazasActualizadas.map((centro, index) => {
+                  const sinPlazas = centro.plazasDisponiblesActualizadas <= 0;
+                  
+                  return (
+                    <div key={centro.id} style={{
+                      padding: '10px',
+                      borderRadius: '5px',
+                      border: '1px solid #ddd',
+                      backgroundColor: centroSeleccionadoManual === centro.id 
+                        ? '#e3f2fd' 
+                        : sinPlazas 
+                          ? '#ffebee' 
+                          : 'white',
+                      cursor: sinPlazas ? 'not-allowed' : 'pointer',
+                      opacity: sinPlazas ? 0.7 : 1
+                    }} onClick={() => {
+                      if (!sinPlazas) setCentroSeleccionadoManual(centro.id);
+                    }}>
+                      <div style={{ fontWeight: 'bold' }}>
+                        {index + 1}. {centro.nombre || centro.centro}
+                      </div>
+                      <div style={{ fontSize: '14px', color: '#666' }}>
+                        {centro.localidad && `${centro.localidad}`}
+                        {centro.municipio && centro.municipio !== centro.localidad && ` - ${centro.municipio}`}
+                      </div>
+                      <div style={{ 
+                        fontSize: '14px', 
+                        marginTop: '5px',
+                        color: sinPlazas ? '#d32f2f' : '#388e3c',
+                        fontWeight: 'bold'
+                      }}>
+                        Plazas: <strong>{centro.plazasDisponiblesActualizadas}</strong> disponibles 
+                        de {centro.plazasTotal || centro.plazas || 0}
+                        {sinPlazas && ' - SIN PLAZAS DISPONIBLES'}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div style={{ color: '#d32f2f', padding: '10px', textAlign: 'center' }}>
+                No hay centros disponibles para esta solicitud.
+              </div>
+            )}
+          </div>
+          
+          <div style={{ 
+            display: 'flex', 
+            justifyContent: 'flex-end', 
+            gap: '10px',
+            borderTop: '1px solid #eee',
+            paddingTop: '15px'
+          }}>
+            {todosLosCentrosSinPlazas && (
+              <div style={{ 
+                marginRight: 'auto', 
+                color: '#d32f2f', 
+                fontWeight: 'bold',
+                fontSize: '14px',
+                display: 'flex',
+                alignItems: 'center'
+              }}>
+                ⚠️ No hay plazas disponibles en ningún centro seleccionado
+              </div>
+            )}
+            <button 
+              onClick={() => setModalAsignacionManual(false)}
+              style={{
+                padding: '8px 15px',
+                borderRadius: '4px',
+                border: '1px solid #ddd',
+                backgroundColor: 'white',
+                cursor: 'pointer'
+              }}
+            >
+              Cancelar
+            </button>
+            {todosLosCentrosSinPlazas && (
+              <button 
+                onClick={marcarNoAsignable}
+                style={{
+                  padding: '8px 15px',
+                  borderRadius: '4px',
+                  border: 'none',
+                  backgroundColor: '#f44336',
+                  color: 'white',
+                  cursor: 'pointer'
+                }}
+              >
+                No se puede asignar
+              </button>
+            )}
+            <button 
+              onClick={realizarAsignacionManual}
+              disabled={!centroSeleccionadoManual}
+              style={{
+                padding: '8px 15px',
+                borderRadius: '4px',
+                border: 'none',
+                backgroundColor: centroSeleccionadoManual ? '#2196f3' : '#cccccc',
+                color: 'white',
+                cursor: centroSeleccionadoManual ? 'pointer' : 'not-allowed'
+              }}
+            >
+              Asignar
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Renderizar sección de solicitudes pendientes
+  const renderSolicitudesPendientes = () => {
+    // Ordenar solicitudes por número de orden (menor a mayor)
+    const solicitudesOrdenadas = [...solicitudes].sort((a, b) => {
+      const ordenA = a.orden || a.numeroOrden || 0;
+      const ordenB = b.orden || b.numeroOrden || 0;
+      return ordenA - ordenB;
+    });
+    
+    // Filtrar solicitudes pendientes
+    const solicitudesFiltradas = solicitudesOrdenadas.filter(sol => 
+      !searchTermSolicitudes || 
+      (sol.orden && sol.orden.toString().includes(searchTermSolicitudes)) ||
+      (sol.numeroOrden && sol.numeroOrden.toString().includes(searchTermSolicitudes))
+    );
+
+    return (
+      <div style={{ marginTop: '30px' }}>
+        <h3>Solicitudes Pendientes</h3>
+        
+        <div style={{ marginBottom: '15px' }}>
+          <input
+            type="text"
+            placeholder="Buscar por número de orden..."
+            value={searchTermSolicitudes}
+            onChange={(e) => setSearchTermSolicitudes(e.target.value)}
+            style={{ 
+              width: '100%',
+              padding: '10px',
+              borderRadius: '4px',
+              border: '1px solid #ddd'
+            }}
+          />
+        </div>
+        
+        {solicitudesFiltradas.length === 0 ? (
+          <div style={{ 
+            padding: '20px', 
+            textAlign: 'center', 
+            color: '#666',
+            backgroundColor: '#f9f9f9',
+            borderRadius: '4px'
+          }}>
+            No hay solicitudes pendientes
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ backgroundColor: '#f5f5f5' }}>
+                  <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>Prioridad</th>
+                  <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>Nº Orden</th>
+                  <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>Fecha</th>
+                  <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>Centros Disponibles</th>
+                  <th style={{ padding: '10px', textAlign: 'center', borderBottom: '1px solid #ddd' }}>Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {solicitudesFiltradas.map((solicitud, idx) => {
+                  // Obtener centros seleccionados
+                  const centrosIds = solicitud.centrosIds || solicitud.centrosSeleccionados || [];
+                  
+                  // Formatear fecha correctamente, con manejo de error
+                  let fechaFormateada = 'Fecha no disponible';
+                  try {
+                    // Verificar si el timestamp es un número (timestamp de epoch)
+                    if (typeof solicitud.timestamp === 'number') {
+                      const fecha = new Date(solicitud.timestamp);
+                      if (!isNaN(fecha.getTime())) {
+                        fechaFormateada = fecha.toLocaleDateString() + ' ' + fecha.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                      }
+                    } 
+                    // Verificar si es una cadena de fecha ISO
+                    else if (typeof solicitud.timestamp === 'string') {
+                      const fecha = new Date(solicitud.timestamp);
+                      if (!isNaN(fecha.getTime())) {
+                        fechaFormateada = fecha.toLocaleDateString() + ' ' + fecha.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                      }
+                    }
+                    // Verificar si hay una propiedad fechaSolicitud
+                    else if (solicitud.fechaSolicitud) {
+                      const fecha = new Date(solicitud.fechaSolicitud);
+                      if (!isNaN(fecha.getTime())) {
+                        fechaFormateada = fecha.toLocaleDateString() + ' ' + fecha.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                      }
+                    }
+                  } catch (error) {
+                    console.warn("Error al formatear fecha:", error);
+                  }
+                  
+                  // Obtener información de los centros
+                  const centrosSeleccionados = centrosIds
+                    .map(centroId => {
+                      const centro = availablePlazas.find(p => p.id === centroId);
+                      if (!centro) return null;
+                      
+                      // Calcular plazas disponibles
+                      const plazasTotal = centro.plazasTotal || centro.plazas || 0;
+                      const asignacionesParaCentro = assignments.filter(a => 
+                        a.centerId === centroId && 
+                        !a.noAsignable && 
+                        a.estado !== "NO_ASIGNABLE" && 
+                        a.estado !== "REASIGNACION_NO_VIABLE"
+                      ).length;
+                      const plazasOcupadas = centro.plazasOcupadas || centro.asignadas || asignacionesParaCentro || 0;
+                      const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
+                      
+                      return {
+                        ...centro,
+                        plazasDisponiblesActualizadas: plazasDisponibles,
+                        plazasOcupadasActualizadas: plazasOcupadas
+                      };
+                    })
+                    .filter(Boolean);
+                  
+                  // Verificar si hay centros con plazas disponibles
+                  const centrosConPlazas = centrosSeleccionados.filter(c => c.plazasDisponiblesActualizadas > 0);
+                  const hayCentrosDisponibles = centrosConPlazas.length > 0;
+                  
+                  // Verificar si es la solicitud con menor número
+                  const ordenActual = solicitud.orden || solicitud.numeroOrden || 0;
+                  const esPrioritaria = idx === 0;
+                  
+                  // Determinar el estado de prioridad para estilizado
+                  let prioridadEstilo = {
+                    color: '#666',
+                    backgroundColor: '#f5f5f5',
+                    label: 'Normal'
+                  };
+                  
+                  if (esPrioritaria) {
+                    prioridadEstilo = {
+                      color: 'white',
+                      backgroundColor: '#4caf50',
+                      label: 'Alta'
+                    };
+                  } else if (ordenActual <= 50) {
+                    prioridadEstilo = {
+                      color: 'white',
+                      backgroundColor: '#ff9800',
+                      label: 'Media'
+                    };
+                  }
+                  
+                  return (
+                    <tr key={solicitud.docId || idx} style={{ 
+                      borderBottom: '1px solid #eee',
+                      backgroundColor: esPrioritaria ? '#f1f8e9' : ''
+                    }}>
+                      <td style={{ padding: '10px' }}>
+                        <span style={{
+                          display: 'inline-block',
+                          padding: '4px 8px',
+                          borderRadius: '4px',
+                          fontSize: '12px',
+                          fontWeight: 'bold',
+                          backgroundColor: prioridadEstilo.backgroundColor,
+                          color: prioridadEstilo.color
+                        }}>
+                          {prioridadEstilo.label}
+                        </span>
+                      </td>
+                      <td style={{ 
+                        padding: '10px',
+                        fontWeight: esPrioritaria ? 'bold' : 'normal'
+                      }}>
+                        {ordenActual}
+                      </td>
+                      <td style={{ padding: '10px' }}>
+                        {fechaFormateada}
+                      </td>
+                      <td style={{ padding: '10px' }}>
+                        {centrosSeleccionados.length > 0 ? (
+                          <div>
+                            <div style={{ marginBottom: '5px' }}>
+                              <strong>{centrosConPlazas.length}</strong> centros con plazas de <strong>{centrosSeleccionados.length}</strong> seleccionados
+                            </div>
+                            <ul style={{ margin: '0', paddingLeft: '20px' }}>
+                              {centrosSeleccionados.slice(0, 3).map((centro, i) => {
+                                const tieneDisponibles = centro.plazasDisponiblesActualizadas > 0;
+                                return (
+                                  <li key={i} style={{
+                                    color: tieneDisponibles ? 'inherit' : '#d32f2f',
+                                    marginBottom: '4px'
+                                  }}>
+                                    <div>
+                                      <strong>{centro.nombre || centro.centro}</strong>
+                                      {tieneDisponibles ? (
+                                        <span style={{ 
+                                          color: '#388e3c', 
+                                          fontSize: '12px',
+                                          fontWeight: 'bold',
+                                          marginLeft: '5px'
+                                        }}>
+                                          ({centro.plazasDisponiblesActualizadas} plazas)
+                                        </span>
+                                      ) : (
+                                        <span style={{ 
+                                          color: '#d32f2f', 
+                                          fontSize: '12px',
+                                          fontWeight: 'bold',
+                                          marginLeft: '5px'
+                                        }}>
+                                          (Sin plazas)
+                                        </span>
+                                      )}
+                                    </div>
+                                  </li>
+                                );
+                              })}
+                              {centrosSeleccionados.length > 3 && (
+                                <li>Y {centrosSeleccionados.length - 3} más...</li>
+                              )}
+                            </ul>
+                          </div>
+                        ) : (
+                          <span style={{ color: '#999' }}>Sin centros seleccionados</span>
+                        )}
+                      </td>
+                      <td style={{ padding: '10px', textAlign: 'center' }}>
+                        <button
+                          onClick={() => abrirModalAsignacionManual(solicitud)}
+                          style={{
+                            padding: '6px 12px',
+                            backgroundColor: hayCentrosDisponibles ? '#4caf50' : '#cccccc',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: hayCentrosDisponibles ? 'pointer' : 'not-allowed',
+                            marginRight: '5px'
+                          }}
+                          title={hayCentrosDisponibles ? "Asignar manualmente" : "No hay centros con plazas disponibles"}
+                          disabled={!hayCentrosDisponibles}
+                        >
+                          Asignar Manual
+                        </button>
+                        {!hayCentrosDisponibles && (
+                          <div style={{ 
+                            fontSize: '11px', 
+                            color: '#d32f2f', 
+                            marginTop: '5px',
+                            fontWeight: 'bold' 
+                          }}>
+                            Sin centros disponibles
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Renderizar sección de asignaciones existentes
+  const renderAsignacionesExistentes = () => {
+    // Filtrar asignaciones por búsqueda
+    const asignacionesFiltradas = assignments.filter(asig => 
+      !searchTermAsignaciones || 
+      (asig.order && asig.order.toString().includes(searchTermAsignaciones)) ||
+      (asig.numeroOrden && asig.numeroOrden.toString().includes(searchTermAsignaciones)) ||
+      (asig.centro && asig.centro.toLowerCase().includes(searchTermAsignaciones.toLowerCase())) ||
+      (asig.nombreCentro && asig.nombreCentro.toLowerCase().includes(searchTermAsignaciones.toLowerCase()))
+    );
+
+    return (
+      <div style={{ marginTop: '30px' }}>
+        <h3>Asignaciones Realizadas</h3>
+        
+        <div style={{ marginBottom: '15px' }}>
+          <input
+            type="text"
+            placeholder="Buscar por número de orden o centro..."
+            value={searchTermAsignaciones}
+            onChange={(e) => setSearchTermAsignaciones(e.target.value)}
+            style={{ 
+              width: '100%',
+              padding: '10px',
+              borderRadius: '4px',
+              border: '1px solid #ddd'
+            }}
+          />
+        </div>
+        
+        {asignacionesFiltradas.length === 0 ? (
+          <div style={{ 
+            padding: '20px', 
+            textAlign: 'center', 
+            color: '#666',
+            backgroundColor: '#f9f9f9',
+            borderRadius: '4px'
+          }}>
+            No hay asignaciones que coincidan con la búsqueda
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ backgroundColor: '#f5f5f5' }}>
+                  <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>Nº Orden</th>
+                  <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>Centro Asignado</th>
+                  <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>Plazas</th>
+                  <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>Fecha Asignación</th>
+                  <th style={{ padding: '10px', textAlign: 'center', borderBottom: '1px solid #ddd' }}>Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {asignacionesFiltradas.map((asignacion, idx) => {
+                  // Determinar el número de orden (puede estar en order o numeroOrden)
+                  const numeroOrden = asignacion.order || asignacion.numeroOrden;
+                  
+                  // Determinar si es una asignación especial "no asignable"
+                  const esNoAsignable = asignacion.noAsignable === true || asignacion.estado === "NO_ASIGNABLE";
+                  const esReasignacionNoViable = asignacion.estado === "REASIGNACION_NO_VIABLE";
+                  
+                  // Determinar el nombre del centro
+                  const nombreCentro = esNoAsignable 
+                    ? "No hay plaza disponible" 
+                    : asignacion.nombreCentro || asignacion.centro || asignacion.centerName || 'Centro sin nombre';
+                  
+                  // Obtener información completa del centro para mostrar plazas
+                  const centroCompleto = !esNoAsignable ? availablePlazas.find(c => c.id === asignacion.centerId) : null;
+                  
+                  // Calcular plazas
+                  const plazasTotal = centroCompleto ? (centroCompleto.plazasTotal || centroCompleto.plazas || 0) : 0;
+                  const asignacionesParaCentro = centroCompleto ? 
+                    assignments.filter(a => 
+                      a.centerId === asignacion.centerId && 
+                      !a.noAsignable && 
+                      a.estado !== "NO_ASIGNABLE" && 
+                      a.estado !== "REASIGNACION_NO_VIABLE"
+                    ).length 
+                    : 0;
+                  const plazasOcupadas = centroCompleto ? 
+                    (centroCompleto.plazasOcupadas || centroCompleto.asignadas || asignacionesParaCentro || 0) : 
+                    asignacionesParaCentro;
+                  const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
+                  
+                  // Formatear fecha
+                  const fecha = new Date(asignacion.timestamp);
+                  const fechaFormateada = fecha && !isNaN(fecha.getTime())
+                    ? fecha.toLocaleDateString() + ' ' + fecha.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
+                    : 'Fecha no disponible';
+                  
+                  return (
+                    <tr key={asignacion.docId || idx} style={{ 
+                      borderBottom: '1px solid #eee',
+                      backgroundColor: esNoAsignable ? '#ffebee' : esReasignacionNoViable ? '#fff8e1' : ''
+                    }}>
+                      <td style={{ padding: '10px' }}>{numeroOrden}</td>
+                      <td style={{ padding: '10px' }}>
+                        <div style={{ 
+                          fontWeight: 'bold',
+                          display: 'flex',
+                          alignItems: 'center'
+                        }}>
+                          {nombreCentro}
+                          {esNoAsignable && (
+                            <span style={{
+                              backgroundColor: '#f44336',
+                              color: 'white',
+                              padding: '2px 6px',
+                              borderRadius: '3px',
+                              fontSize: '11px',
+                              marginLeft: '8px'
+                            }}>
+                              No asignable
+                            </span>
+                          )}
+                          {esReasignacionNoViable && (
+                            <span style={{
+                              backgroundColor: '#ff9800',
+                              color: 'white',
+                              padding: '2px 6px',
+                              borderRadius: '3px',
+                              fontSize: '11px',
+                              marginLeft: '8px'
+                            }}>
+                              Reasignación no viable
+                            </span>
+                          )}
+                        </div>
+                        {!esNoAsignable && (
+                          <div style={{ fontSize: '12px', color: '#666' }}>
+                            {asignacion.localidad && `${asignacion.localidad}`}
+                            {asignacion.municipio && asignacion.municipio !== asignacion.localidad && ` - ${asignacion.municipio}`}
+                          </div>
+                        )}
+                        {esNoAsignable && (
+                          <div style={{ fontSize: '12px', color: '#d32f2f' }}>
+                            No hay plazas disponibles en ningún centro seleccionado
+                          </div>
+                        )}
+                        {esReasignacionNoViable && (
+                          <div style={{ fontSize: '12px', color: '#e65100' }}>
+                            {asignacion.mensajeReasignacion || "No fue posible reasignar por falta de plazas"}
+                          </div>
+                        )}
+                      </td>
+                      <td style={{ padding: '10px' }}>
+                        {!esNoAsignable ? (
+                          <div>
+                            <div style={{ 
+                              color: plazasDisponibles === 0 ? '#d32f2f' : plazasDisponibles < 3 ? '#ff9800' : '#388e3c',
+                              fontWeight: 'bold',
+                              fontSize: '13px'
+                            }}>
+                              {plazasDisponibles} disponibles / {plazasTotal} totales
+                            </div>
+                            <div style={{ fontSize: '12px', color: '#666' }}>
+                              {plazasOcupadas} plazas ocupadas
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{ color: '#d32f2f', fontWeight: 'bold', fontSize: '13px' }}>
+                            Sin plazas
+                          </div>
+                        )}
+                      </td>
+                      <td style={{ padding: '10px' }}>{fechaFormateada}</td>
+                      <td style={{ padding: '10px', textAlign: 'center' }}>
+                        {!esNoAsignable ? (
+                          <button
+                            onClick={() => handleReasignar(asignacion)}
+                            style={{
+                              padding: '6px 12px',
+                              backgroundColor: '#ff9800',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '4px',
+                              cursor: 'pointer'
+                            }}
+                            title="Reasignar esta asignación"
+                          >
+                            Reasignar
+                          </button>
+                        ) : (
+                          <span style={{ color: '#999', fontSize: '12px' }}>
+                            No disponible
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Renderizar sección de resumen de plazas disponibles
+  const renderResumenPlazasDisponibles = () => {
+    // Calcular el total de plazas disponibles y ocupadas
+    let totalPlazasDisponibles = 0;
+    let totalPlazasOcupadas = 0;
+    
+    assignments.forEach(asignacion => {
+      if (!asignacion.noAsignable) {
+        const centro = availablePlazas.find(c => c.id === asignacion.centerId);
+        if (centro) {
+          const plazasTotal = centro.plazasTotal || centro.plazas || 0;
+          const plazasOcupadas = centro.plazasOcupadas || centro.asignadas || 0;
+          const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
+          
+          totalPlazasDisponibles += plazasDisponibles;
+          totalPlazasOcupadas += plazasOcupadas;
+        }
+      }
+    });
+
+    return (
+      <div style={{
+        backgroundColor: 'white',
+        borderRadius: '10px',
+        padding: '20px',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+        marginTop: '30px'
+      }}>
+        <h3 style={{ marginBottom: '15px', color: '#2c3e50' }}>Resumen de Plazas Disponibles</h3>
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <div>
+            <strong>Total de plazas disponibles:</strong> {totalPlazasDisponibles}
+          </div>
+          <div>
+            <strong>Total de plazas ocupadas:</strong> {totalPlazasOcupadas}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Función para realizar la reasignación después de seleccionar nuevo centro
+  const realizarReasignacion = async () => {
+    if (!asignacionParaReasignar || !centroSeleccionadoReasignacion) {
+      showNotification("Por favor, seleccione un centro para reasignar", "error");
+      return;
+    }
+
+    try {
+      setInternalProcessingMessage("Realizando reasignación...");
+
+      // Obtener información de la orden y el centro
+      const ordenAsignacion = asignacionParaReasignar.order || asignacionParaReasignar.numeroOrden;
+      const asignacionId = asignacionParaReasignar.docId || asignacionParaReasignar.id;
+      
+      // Validar datos necesarios
+      if (!ordenAsignacion) {
+        showNotification("Error: No se pudo obtener el número de orden", "error");
+        setInternalProcessingMessage("");
+        return;
+      }
+      
+      if (!asignacionId) {
+        showNotification("Error: No se pudo obtener el ID de la asignación", "error");
+        setInternalProcessingMessage("");
+        return;
+      }
+
+      // Obtener información del nuevo centro
+      const nuevoCentroInfo = availablePlazas.find(c => c.id === centroSeleccionadoReasignacion);
+      if (!nuevoCentroInfo) {
+        showNotification("Error: Información del nuevo centro no encontrada", "error");
+        setInternalProcessingMessage("");
+        return;
+      }
+
+      // Obtener información del centro actual para guardarla como origen
+      const centroActualNombre = asignacionParaReasignar.centro || 
+                              asignacionParaReasignar.centerName || 
+                              asignacionParaReasignar.nombreCentro || 
+                              'Centro desconocido';
+
+      // Crear batch para todas las operaciones
+      const batch = writeBatch(db);
+
+      // Eliminar la asignación existente
+      const asignacionRef = doc(db, "asignaciones", asignacionId);
+      batch.delete(asignacionRef);
+
+      // Crear nueva asignación con el nuevo centro
+      const nuevaAsignacion = {
+        order: ordenAsignacion,
+        numeroOrden: ordenAsignacion,
+        centerId: nuevoCentroInfo.id,
+        centerName: nuevoCentroInfo.nombre || nuevoCentroInfo.centro,
+        centro: nuevoCentroInfo.nombre || nuevoCentroInfo.centro,
+        nombreCentro: nuevoCentroInfo.nombre || nuevoCentroInfo.centro,
+        localidad: nuevoCentroInfo.localidad || '',
+        municipio: nuevoCentroInfo.municipio || '',
+        timestamp: Date.now(),
+        asignacionManual: true,
+        reasignado: true,
+        centroOriginal: centroActualNombre,     // Guardar el nombre del centro original
+        centroPrevio: centroActualNombre        // Guardar también en centroPrevio para compatibilidad
+      };
+
+      // Validar y asegurar que no hay campos undefined
+      Object.keys(nuevaAsignacion).forEach(key => {
+        if (nuevaAsignacion[key] === undefined) {
+          console.warn(`Campo ${key} es undefined en la asignación. Se establecerá valor predeterminado.`);
+          
+          // Establecer valores predeterminados según el tipo
+          if (key.includes('Id') || key === 'order' || key === 'numeroOrden') {
+            nuevaAsignacion[key] = "0";
+          } else if (key === 'timestamp') {
+            nuevaAsignacion[key] = Date.now();
+          } else if (typeof nuevaAsignacion[key] === 'boolean') {
+            nuevaAsignacion[key] = false;
+          } else {
+            nuevaAsignacion[key] = "";
+          }
+        }
+      });
+
+      // Crear nueva asignación
+      const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
+      batch.set(nuevaAsignacionRef, nuevaAsignacion);
+
+      // Registrar en historial
+      const ahora = new Date();
+      const historialData = {
+        orden: ordenAsignacion,
+        numeroOrden: ordenAsignacion,
+        centroId: nuevoCentroInfo.id,
+        estado: "REASIGNADO",
+        mensaje: `Reasignación manual desde panel de administración de ${centroActualNombre} a ${nuevoCentroInfo.nombre || nuevoCentroInfo.centro}`,
+        fechaHistorico: ahora.toISOString(),
+        timestamp: ahora.getTime(),
+        centroOriginal: centroActualNombre,
+        centroAsignado: nuevoCentroInfo.nombre || nuevoCentroInfo.centro
+      };
+
+      // Guardar centro anterior
+      if (asignacionParaReasignar.centerId) {
+        historialData.centroIdAnterior = asignacionParaReasignar.centerId;
+      }
+
+      const historialRef = doc(collection(db, "historialSolicitudes"));
+      batch.set(historialRef, historialData);
+
+      // Ejecutar todas las operaciones
+      await batch.commit();
+
+      // Recargar datos
+      await cargarDatosDesdeFirebase();
+
+      showNotification(`Asignación #${ordenAsignacion} reasignada de ${centroActualNombre} a ${nuevoCentroInfo.nombre || nuevoCentroInfo.centro}`, "success");
+      setModalReasignacion(false);
+      setAsignacionParaReasignar(null);
+      setCentroSeleccionadoReasignacion("");
+    } catch (error) {
+      console.error("Error al realizar reasignación:", error);
+      showNotification(`Error al reasignar: ${error.message}`, "error");
+    } finally {
+      setInternalProcessingMessage("");
+    }
+  };
+
+  // Función para marcar una solicitud como no asignable
+  const marcarNoAsignable = async () => {
+    if (!solicitudSeleccionada) {
+      showNotification("Error: No hay solicitud seleccionada", "error");
+      return;
+    }
+
+    try {
+      setInternalProcessingMessage("Procesando solicitud no asignable...");
+      
+      // Obtener datos de la solicitud
+      const ordenSolicitud = solicitudSeleccionada.orden || solicitudSeleccionada.numeroOrden;
+      const docId = solicitudSeleccionada.docId;
+      
+      if (!ordenSolicitud) {
+        showNotification("Error: La solicitud no tiene número de orden", "error");
+        setInternalProcessingMessage("");
+        return;
+      }
+      
+      if (!docId) {
+        showNotification("Error: La solicitud no tiene identificador", "error");
+        setInternalProcessingMessage("");
+        return;
+      }
+      
+      // Usar batch para operaciones atómicas
+      const batch = writeBatch(db);
+      
+      // MODIFICACIÓN: Crear una entrada en asignaciones para que el usuario pueda ver su estado
+      const nuevaAsignacion = {
+        order: ordenSolicitud,
+        numeroOrden: ordenSolicitud,
+        noAsignable: true,  // Nuevo campo para identificar estas asignaciones especiales
+        estado: "NO_ASIGNABLE",
+        centro: "No hay plaza disponible",
+        centerName: "No hay plaza disponible",
+        nombreCentro: "No hay plaza disponible",
+        mensaje: "No hay plazas disponibles en ninguno de los centros seleccionados",
+        timestamp: Date.now(),
+        asignacionManual: true
+      };
+      
+      const asignacionRef = doc(collection(db, "asignaciones"));
+      batch.set(asignacionRef, nuevaAsignacion);
+      
+      // Crear registro en historial
+      const ahora = new Date();
+      const historialData = {
+        orden: ordenSolicitud,
+        numeroOrden: ordenSolicitud,
+        estado: "NO_ASIGNABLE",
+        mensaje: "No hay plazas disponibles en ninguno de los centros seleccionados",
+        fechaHistorico: ahora.toISOString(),
+        timestamp: ahora.getTime(),
+        // Guardar todas las opciones de centros seleccionados
+        centrosSeleccionados: solicitudSeleccionada.centrosIds || solicitudSeleccionada.centrosSeleccionados || []
+      };
+      
+      const historialRef = doc(collection(db, "historialSolicitudes"));
+      batch.set(historialRef, historialData);
+      
+      // Eliminar la solicitud pendiente
+      batch.delete(doc(db, "solicitudesPendientes", docId));
+      
+      // Ejecutar los cambios
+      await batch.commit();
+      
+      // Recargar datos
+      await cargarDatosDesdeFirebase();
+      
+      showNotification(`Solicitud ${ordenSolicitud} marcada como no asignable por falta de opciones`, "info");
+      setModalAsignacionManual(false);
+      setSolicitudSeleccionada(null);
+    } catch (error) {
+      console.error("Error al marcar como no asignable:", error);
+      showNotification(`Error: ${error.message}`, "error");
+    } finally {
+      setInternalProcessingMessage("");
+    }
+  };
+
+  // Función para marcar una reasignación como no asignable
+  const marcarReasignacionNoAsignable = async () => {
+    if (!asignacionParaReasignar) {
+      showNotification("Error: No hay asignación seleccionada", "error");
+      return;
+    }
+
+    try {
+      setInternalProcessingMessage("Procesando reasignación no viable...");
+      
+      // Obtener datos de la asignación
+      const ordenAsignacion = asignacionParaReasignar.order || asignacionParaReasignar.numeroOrden;
+      const asignacionId = asignacionParaReasignar.docId || asignacionParaReasignar.id;
+      const centroActual = asignacionParaReasignar.centro || asignacionParaReasignar.centerName || 'Centro desconocido';
+      
+      if (!ordenAsignacion) {
+        showNotification("Error: La asignación no tiene número de orden", "error");
+        setInternalProcessingMessage("");
+        return;
+      }
+      
+      if (!asignacionId) {
+        showNotification("Error: La asignación no tiene identificador", "error");
+        setInternalProcessingMessage("");
+        return;
+      }
+      
+      // Usar batch para operaciones atómicas
+      const batch = writeBatch(db);
+      
+      // MODIFICACIÓN: Actualizar la asignación existente con información sobre el intento de reasignación
+      const asignacionActualizada = {
+        intentoReasignacion: true,
+        fechaIntentoReasignacion: new Date().toISOString(),
+        mensajeReasignacion: "Reasignación no viable por falta de plazas disponibles",
+        estado: "REASIGNACION_NO_VIABLE"
+      };
+      
+      // Actualizar la asignación existente
+      const asignacionRef = doc(db, "asignaciones", asignacionId);
+      batch.update(asignacionRef, asignacionActualizada);
+      
+      // Crear registro en historial
+      const ahora = new Date();
+      const historialData = {
+        orden: ordenAsignacion,
+        numeroOrden: ordenAsignacion,
+        estado: "REASIGNACION_NO_VIABLE",
+        centroId: asignacionParaReasignar.centerId,
+        mensaje: `No es posible reasignar. Se mantiene en ${centroActual} por falta de opciones disponibles`,
+        fechaHistorico: ahora.toISOString(),
+        timestamp: ahora.getTime(),
+        // Guardar las opciones de centros originales
+        centrosSeleccionados: asignacionParaReasignar.centrosIdsOriginales || []
+      };
+      
+      const historialRef = doc(collection(db, "historialSolicitudes"));
+      batch.set(historialRef, historialData);
+      
+      // Ejecutar los cambios
+      await batch.commit();
+      
+      // Recargar datos
+      await cargarDatosDesdeFirebase();
+      
+      showNotification(`Se mantiene la asignación de ${ordenAsignacion} en ${centroActual} por falta de alternativas`, "info");
+      setModalReasignacion(false);
+      setAsignacionParaReasignar(null);
+      setCentroSeleccionadoReasignacion("");
+    } catch (error) {
+      console.error("Error al mantener asignación:", error);
+      showNotification(`Error: ${error.message}`, "error");
+    } finally {
+      setInternalProcessingMessage("");
+    }
+  };
+
+  // Renderizar el panel de administración principal con los botones de acción rápida
+  const renderAccionesRapidas = () => {
+    return (
+      <div style={{
+        backgroundColor: 'white',
+        borderRadius: '10px',
+        padding: '20px',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+        marginBottom: '20px'
+      }}>
+        <h3 style={{ margin: 0, marginBottom: '15px', color: '#2c3e50' }}>Acciones Rápidas</h3>
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          <button
+            onClick={async () => {
+              // Solicitar confirmación para procesar todas las solicitudes
+              if (window.confirm("¿Está seguro de que desea procesar todas las solicitudes pendientes manualmente? Esta acción asignará plazas automáticamente en base a las preferencias de los usuarios.")) {
+                // Ejecutar procesamiento de todas las solicitudes
+                await procesarTodasLasSolicitudes({ respetarAsignacionesExistentes: false });
+                // Recargar datos
+                await cargarDatosDesdeFirebase();
+              }
+            }}
+            style={{
+              padding: '8px 12px',
+              backgroundColor: '#3498db',
+              color: 'white',
+              border: 'none',
+              borderRadius: '5px',
+              cursor: 'pointer'
+            }}
+            disabled={loadingProcess}
+          >
+            {loadingProcess ? 'Procesando...' : 'Procesar Todas las Solicitudes (Manual)'}
+          </button>
+          
+          <button
+            onClick={async () => {
+              // Recargar datos
+              setInternalProcessingMessage("Recargando datos...");
+              try {
+                await cargarDatosDesdeFirebase();
+                showNotification("Datos recargados correctamente", "success");
+              } catch (error) {
+                showNotification("Error al recargar datos: " + error.message, "error");
+              } finally {
+                setInternalProcessingMessage("");
+              }
+            }}
+            style={{
+              padding: '8px 12px',
+              backgroundColor: '#2ecc71',
+              color: 'white',
+              border: 'none',
+              borderRadius: '5px',
+              cursor: 'pointer'
+            }}
+          >
+            Recargar Datos
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  // Renderizar modal de reasignación
+  const renderModalReasignacion = () => {
+    if (!asignacionParaReasignar) return null;
+
+    // Obtener los centros seleccionados para la reasignación
+    const centrosIds = asignacionParaReasignar.centrosIdsOriginales || [];
+    
+    // Filtrar solo los centros seleccionados que existen en availablePlazas
+    const centrosDisponibles = availablePlazas.filter(centro => 
+      centrosIds.includes(centro.id)
+    );
+
+    // Calcular plazas disponibles actualizadas para cada centro
+    const centrosConPlazasActualizadas = centrosDisponibles.map(centro => {
+      // Contar cuántas asignaciones existen para este centro
+      const asignacionesParaCentro = assignments.filter(a => 
+        a.centerId === centro.id && 
+        !a.noAsignable && 
+        a.estado !== "NO_ASIGNABLE" && 
+        a.estado !== "REASIGNACION_NO_VIABLE"
+      ).length;
+      
+      // Calcular plazas disponibles
+      const plazasTotal = centro.plazasTotal || centro.plazas || 0;
+      const plazasOcupadas = centro.plazasOcupadas || centro.asignadas || asignacionesParaCentro || 0;
+      const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
+      
+      return {
+        ...centro,
+        plazasDisponiblesActualizadas: plazasDisponibles,
+        plazasOcupadasActualizadas: plazasOcupadas
+      };
+    });
+
+    // Verificar si hay al menos un centro con plazas disponibles (diferente del actual)
+    const centroActualId = asignacionParaReasignar.centerId;
+    const centrosDisponiblesParaReasignacion = centrosConPlazasActualizadas.filter(
+      c => c.id !== centroActualId && c.plazasDisponiblesActualizadas > 0
+    );
+    const noHayCentrosDisponiblesParaReasignacion = centrosDisponiblesParaReasignacion.length === 0;
+
+    // Obtener información de la orden actual
+    const ordenActual = asignacionParaReasignar.order || asignacionParaReasignar.numeroOrden || 0;
+    const centroActual = asignacionParaReasignar.centro || asignacionParaReasignar.centerName || 'Centro desconocido';
+
+    return (
+      <div style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        width: '100%',
+        height: '100%',
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        zIndex: 1000,
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center'
+      }}>
+        <div style={{
+          backgroundColor: 'white',
+          borderRadius: '8px',
+          padding: '20px',
+          width: '90%',
+          maxWidth: '600px',
+          maxHeight: '90vh',
+          overflow: 'auto',
+          boxShadow: '0 4px 20px rgba(0,0,0,0.2)'
+        }}>
+          <h3 style={{ borderBottom: '1px solid #eee', paddingBottom: '10px' }}>
+            Reasignación - Orden #{ordenActual}
+          </h3>
+          
+          <div style={{
+            backgroundColor: '#e8f4fd',
+            border: '1px solid #bedcf3',
+            borderRadius: '4px',
+            padding: '12px',
+            marginBottom: '15px',
+            color: '#0d4c8c'
+          }}>
+            <strong>Centro actual:</strong> {centroActual}
+          </div>
+          
+          <p style={{ marginBottom: '20px' }}>
+            Seleccione un nuevo centro para reasignar directamente esta solicitud:
+          </p>
+          
+          <div style={{ marginBottom: '20px' }}>
+            <h4>Centros disponibles:</h4>
+            {centrosConPlazasActualizadas.length > 0 ? (
+              <div style={{ 
+                display: 'flex', 
+                flexDirection: 'column',
+                gap: '10px',
+                maxHeight: '300px',
+                overflow: 'auto',
+                padding: '10px',
+                border: '1px solid #eee',
+                borderRadius: '5px'
+              }}>
+                {centrosConPlazasActualizadas.map((centro, index) => {
+                  const sinPlazas = centro.plazasDisponiblesActualizadas <= 0;
+                  const esActual = centro.id === asignacionParaReasignar.centerId;
+                  
+                  return (
+                    <div key={centro.id} style={{
+                      padding: '10px',
+                      borderRadius: '5px',
+                      border: esActual ? '2px solid #ffb74d' : '1px solid #ddd',
+                      backgroundColor: centroSeleccionadoReasignacion === centro.id 
+                        ? '#e3f2fd' 
+                        : esActual
+                          ? '#fff8e1'
+                          : sinPlazas 
+                            ? '#ffebee' 
+                            : 'white',
+                      cursor: sinPlazas ? 'not-allowed' : 'pointer',
+                      opacity: sinPlazas ? 0.7 : 1
+                    }} onClick={() => {
+                      if (!sinPlazas) setCentroSeleccionadoReasignacion(centro.id);
+                    }}>
+                      <div style={{ 
+                        fontWeight: 'bold',
+                        display: 'flex',
+                        justifyContent: 'space-between'
+                      }}>
+                        <span>{index + 1}. {centro.nombre || centro.centro}</span>
+                        {esActual && (
+                          <span style={{
+                            backgroundColor: '#ff9800',
+                            color: 'white',
+                            padding: '2px 6px',
+                            borderRadius: '3px',
+                            fontSize: '11px'
+                          }}>
+                            Actual
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: '14px', color: '#666' }}>
+                        {centro.localidad && `${centro.localidad}`}
+                        {centro.municipio && centro.municipio !== centro.localidad && ` - ${centro.municipio}`}
+                      </div>
+                      <div style={{ 
+                        fontSize: '14px', 
+                        marginTop: '5px',
+                        color: sinPlazas ? '#d32f2f' : '#388e3c',
+                        fontWeight: 'bold'
+                      }}>
+                        Plazas: <strong>{centro.plazasDisponiblesActualizadas}</strong> disponibles 
+                        de {centro.plazasTotal || centro.plazas || 0}
+                        {sinPlazas && ' - SIN PLAZAS DISPONIBLES'}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div style={{ color: '#d32f2f', padding: '10px', textAlign: 'center' }}>
+                No hay centros disponibles para reasignar.
+              </div>
+            )}
+          </div>
+          
+          <div style={{ 
+            display: 'flex', 
+            justifyContent: 'flex-end', 
+            gap: '10px',
+            borderTop: '1px solid #eee',
+            paddingTop: '15px'
+          }}>
+            {noHayCentrosDisponiblesParaReasignacion && (
+              <div style={{ 
+                marginRight: 'auto', 
+                color: '#d32f2f', 
+                fontWeight: 'bold',
+                fontSize: '14px',
+                display: 'flex',
+                alignItems: 'center'
+              }}>
+                ⚠️ No hay centros alternativos con plazas disponibles
+              </div>
+            )}
+            <button 
+              onClick={() => setModalReasignacion(false)}
+              style={{
+                padding: '8px 15px',
+                borderRadius: '4px',
+                border: '1px solid #ddd',
+                backgroundColor: 'white',
+                cursor: 'pointer'
+              }}
+            >
+              Cancelar
+            </button>
+            {noHayCentrosDisponiblesParaReasignacion && (
+              <button 
+                onClick={marcarReasignacionNoAsignable}
+                style={{
+                  padding: '8px 15px',
+                  borderRadius: '4px',
+                  border: 'none',
+                  backgroundColor: '#f44336',
+                  color: 'white',
+                  cursor: 'pointer'
+                }}
+              >
+                No se puede reasignar
+              </button>
+            )}
+            <button 
+              onClick={realizarReasignacion}
+              disabled={!centroSeleccionadoReasignacion}
+              style={{
+                padding: '8px 15px',
+                borderRadius: '4px',
+                border: 'none',
+                backgroundColor: centroSeleccionadoReasignacion ? '#ff9800' : '#cccccc',
+                color: 'white',
+                cursor: centroSeleccionadoReasignacion ? 'pointer' : 'not-allowed'
+              }}
+            >
+              Reasignar
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+  
+  // Renderizar el panel completo de administración
   return (
     <div style={{
       maxWidth: '1280px',
@@ -878,729 +2286,49 @@ const Admin = ({
       padding: '20px',
       fontFamily: 'Arial, sans-serif'
     }}>
-      {/* Estilos para la animación del spinner */}
-      <style>
-        {`
-          @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-          }
-          
-          .processing-btn {
-            position: relative;
-            padding-left: 30px; /* Espacio para el spinner */
-            display: inline-flex;
-            align-items: center;
-          }
-          
-          .processing-indicator {
-            position: absolute;
-            left: 10px;
-            width: 15px;
-            height: 15px;
-            border: 2px solid rgba(255, 255, 255, 0.3);
-            border-radius: 50%;
-            border-top-color: white;
-            animation: spin 1s linear infinite;
-          }
-        `}
-      </style>
+      <h1 style={{ marginBottom: '30px', color: '#2c3e50' }}>Panel de Administración</h1>
       
-      <h2 style={{ marginBottom: '10px', color: '#333' }}>Panel de Administración</h2>
+      {/* Mensaje de procesamiento */}
+      {internalProcessingMessage && (
+        <div style={{
+          position: 'fixed',
+          top: '20px',
+          right: '20px',
+          backgroundColor: '#3498db',
+          color: 'white',
+          padding: '15px 20px',
+          borderRadius: '5px',
+          boxShadow: '0 2px 10px rgba(0,0,0,0.1)',
+          zIndex: 1000
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center' }}>
+            <div style={{ 
+              width: '20px', 
+              height: '20px', 
+              borderRadius: '50%', 
+              border: '2px solid rgba(255,255,255,0.5)', 
+              borderTopColor: 'white',
+              animation: 'spin 1s linear infinite',
+              marginRight: '10px'
+            }} />
+            {internalProcessingMessage}
+          </div>
+        </div>
+      )}
+      
+      {/* Sección de acciones rápidas */}
+      {renderAccionesRapidas()}
       
       {/* Sección de importación de centros */}
       {renderSeccionImportacionCentros()}
       
-      {/* Acciones administrativas */}
-      <div style={{
-        backgroundColor: 'white',
-        borderRadius: '10px',
-        padding: '20px',
-        boxShadow: '0 2px 10px rgba(0,0,0,0.05)',
-        marginBottom: '20px'
-      }}>
-        <h3 style={{ marginTop: 0, color: '#2c3e50', marginBottom: '15px' }}>Acciones Administrativas</h3>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: '20px' }}>
-          <button
-            onClick={async () => {
-              // Primero eliminar duplicados en solicitudes
-              await eliminarSolicitudesDuplicadas();
-              // Luego eliminar duplicados en historial
-              await limpiarDuplicadosHistorial();
-              showNotification("Duplicados eliminados correctamente", "success");
-            }}
-            style={{
-              padding: '15px 20px',
-              backgroundColor: '#e74c3c',
-              color: 'white',
-              border: 'none',
-              borderRadius: '5px',
-              cursor: 'pointer',
-              fontWeight: 'bold',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '10px'
-            }}
-            disabled={loadingProcess}
-          >
-            <span>🗑️</span> Eliminar Duplicados
-          </button>
-          
-          {/* Botón para reasignar plazas por orden */}
-          <button
-            onClick={() => procesarTodasLasSolicitudes({respetarAsignacionesExistentes: false})}
-            style={{
-              padding: '15px 20px',
-              backgroundColor: '#3498db',
-              color: 'white',
-              border: 'none',
-              borderRadius: '5px',
-              cursor: assignments.length > 0 ? 'pointer' : 'not-allowed',
-              fontWeight: 'bold',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '10px',
-              opacity: assignments.length > 0 ? 1 : 0.6
-            }}
-            disabled={assignments.length === 0 || loadingProcess}
-          >
-            <span>🔄</span> Reasignar Plazas por Orden
-          </button>
-          
-          {/* Botón para procesar siguiente */}
-          <button
-            onClick={procesarSolicitudesPorMinuto}
-            style={{
-              padding: '15px 20px',
-              backgroundColor: '#2ecc71',
-              color: 'white',
-              border: 'none',
-              borderRadius: '5px',
-              cursor: assignments.length > 0 ? 'pointer' : 'not-allowed',
-              fontWeight: 'bold',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '10px',
-              opacity: assignments.length > 0 ? 1 : 0.6
-            }}
-            disabled={assignments.length === 0 || loadingProcess}
-          >
-            <span>▶️</span> Procesar Siguiente Solicitud
-          </button>
-        </div>
-      </div>
+      {/* Sección de solicitudes pendientes */}
+      {renderSolicitudesPendientes()}
       
-      {processingMessage && (
-        <div style={{ 
-          marginTop: '15px', 
-          padding: '15px', 
-          backgroundColor: '#f8f9fa',
-          borderRadius: '5px', 
-          fontStyle: 'italic',
-          marginBottom: '20px',
-          textAlign: 'center',
-          border: '1px solid #e9ecef',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center'
-        }}>
-          <div>
-            <strong>Estado:</strong> {processingMessage || internalProcessingMessage}
-          </div>
-          <button
-            onClick={async () => {
-              setInternalProcessingMessage("Recargando datos...");
-              const success = await cargarDatosDesdeFirebase();
-              setInternalProcessingMessage(success ? "Datos recargados correctamente" : "Error al recargar datos");
-              
-              // Limpiar mensaje después de un tiempo
-              setTimeout(() => {
-                setInternalProcessingMessage("");
-              }, 2000);
-            }}
-            style={{
-              padding: '5px 10px',
-              backgroundColor: '#3498db',
-              color: 'white',
-              border: 'none',
-              borderRadius: '3px',
-              cursor: 'pointer',
-              fontSize: '13px'
-            }}
-          >
-            🔄 Recargar datos
-          </button>
-        </div>
-      )}
+      {/* Sección de asignaciones existentes */}
+      {renderAsignacionesExistentes()}
       
-      {/* Sección de asignaciones actuales */}
-      <div style={{ 
-        backgroundColor: 'white', 
-        padding: '20px', 
-        borderRadius: '10px',
-        boxShadow: '0 2px 10px rgba(0,0,0,0.05)',
-        marginBottom: '20px'
-      }}>
-        <h2>Asignaciones Actuales</h2>
-        
-        <div style={{ 
-          marginBottom: '15px', 
-          padding: '10px 15px', 
-          borderRadius: '5px', 
-          backgroundColor: '#e8f4f8', 
-          fontSize: '14px',
-          border: '1px solid #c8e1e9',
-          color: '#2980b9'
-        }}>
-          <strong>Información:</strong> El botón "Reasignar" convierte una asignación actual en una solicitud pendiente, permitiendo que se reasigne a otro centro si hay mejor opción disponible.
-        </div>
-        
-        {/* Buscador de asignaciones */}
-        <div style={{ marginBottom: '15px' }}>
-          <input
-            type="text"
-            placeholder="Buscar por número de orden o centro..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '10px',
-              border: '1px solid #ddd',
-              borderRadius: '5px',
-              marginBottom: '10px'
-            }}
-          />
-        </div>
-        
-        {assignments.length > 0 ? (
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ backgroundColor: '#f8f9fa' }}>
-                <th style={{ padding: '10px', textAlign: 'left' }}>Orden</th>
-                <th style={{ padding: '10px', textAlign: 'left' }}>Centro Asignado</th>
-                <th style={{ padding: '10px', textAlign: 'left' }}>Plazas Disponibles</th>
-                <th style={{ padding: '10px', textAlign: 'left' }}>Acciones</th>
-              </tr>
-            </thead>
-            <tbody>
-              {assignments
-                .sort((a, b) => {
-                  const orderA = a.numeroOrden || a.order || 0;
-                  const orderB = b.numeroOrden || b.order || 0;
-                  return Number(orderA) - Number(orderB);
-                })
-                .filter(assignment => {
-                  const searchTermLower = searchTerm.toLowerCase();
-                  const orderStr = (assignment.numeroOrden || assignment.order || "").toString();
-                  const centerName = assignment.nombreCentro || assignment.centerName || "";
-                  
-                  return (
-                    orderStr.includes(searchTermLower) ||
-                    centerName.toLowerCase().includes(searchTermLower)
-                  );
-                })
-                .map((assignment, index) => {
-                  // Buscar info del centro
-                  const centroInfo = encontrarCentro(assignment);
-                  
-                  // Cálculo estandarizado de plazas
-                  const plazasTotal = centroInfo.plazasTotal || centroInfo.plazas || 0;
-                  const plazasOcupadas = centroInfo.plazasOcupadas || centroInfo.asignadas || 0;
-                  const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
-                  
-                  return (
-                    <tr key={assignment.docId || assignment.id || `assignment-${index}`} style={{ borderBottom: '1px solid #eee' }}>
-                      <td style={{ padding: '10px' }}>{assignment.numeroOrden || assignment.order}</td>
-                      <td style={{ padding: '10px' }}>
-                        {assignment.nombreCentro || assignment.centerName || 
-                         (centroInfo && (centroInfo.nombre || centroInfo.centro)) || 
-                         assignment.centro || assignment.centre || assignment.centerId || "Centro sin nombre"}
-                      </td>
-                      <td style={{ padding: '10px' }}>
-                        <div style={{ 
-                          padding: '5px',
-                          borderRadius: '3px',
-                          border: '1px solid #e6f2ff'
-                        }}>
-                          <div style={{ 
-                            display: 'flex',
-                            fontSize: '13px',
-                            justifyContent: 'center',
-                            gap: '5px'
-                          }}>
-                            <span style={{ 
-                              color: plazasDisponibles > 0 ? '#2ecc71' : '#e74c3c',
-                              fontWeight: 'bold'
-                            }}>
-                              {plazasDisponibles}
-                            </span> 
-                            <span>disponibles de</span> 
-                            <span>{plazasTotal}</span>
-                            {plazasTotal > 0 && (
-                              <span style={{ 
-                                marginLeft: '5px',
-                                backgroundColor: plazasDisponibles > 0 ? '#e8f5e9' : '#ffebee',
-                                padding: '0px 5px',
-                                borderRadius: '10px',
-                                fontSize: '12px'
-                              }}>
-                                {Math.round((plazasDisponibles / plazasTotal) * 100)}%
-                              </span>
-                            )}
-                          </div>
-                          {centroInfo.municipio && (
-                            <div style={{
-                              fontSize: '12px', 
-                              color: '#718096',
-                              marginTop: '3px',
-                              textAlign: 'center'
-                            }}>
-                              {centroInfo.municipio}
-                              {centroInfo.localidad && centroInfo.localidad !== centroInfo.municipio && ` (${centroInfo.localidad})`}
-                            </div>
-                          )}
-                        </div>
-                      </td>
-                      <td style={{ padding: '10px' }}>
-                        <button 
-                          onClick={() => handleReasignar(assignment)}
-                          style={{
-                            padding: '5px 10px',
-                            backgroundColor: '#f39c12',
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '3px',
-                            cursor: 'pointer'
-                          }}
-                          disabled={loadingProcess}
-                        >
-                          Reasignar
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-            </tbody>
-          </table>
-        ) : (
-          <p>No hay asignaciones.</p>
-        )}
-      </div>
-      
-      {/* Lista de solicitudes pendientes - con buscador */}
-      <div style={{ 
-        backgroundColor: 'white', 
-        padding: '20px', 
-        borderRadius: '10px',
-        boxShadow: '0 2px 10px rgba(0,0,0,0.05)',
-        marginBottom: '20px'
-      }}>
-        <h2>Solicitudes Pendientes</h2>
-        
-        {/* Buscador de solicitudes */}
-        <div style={{ marginBottom: '15px' }}>
-          <input
-            type="text"
-            placeholder="Buscar por número de orden..."
-            value={searchTermSolicitudes}
-            onChange={(e) => setSearchTermSolicitudes(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '10px',
-              border: '1px solid #ddd',
-              borderRadius: '5px',
-              marginBottom: '10px'
-            }}
-          />
-        </div>
-        
-        {solicitudes.length > 0 ? (
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ backgroundColor: '#f8f9fa' }}>
-                <th style={{ padding: '10px', textAlign: 'left' }}>Orden</th>
-                <th style={{ padding: '10px', textAlign: 'left' }}>Centros Solicitados</th>
-                <th style={{ padding: '10px', textAlign: 'left' }}>Plazas Disponibles</th>
-                <th style={{ padding: '10px', textAlign: 'left' }}>Acciones</th>
-              </tr>
-            </thead>
-            <tbody>
-              {solicitudes
-                .sort((a, b) => Number(a.orden) - Number(b.orden))
-                .filter(solicitud => {
-                  const searchTermLower = searchTermSolicitudes.toLowerCase();
-                  return String(solicitud.orden).includes(searchTermLower);
-                })
-                .map(solicitud => {
-                  return (
-                    <tr key={solicitud.docId} style={{ borderBottom: '1px solid #eee' }}>
-                      <td style={{ padding: '10px' }}>{solicitud.orden}</td>
-                      <td style={{ padding: '10px' }}>
-                        {solicitud.centrosIds.map((centroId, index) => {
-                          // Buscar información del centro seleccionado
-                          let centro = availablePlazas.find(p => p.id === centroId);
-                          
-                          // 1. Búsqueda exacta por ID
-                          if (!centro) {
-                            centro = availablePlazas.find(p => p.id === centroId);
-                          }
-                          
-                          // 2. Por nombre normalizado
-                          if (!centro && typeof centroId === 'string' && centroId.length > 5) {
-                            const nombreBusqueda = centroId.toLowerCase()
-                              .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-                            
-                            centro = availablePlazas.find(c => {
-                              const nombreCentro = (c.nombre || c.centro || "").toLowerCase()
-                                .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-                              return nombreCentro === nombreBusqueda;
-                            });
-                          }
-                          
-                          // 3. Coincidencia parcial
-                          if (!centro && typeof centroId === 'string' && centroId.length > 5) {
-                            const nombreParcial = centroId.toLowerCase();
-                            const coincidenciaParcial = availablePlazas.find(c => 
-                              (c.nombre && c.nombre.toLowerCase().includes(nombreParcial)) || 
-                              (c.centro && c.centro.toLowerCase().includes(nombreParcial))
-                            );
-                            
-                            if (coincidenciaParcial) {
-                              centro = coincidenciaParcial;
-                            }
-                          }
-                          
-                          if (!centro) {
-                            centro = { 
-                              plazas: 0, 
-                              plazasTotal: 0,
-                              asignadas: 0,
-                              plazasDisponibles: 0 
-                            };
-                          }
-                          
-                          // Cálculo estandarizado de plazas disponibles
-                          const plazasTotal = centro.plazasTotal || centro.plazas || 0;
-                          const plazasOcupadas = centro.plazasOcupadas || centro.asignadas || 0;
-                          const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
-                          
-                          return (
-                            <div key={centroId} style={{ 
-                              marginBottom: index < solicitud.centrosIds.length - 1 ? '5px' : '0',
-                              padding: '5px',
-                              backgroundColor: index === 0 ? '#f2f9ff' : 'transparent',
-                              borderRadius: '3px',
-                              border: '1px solid #e6f2ff'
-                            }}>
-                              <div style={{ fontWeight: 'bold', fontSize: '14px' }}>
-                                {centro.nombre || "Centro desconocido"}
-                              </div>
-                              <div style={{ 
-                                display: 'flex',
-                                marginTop: '3px',
-                                fontSize: '13px',
-                                justifyContent: 'center',
-                                gap: '5px'
-                              }}>
-                                <span style={{ 
-                                  color: plazasDisponibles > 0 ? '#2ecc71' : '#e74c3c',
-                                  fontWeight: 'bold'
-                                }}>
-                                  {plazasDisponibles}
-                                </span> 
-                                <span>disponibles de</span> 
-                                <span>{plazasTotal}</span>
-                                {plazasTotal > 0 && (
-                                  <span style={{ 
-                                    marginLeft: '5px',
-                                    backgroundColor: plazasDisponibles > 0 ? '#e8f5e9' : '#ffebee',
-                                    padding: '0px 5px',
-                                    borderRadius: '10px',
-                                    fontSize: '12px'
-                                  }}>
-                                    {Math.round((plazasDisponibles / plazasTotal) * 100)}%
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </td>
-                      <td style={{ padding: '10px' }}>
-                        <button 
-                          onClick={async () => {
-                            try {
-                              // Mostrar mensaje de procesamiento
-                              setInternalProcessingMessage(`Procesando solicitud ${solicitud.orden || "desconocida"}...`);
-                              
-                              // Validar solicitud de forma más robusta
-                              if (!solicitud) {
-                                throw new Error("La solicitud no existe");
-                              }
-                              
-                              // Validar y establecer valores predeterminados
-                              const ordenSolicitud = solicitud.orden || '';
-                              const centrosIds = solicitud.centrosIds || [];
-                              
-                              if (!ordenSolicitud) {
-                                console.warn("Procesando solicitud sin número de orden:", solicitud);
-                              }
-                              
-                              // Verificar si hay centros seleccionados
-                              if (!Array.isArray(centrosIds) || centrosIds.length === 0) {
-                                throw new Error("La solicitud no tiene centros seleccionados");
-                              }
-                              
-                              // Crear objeto de solicitud normalizado
-                              const solicitudNormalizada = {
-                                ...solicitud,
-                                orden: ordenSolicitud,
-                                centrosIds: centrosIds
-                              };
-                              
-                              console.log("Procesando solicitud normalizada:", solicitudNormalizada);
-                              
-                              // Importar la función procesarSolicitud directamente
-                              const { procesarSolicitud } = await import('../utils/assignmentUtils');
-                              
-                              // Procesar esta solicitud específica
-                              const resultado = await procesarSolicitud(
-                                solicitudNormalizada, 
-                                availablePlazas, 
-                                db
-                              );
-                              
-                              console.log("Resultado procesamiento individual:", resultado);
-                              
-                              // Si fue exitoso, eliminar la solicitud de la lista de pendientes
-                              if (resultado.success && solicitud.docId) {
-                                try {
-                                  setInternalProcessingMessage("Eliminando solicitud procesada...");
-                                  await deleteDoc(doc(db, "solicitudesPendientes", solicitud.docId));
-                                } catch (error) {
-                                  console.error("Error al eliminar solicitud procesada:", error);
-                                }
-                              }
-                              
-                              // Recargar datos desde Firebase
-                              setInternalProcessingMessage("Actualizando datos...");
-                              await cargarDatosDesdeFirebase();
-                              
-                              // Mostrar notificación según resultado
-                              setInternalProcessingMessage("");
-                              if (resultado.success) {
-                                showNotification(`Solicitud ${ordenSolicitud} procesada correctamente`, "success");
-                              } else if (resultado.noAsignable) {
-                                showNotification(`No se pudo asignar la solicitud: ${resultado.message}`, "warning");
-                              } else {
-                                throw new Error(resultado.message || "Error desconocido");
-                              }
-                            } catch (error) {
-                              console.error("Error al procesar solicitud:", error);
-                              setInternalProcessingMessage("");
-                              showNotification(`Error al procesar solicitud: ${error.message}`, "error");
-                            }
-                          }}
-                          style={{
-                            padding: '5px 10px',
-                            backgroundColor: '#3498db',
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '3px',
-                            cursor: 'pointer'
-                          }}
-                          disabled={loadingProcess || internalProcessingMessage}
-                        >
-                          {internalProcessingMessage && internalProcessingMessage.includes(`Procesando solicitud ${solicitud.orden || "desconocida"}`) ? (
-                            <span className="processing-btn">
-                              <span className="processing-indicator"></span>
-                              Procesando...
-                            </span>
-                          ) : 'Procesar'}
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-            </tbody>
-          </table>
-        ) : (
-          <p>No hay solicitudes pendientes.</p>
-        )}
-      </div>
-      
-      {/* Enlaces de navegación */}
-      <div style={{ textAlign: 'center', marginTop: '20px' }}>
-        <a 
-          href="/" 
-          style={{
-            padding: '10px 20px',
-            backgroundColor: '#f8f9fa',
-            color: '#333',
-            textDecoration: 'none',
-            borderRadius: '5px',
-            fontWeight: 'bold'
-          }}
-        >
-          Volver a la página principal
-        </a>
-      </div>
-      
-      {/* Información de estado */}
-      <div style={{ 
-        marginTop: '20px', 
-        padding: '15px', 
-        backgroundColor: '#f8f9fa', 
-        borderRadius: '5px', 
-        textAlign: 'center',
-        fontSize: '14px',
-        color: '#666'
-      }}>
-        <div style={{ 
-          display: 'flex', 
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: '10px'
-        }}>
-          <h3 style={{ margin: 0, fontSize: '16px', color: '#2c3e50' }}>Resumen de plazas</h3>
-          <button
-            onClick={async () => {
-              setInternalProcessingMessage("Recalculando plazas disponibles...");
-              
-              // Recalcular plazas disponibles para cada centro
-              const updatedAvailablePlazas = availablePlazas.map(centro => {
-                const plazasTotal = centro.plazasTotal || centro.plazas || 0;
-                
-                // Contar asignaciones para este centro
-                const asignacionesCentro = assignments.filter(
-                  a => a.centerId === centro.id || a.id === centro.id || a.nombreCentro === centro.nombre
-                ).length;
-                
-                return {
-                  ...centro,
-                  asignadas: asignacionesCentro,
-                  plazasOcupadas: asignacionesCentro,
-                  plazasDisponibles: Math.max(0, plazasTotal - asignacionesCentro)
-                };
-              });
-              
-              // Actualizar en la base de datos
-              try {
-                const batch = writeBatch(db);
-                
-                for (const centro of updatedAvailablePlazas) {
-                  if (centro.docId) {
-                    batch.update(doc(db, "centros", centro.docId), {
-                      asignadas: centro.asignadas,
-                      plazasOcupadas: centro.plazasOcupadas
-                    });
-                  }
-                }
-                
-                await batch.commit();
-                setInternalProcessingMessage("Actualizando datos desde Firebase...");
-                
-                // Recargar datos desde Firebase para reflejar los cambios
-                await cargarDatosDesdeFirebase();
-                
-                setInternalProcessingMessage("Plazas disponibles actualizadas correctamente");
-              } catch (error) {
-                console.error("Error al actualizar plazas en la BD:", error);
-                setInternalProcessingMessage("Error al actualizar en la BD: " + error.message);
-              }
-              
-              setTimeout(() => setInternalProcessingMessage(""), 2000);
-            }}
-            style={{
-              padding: '5px 10px',
-              backgroundColor: '#2ecc71',
-              color: 'white',
-              border: 'none',
-              borderRadius: '3px',
-              cursor: 'pointer',
-              fontSize: '13px'
-            }}
-          >
-            🔄 Recalcular plazas
-          </button>
-        </div>
-        
-        <p>
-          Plazas asignadas: {assignments.length} / 
-          Plazas totales: {availablePlazas.reduce((total, centro) => {
-            const plazasTotal = centro.plazasTotal || centro.plazas || 0;
-            return total + plazasTotal;
-          }, 0)} / 
-          Plazas disponibles: {availablePlazas.reduce((total, centro) => {
-            const plazasTotal = centro.plazasTotal || centro.plazas || 0;
-            const plazasOcupadas = centro.plazasOcupadas || centro.asignadas || 0;
-            const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
-            return total + plazasDisponibles;
-          }, 0)}
-        </p>
-        
-        {/* Añadir barra de progreso para visualizar ocupación */}
-        {(() => {
-          const totalPlazas = availablePlazas.reduce((total, centro) => {
-            const plazasTotal = centro.plazasTotal || centro.plazas || 0;
-            return total + plazasTotal;
-          }, 0);
-          
-          const plazasOcupadas = assignments.length;
-          const porcentajeOcupacion = totalPlazas > 0 ? Math.round((plazasOcupadas / totalPlazas) * 100) : 0;
-          
-          let colorBarra = '#2ecc71'; // verde
-          if (porcentajeOcupacion > 75) {
-            colorBarra = '#e74c3c'; // rojo
-          } else if (porcentajeOcupacion > 50) {
-            colorBarra = '#f39c12'; // naranja
-          } else if (porcentajeOcupacion > 25) {
-            colorBarra = '#3498db'; // azul
-          }
-          
-          return (
-            <div style={{ marginTop: '10px', marginBottom: '15px' }}>
-              <div style={{ 
-                display: 'flex', 
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '10px'
-              }}>
-                <div style={{ width: '70%', maxWidth: '500px' }}>
-                  <div style={{ 
-                    width: '100%', 
-                    height: '10px', 
-                    backgroundColor: '#ecf0f1',
-                    borderRadius: '5px',
-                    overflow: 'hidden'
-                  }}>
-                    <div style={{
-                      width: `${porcentajeOcupacion}%`,
-                      height: '100%',
-                      backgroundColor: colorBarra,
-                      transition: 'width 0.5s ease'
-                    }} />
-                  </div>
-                </div>
-                <div style={{
-                  fontWeight: 'bold',
-                  color: colorBarra
-                }}>
-                  {porcentajeOcupacion}% ocupadas
-                </div>
-              </div>
-            </div>
-          );
-        })()}
-        
-        <p>Centros disponibles: {availablePlazas.length}</p>
-        <p>Última actualización: {lastProcessed && typeof lastProcessed.getTime === 'function' ? lastProcessed.toLocaleString() : 'No disponible'}</p>
-      </div>
-
-      {/* Agregar el Footer */}
+      {/* Añadir el Footer */}
       <div style={{ marginTop: '40px' }}>
         <footer style={{
           padding: '20px 15px',
@@ -1619,6 +2347,12 @@ const Admin = ({
           </div>
         </footer>
       </div>
+
+      {/* Renderizar el modal de asignación manual */}
+      {modalAsignacionManual && solicitudSeleccionada && renderModalAsignacionManual()}
+
+      {/* Renderizar el modal de reasignación */}
+      {modalReasignacion && asignacionParaReasignar && renderModalReasignacion()}
     </div>
   );
 };

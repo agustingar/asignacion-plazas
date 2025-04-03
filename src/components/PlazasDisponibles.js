@@ -253,9 +253,9 @@ const PlazasDisponibles = ({
   // Manejar selección de centro
   const handleCentroChange = (e) => {
     try {
-      const selectedId = Number(e.target.value);
+      const selectedId = e.target.value;
       
-      if (!selectedId || isNaN(selectedId)) {
+      if (!selectedId) {
         console.error("ID de centro inválido:", e.target.value);
         return;
       }

@@ -409,16 +409,16 @@ function App() {
         } else {
           // Añadir nuevo centro
           nuevoscentros.push({
-          id: nextId++,
-          asi: asi,
-          departamento: departamento,
-          codigo: codigo,
-          centro: centro,
-          localidad: municipio,
-          municipio: municipio,
-          plazas: plazas,
-          asignadas: 0
-        });
+            id: String(nextId++), // Convertir a string para mantener consistencia
+            asi: asi,
+            departamento: departamento,
+            codigo: codigo,
+            centro: centro,
+            localidad: municipio,
+            municipio: municipio,
+            plazas: plazas,
+            asignadas: 0
+          });
         }
         
         if ((nuevoscentros.length + centrosActualizados.length) % 100 === 0) {
@@ -594,7 +594,7 @@ function App() {
         
         // Añadir a la lista completa con metadatos para filtrado posterior
         todosCentros.push({
-          id: doc.id,
+          id: doc.id, // Mantener como string, no convertir a número
           docId: doc.id, // Mantener referencia al documento original
           nombre,
           nombreNormalizado,
@@ -1235,7 +1235,7 @@ function App() {
           
           // Añadir a la lista
           centros.push({
-            id: nextId++,
+            id: String(nextId++), // Convertir a string para mantener consistencia
             asi: asi,
             departamento: departamento,
             codigo: codigo,
@@ -1549,8 +1549,9 @@ function App() {
         
         // Procesar inmediatamente todas las solicitudes pendientes
         try {
-          console.log("Procesando todas las solicitudes pendientes al inicio...");
-          await procesarTodasLasSolicitudes();
+          console.log("AVISO: El procesamiento automático de solicitudes está deshabilitado.");
+          console.log("Las asignaciones ahora son siempre manuales y deben realizarse desde el panel de administración.");
+          // await procesarTodasLasSolicitudes(); <- DESHABILITADO - Asignaciones solo manuales
           
           // Verificar si hay solicitudes pendientes después del procesamiento
           const solicitudesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
@@ -1559,8 +1560,8 @@ function App() {
           setMaintenanceProgress(100);
           
           if (cantidadSolicitudesPendientes > 0) {
-            setMaintenanceMessage(`Hay ${cantidadSolicitudesPendientes} solicitudes pendientes por procesar.`);
-            console.log(`Quedan ${cantidadSolicitudesPendientes} solicitudes pendientes después del procesamiento inicial`);
+            setMaintenanceMessage(`Hay ${cantidadSolicitudesPendientes} solicitudes pendientes por procesar manualmente desde el panel de administración.`);
+            console.log(`Hay ${cantidadSolicitudesPendientes} solicitudes pendientes que deben procesarse manualmente desde el panel de administración.`);
             // Mantener el modo mantenimiento activo
           } else {
             setMaintenanceMessage("¡Sistema iniciado correctamente!");
@@ -2760,8 +2761,9 @@ function App() {
         
         // Procesar inmediatamente todas las solicitudes pendientes
         try {
-          console.log("Procesando todas las solicitudes pendientes al inicio...");
-          await procesarTodasLasSolicitudes();
+          console.log("AVISO: El procesamiento automático de solicitudes está deshabilitado.");
+          console.log("Las asignaciones ahora son siempre manuales y deben realizarse desde el panel de administración.");
+          // await procesarTodasLasSolicitudes(); <- DESHABILITADO - Asignaciones solo manuales
           
           // Verificar si hay solicitudes pendientes después del procesamiento
           const solicitudesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
@@ -2770,8 +2772,8 @@ function App() {
           setMaintenanceProgress(100);
           
           if (cantidadSolicitudesPendientes > 0) {
-            setMaintenanceMessage(`Hay ${cantidadSolicitudesPendientes} solicitudes pendientes por procesar.`);
-            console.log(`Quedan ${cantidadSolicitudesPendientes} solicitudes pendientes después del procesamiento inicial`);
+            setMaintenanceMessage(`Hay ${cantidadSolicitudesPendientes} solicitudes pendientes por procesar manualmente desde el panel de administración.`);
+            console.log(`Hay ${cantidadSolicitudesPendientes} solicitudes pendientes que deben procesarse manualmente desde el panel de administración.`);
             // Mantener el modo mantenimiento activo
           } else {
             setMaintenanceMessage("¡Sistema iniciado correctamente!");
@@ -2892,8 +2894,29 @@ function App() {
         setMaintenanceMessage('Comprobando excesos de asignaciones en centros...');
         await new Promise(resolve => setTimeout(resolve, 500));
         
-        // Encontrar centros con exceso de asignaciones
-        const centrosConExceso = availablePlazas.filter(centro => centro.asignadas > centro.plazas);
+        // Filtrar asignaciones excluyendo las no asignables
+        const asignacionesValidas = assignments.filter(asignacion => 
+          asignacion && 
+          !asignacion.noAsignable && 
+          asignacion.estado !== "NO_ASIGNABLE" && 
+          asignacion.estado !== "REASIGNACION_NO_VIABLE"
+        );
+        
+        // Calcular asignaciones reales por centro
+        const contadorAsignacionesPorCentro = {};
+        
+        // Contar asignaciones válidas para cada centro
+        asignacionesValidas.forEach(asignacion => {
+          const centroId = asignacion.centerId || asignacion.id;
+          if (centroId) {
+            contadorAsignacionesPorCentro[centroId] = (contadorAsignacionesPorCentro[centroId] || 0) + 1;
+          }
+        });
+        
+        // Verificar centros con exceso basado en conteos reales
+        const centrosConExceso = availablePlazas.filter(centro => 
+          (contadorAsignacionesPorCentro[centro.id] || 0) > centro.plazas
+        );
         
         if (centrosConExceso.length === 0) {
           setMaintenanceProgress(100);
@@ -3117,8 +3140,10 @@ function App() {
       setShowPasswordModal(false);
       setAdminPassword('');
       setPasswordError(false);
-      // Ejecutar verificación manual (no respeta asignaciones existentes)
-      procesarTodasLasSolicitudes({ respetarAsignacionesExistentes: false });
+      // Ya no ejecutamos procesamiento automático
+      showNotification("Acceso de administrador verificado. Las asignaciones ahora son manuales desde el panel de administración.", "info");
+      // Redirigir al panel de admin
+      window.location.href = "/admin";
     } else {
       setPasswordError(true);
       setTimeout(() => setPasswordError(false), 3000);
@@ -3371,8 +3396,14 @@ function App() {
 
   // Configurar un intervalo para procesar solicitudes cada minuto
   useEffect(() => {
-    console.log("Configurando verificación de solicitudes cada minuto...");
+    console.log("Las asignaciones automáticas están deshabilitadas. Solo se pueden hacer manualmente desde el panel de admin.");
     
+    // Comentado para deshabilitar el procesamiento automático
+    // La siguiente línea muestra un mensaje explicando que las asignaciones son manuales ahora
+    showNotification("Las asignaciones ahora son manuales y solo se pueden realizar desde el panel de administración", "info");
+    
+    // Comentado para deshabilitar el procesamiento automático
+    /*
     // Ejecutar la primera verificación tras 30 segundos (dar tiempo a cargar datos)
     const timeoutId = setTimeout(() => {
       procesarSolicitudesPorMinuto();
@@ -3388,6 +3419,10 @@ function App() {
       clearTimeout(timeoutId);
       clearInterval(intervalId);
     };
+    */
+    
+    // No hay nada que limpiar
+    return () => {};
   }, []); // Sin dependencias para ejecutar solo una vez al montar
 
   // Renderizado condicional basado en la ruta

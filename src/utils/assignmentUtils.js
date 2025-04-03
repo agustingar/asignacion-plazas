@@ -122,12 +122,29 @@ export const procesarSolicitudes = async (
           const nuevaAsignacion = {
             order: operacion.orden,
             id: centro.id,
-            localidad: centro.localidad || operacion.localidad,
-            centro: centro.centro || operacion.centro,
-            municipio: centro.municipio || operacion.municipio,
-            timestamp: Date.now(),
-            mantenida: true // Indica que se mantuvo en el mismo centro
+            centerId: centro.id,
+            localidad: centro.localidad || "",
+            centro: centro.centro || centro.nombre || "Centro sin nombre",
+            municipio: centro.municipio || "",
+            timestamp: Date.now()
           };
+          
+          // Verificar que no haya campos undefined
+          Object.keys(nuevaAsignacion).forEach(key => {
+            if (nuevaAsignacion[key] === undefined) {
+              console.warn(`Campo ${key} es undefined en asignación priorizada. Estableciendo valor predeterminado.`);
+              
+              if (key.includes('Id') || key === 'order') {
+                nuevaAsignacion[key] = "0";
+              } else if (key === 'timestamp') {
+                nuevaAsignacion[key] = Date.now();
+              } else if (typeof nuevaAsignacion[key] === 'boolean') {
+                nuevaAsignacion[key] = false;
+              } else {
+                nuevaAsignacion[key] = "";
+              }
+            }
+          });
           
           // Guardar en Firestore como parte de la reasignación global
           const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
@@ -169,11 +186,28 @@ export const procesarSolicitudes = async (
               const nuevaAsignacion = {
               order: operacion.orden,
               id: centro.id,
-                localidad: centro.localidad,
-                centro: centro.centro,
-                municipio: centro.municipio,
-                timestamp: Date.now()
+              centerId: centro.id, // Asegurar que siempre exista centerId
+              localidad: centro.localidad || "",
+              centro: centro.centro || centro.nombre || "Centro sin nombre",
+              municipio: centro.municipio || "",
+              timestamp: Date.now()
               };
+
+              // Verificar que no haya campos undefined antes de guardar
+              Object.keys(nuevaAsignacion).forEach(key => {
+                if (nuevaAsignacion[key] === undefined) {
+                  console.warn(`Campo ${key} es undefined en la asignación. Se establecerá valor predeterminado.`);
+                  
+                  // Establecer valores predeterminados según el tipo de campo
+                  if (key.includes('Id') || key === 'order') {
+                    nuevaAsignacion[key] = "0"; // ID o número predeterminado como string
+                  } else if (key === 'timestamp') {
+                    nuevaAsignacion[key] = Date.now(); // Timestamp actual
+                  } else {
+                    nuevaAsignacion[key] = ""; // String vacío para otros campos
+                  }
+                }
+              });
 
               const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
             await setDoc(nuevaAsignacionRef, nuevaAsignacion);
@@ -242,12 +276,30 @@ export const procesarSolicitudes = async (
                   const nuevaAsignacion = {
                     order: operacion.orden,
                     id: centro.id,
-                    localidad: centro.localidad,
-                    centro: centro.centro,
-                    municipio: centro.municipio,
+                    centerId: centro.id,
+                    localidad: centro.localidad || "",
+                    centro: centro.centro || centro.nombre || "Centro sin nombre",
+                    municipio: centro.municipio || "",
                     timestamp: Date.now(),
                     priorizado: true // Indica que se asignó por prioridad
                   };
+                  
+                  // Verificar que no haya campos undefined
+                  Object.keys(nuevaAsignacion).forEach(key => {
+                    if (nuevaAsignacion[key] === undefined) {
+                      console.warn(`Campo ${key} es undefined en asignación priorizada. Estableciendo valor predeterminado.`);
+                      
+                      if (key.includes('Id') || key === 'order') {
+                        nuevaAsignacion[key] = "0";
+                      } else if (key === 'timestamp') {
+                        nuevaAsignacion[key] = Date.now();
+                      } else if (typeof nuevaAsignacion[key] === 'boolean') {
+                        nuevaAsignacion[key] = false;
+                      } else {
+                        nuevaAsignacion[key] = "";
+                      }
+                    }
+                  });
                   
                   const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
                   await setDoc(nuevaAsignacionRef, nuevaAsignacion);
@@ -261,13 +313,31 @@ export const procesarSolicitudes = async (
                   const asignacionReasignada = {
                     order: ordenMayorAsignado,
                     id: centroAlternativo.id,
-                    localidad: centroAlternativo.localidad,
-                    centro: centroAlternativo.centro,
-                    municipio: centroAlternativo.municipio,
+                    centerId: centroAlternativo.id,
+                    localidad: centroAlternativo.localidad || "",
+                    centro: centroAlternativo.centro || centroAlternativo.nombre || "Centro sin nombre",
+                    municipio: centroAlternativo.municipio || "",
                     timestamp: Date.now(),
                     desplazada: true, // Indica que fue desplazada por una de mayor prioridad
-                    centroAnterior: centro.centro
+                    centroAnterior: centro.centro || centro.nombre || "Centro anterior"
                   };
+                  
+                  // Verificar que no haya campos undefined en la reasignación
+                  Object.keys(asignacionReasignada).forEach(key => {
+                    if (asignacionReasignada[key] === undefined) {
+                      console.warn(`Campo ${key} es undefined en asignación reasignada. Estableciendo valor predeterminado.`);
+                      
+                      if (key.includes('Id') || key === 'order') {
+                        asignacionReasignada[key] = "0";
+                      } else if (key === 'timestamp') {
+                        asignacionReasignada[key] = Date.now();
+                      } else if (typeof asignacionReasignada[key] === 'boolean') {
+                        asignacionReasignada[key] = false;
+                      } else {
+                        asignacionReasignada[key] = "";
+                      }
+                    }
+                  });
                   
                   const reasignacionRef = doc(collection(db, "asignaciones"));
                   await setDoc(reasignacionRef, asignacionReasignada);
@@ -360,6 +430,13 @@ export const procesarSolicitudes = async (
         if (operacion.centroAnterior !== undefined) historialData.centroAnterior = operacion.centroAnterior;
         if (operacion.mensaje !== undefined) historialData.mensaje = operacion.mensaje;
         
+        // Buscar la solicitud original para guardar las opciones de centros
+        const solicitudOriginal = solicitudes.find(s => s.orden === operacion.orden);
+        if (solicitudOriginal && (solicitudOriginal.centrosIds || solicitudOriginal.centrosSeleccionados)) {
+          // Guardar todas las opciones de centros para futuras reasignaciones
+          historialData.centrosSeleccionados = solicitudOriginal.centrosIds || solicitudOriginal.centrosSeleccionados;
+        }
+        
         // Guardar en Firestore asegurando que no hay campos undefined
         await setDoc(historialRef, historialData);
           } catch (error) {
@@ -451,111 +528,156 @@ export const borrarAsignacion = async (asignacion, docId, availablePlazas) => {
 };
 
 /**
- * Procesa una solicitud individual y realiza la asignación si es posible
- * @param {Object} solicitud - Objeto con los datos de la solicitud
- * @param {Object} availablePlazas - Objeto con las plazas disponibles por centro
- * @param {Object} db - Referencia a la base de datos Firestore
- * @returns {Promise<Object>} - Promesa que se resuelve con el resultado de la operación
+ * Procesa una solicitud individual y asigna plaza si es posible.
+ * @param {Object} solicitud - Solicitud a procesar
+ * @param {Array} availablePlazas - Lista de centros disponibles
+ * @param {Object} db - Referencia a la base de datos
+ * @returns {Promise<Object>} - Resultado del procesamiento
  */
 export const procesarSolicitud = async (solicitud, availablePlazas, db) => {
+  if (!solicitud || !solicitud.orden) {
+    return { 
+      success: false,
+      message: "Solicitud inválida: falta número de orden" 
+    };
+  }
+
+  if (!solicitud.centrosIds || !Array.isArray(solicitud.centrosIds) || solicitud.centrosIds.length === 0) {
+    return { 
+      success: false,
+      message: "Solicitud inválida: no hay centros seleccionados" 
+    };
+  }
+
+  console.log(`Procesando solicitud individual orden ${solicitud.orden}`);
+
   try {
-    console.log("Procesando solicitud individual:", solicitud);
-    
-    // Verificar datos básicos
-    if (!solicitud || !solicitud.centrosIds || !Array.isArray(solicitud.centrosIds)) {
-      return { success: false, message: "La solicitud no tiene formato correcto" };
-    }
-    
-    // Si no hay centros seleccionados
-    if (solicitud.centrosIds.length === 0) {
-      return { success: false, message: "La solicitud no tiene centros seleccionados", noAsignable: true };
-    }
-    
-    // Verificar disponibilidad en los centros seleccionados
-    let centroAsignado = null;
-    let centroAsignadoId = null;
-    
-    // Buscar un centro con plazas disponibles según el orden de preferencia
-    for (const centroId of solicitud.centrosIds) {
-      const centro = availablePlazas[centroId];
-      
-      if (!centro) {
-        console.log(`Centro no encontrado: ${centroId}`);
-        continue;
-      }
-      
-      console.log(`Verificando centro ${centro.nombre}: ${centro.plazasDisponibles} plazas disponibles`);
-      
-      // Verificar si hay plazas disponibles
-      if (centro.plazasDisponibles > 0) {
-        centroAsignado = centro;
-        centroAsignadoId = centroId;
-        break;
-      }
-    }
-    
-    // Si no hay plazas disponibles en ningún centro
-    if (!centroAsignado) {
+    // Verificar si ya existe una asignación para este orden
+    const asignacionesRef = collection(db, "asignaciones");
+    const asignacionExistente = await getDocs(
+      query(asignacionesRef, where("order", "==", solicitud.orden))
+    );
+
+    if (!asignacionExistente.empty) {
+      console.log(`Ya existe una asignación para la orden ${solicitud.orden}`);
+      // Si ya existe, no hacer nada para evitar duplicados
       return { 
-        success: false, 
-        message: "No hay plazas disponibles en los centros seleccionados", 
-        noAsignable: true 
+        success: false,
+        noAsignable: true,
+        message: `Ya existe una asignación para la orden ${solicitud.orden}` 
       };
     }
-    
-    // Crear la asignación en Firestore
-    const batch = writeBatch(db);
-    
-    // Asegurar que el centro tenga un nombre válido para mostrar
-    const nombreCentroMostrar = centroAsignado.nombre || 
-                               centroAsignado.centro || 
-                               centroAsignado.nombreCentro || 
-                               `Centro ${centroAsignadoId}`;
-    
-    // Crear nuevo documento de asignación
+
+    // Buscar centro disponible entre los seleccionados, en orden
+    let centroAsignado = null;
+    let centroInfo = null;
+
+    for (const centroId of solicitud.centrosIds) {
+      // Validar cada ID de centro
+      if (!centroId) continue;
+
+      // Buscar en la lista de centros disponibles
+      const centro = availablePlazas.find(c => c.id === centroId);
+      
+      if (!centro) {
+        console.warn(`Centro no encontrado para ID: ${centroId}`);
+        continue;
+      }
+
+      // Verificar si hay plazas disponibles en el centro
+      const plazasTotal = centro.plazasTotal || centro.plazas || 0;
+      const plazasOcupadas = centro.plazasOcupadas || centro.asignadas || 0;
+      const plazasDisponibles = plazasTotal - plazasOcupadas;
+
+      if (plazasDisponibles > 0) {
+        centroAsignado = centroId;
+        centroInfo = centro;
+        break; // Salir del bucle cuando encontramos un centro disponible
+      }
+    }
+
+    if (!centroAsignado) {
+      console.log(`No se encontró centro disponible para la orden ${solicitud.orden}`);
+      
+      // Guardar en historial como NO_ASIGNABLE
+      const historialRef = doc(collection(db, "historialSolicitudes"));
+      await setDoc(historialRef, {
+        orden: solicitud.orden,
+        estado: "NO_ASIGNABLE",
+        mensaje: "No hay plazas disponibles en ninguno de los centros solicitados",
+        fechaHistorico: new Date().toISOString(),
+        timestamp: Date.now(),
+        // Guardar todas las opciones de centros seleccionados
+        centrosSeleccionados: solicitud.centrosIds
+      });
+      
+      return { 
+        success: false,
+        noAsignable: true,
+        message: "No hay plazas disponibles en ninguno de los centros seleccionados" 
+      };
+    }
+
+    console.log(`Asignando orden ${solicitud.orden} al centro ${centroInfo.centro || centroInfo.nombre || centroAsignado}`);
+
+    // Crear la asignación
+    const asignacionRef = doc(collection(db, "asignaciones"));
     const nuevaAsignacion = {
-      numeroOrden: solicitud.orden || 0,
-      centerId: centroAsignadoId,
-      nombreCentro: nombreCentroMostrar,
-      timestamp: Date.now(),
-      fechaAsignacion: new Date().toISOString(),
-      municipio: centroAsignado.municipio || "",
-      localidad: centroAsignado.localidad || "",
-      historial: [
-        {
-          accion: "asignación inicial",
-          timestamp: Date.now(),
-          detalles: `Asignado a ${nombreCentroMostrar}`
-        }
-      ]
+      order: solicitud.orden,
+      centerId: centroAsignado,
+      centro: centroInfo.centro || centroInfo.nombre || "Centro asignado",
+      localidad: centroInfo.localidad || "",
+      municipio: centroInfo.municipio || "",
+      timestamp: Date.now()
     };
     
-    // Guardar en colección de asignaciones
-    const nuevaAsignacionRef = doc(collection(db, "asignaciones"));
-    batch.set(nuevaAsignacionRef, nuevaAsignacion);
-    
-    // Actualizar contador de plazas ocupadas en el centro
-    const centroRef = doc(db, "centros", centroAsignadoId);
-    batch.update(centroRef, {
-      plazasOcupadas: (centroAsignado.plazasOcupadas || 0) + 1
+    // Verificar que no haya campos undefined
+    Object.keys(nuevaAsignacion).forEach(key => {
+      if (nuevaAsignacion[key] === undefined) {
+        console.warn(`Campo ${key} es undefined en asignación procesada. Estableciendo valor predeterminado.`);
+        
+        if (key.includes('Id') || key === 'order') {
+          nuevaAsignacion[key] = "0";
+        } else if (key === 'timestamp') {
+          nuevaAsignacion[key] = Date.now();
+        } else {
+          nuevaAsignacion[key] = "";
+        }
+      }
     });
     
-    // Ejecutar la transacción
-    await batch.commit();
-    
-    console.log(`Asignación creada exitosamente para solicitud ${solicitud.orden} en centro ${centroAsignado.nombre}`);
-    
+    await setDoc(asignacionRef, nuevaAsignacion);
+
+    // Aumentar contador de asignaciones en el centro
+    if (centroInfo.docId) {
+      const nuevasAsignaciones = (centroInfo.asignadas || 0) + 1;
+      await updateDoc(doc(db, "centros", centroInfo.docId), {
+        asignadas: nuevasAsignaciones,
+        plazasOcupadas: nuevasAsignaciones
+      });
+    }
+
+    // Guardar en historial
+    const historialRef = doc(collection(db, "historialSolicitudes"));
+    await setDoc(historialRef, {
+      orden: solicitud.orden,
+      centroId: centroAsignado,
+      estado: "ASIGNADA",
+      mensaje: `Asignada a ${centroInfo.centro || centroInfo.nombre || "centro seleccionado"}`,
+      fechaHistorico: new Date().toISOString(),
+      timestamp: Date.now(),
+      // Guardar todas las opciones de centros para futuras reasignaciones
+      centrosSeleccionados: solicitud.centrosIds
+    });
+
     return { 
       success: true,
-      centroAsignado: centroAsignado,
-      centroId: centroAsignadoId,
-      asignacionId: nuevaAsignacionRef.id
+      message: `Solicitud procesada correctamente. Asignada al centro: ${centroInfo.centro || centroInfo.nombre || centroAsignado}` 
     };
-    
   } catch (error) {
-    console.error("Error al procesar solicitud individual:", error);
+    console.error(`Error al procesar solicitud ${solicitud.orden}:`, error);
     return { 
-      success: false, 
+      success: false,
       message: `Error al procesar: ${error.message}` 
     };
   }
@@ -666,7 +788,38 @@ export const verificarYCorregirAsignaciones = async (centros, asignaciones, db) 
       return { success: true, message: "No hay centros válidos para verificar", corregidos: 0 };
     }
 
-    const centrosConExceso = centrosValidos.filter(centro => centro.asignadas > centro.plazas);
+    // Filtrar las asignaciones para excluir las no asignables
+    const asignacionesValidas = asignaciones.filter(asignacion => 
+      asignacion && 
+      !asignacion.noAsignable && 
+      asignacion.estado !== "NO_ASIGNABLE" && 
+      asignacion.estado !== "REASIGNACION_NO_VIABLE"
+    );
+    
+    // Recalcular el número de asignaciones por centro
+    const contadorPorCentro = {};
+    
+    // Inicializar contador para cada centro
+    centrosValidos.forEach(centro => {
+      contadorPorCentro[centro.id] = 0;
+    });
+    
+    // Contar asignaciones válidas por centro
+    asignacionesValidas.forEach(asignacion => {
+      const centroId = asignacion.centerId || asignacion.id;
+      if (centroId && contadorPorCentro[centroId] !== undefined) {
+        contadorPorCentro[centroId]++;
+      }
+    });
+    
+    // Actualizar los contadores en los centros
+    centrosValidos.forEach(centro => {
+      centro.asignacionesReales = contadorPorCentro[centro.id] || 0;
+    });
+
+    // Verificar excesos basados en conteo real
+    const centrosConExceso = centrosValidos.filter(centro => centro.asignacionesReales > centro.plazas);
+    
     if (centrosConExceso.length === 0) {
       console.log("No se encontraron centros con exceso de asignaciones");
       return { success: true, message: "No hay centros con exceso", corregidos: 0 };
@@ -675,7 +828,7 @@ export const verificarYCorregirAsignaciones = async (centros, asignaciones, db) 
 
     // Obtener todos los centros con plazas disponibles
     const centrosConDisponibilidad = centrosValidos.filter(centro => 
-      centro.asignadas < centro.plazas
+      centro.asignacionesReales < centro.plazas
     );
 
     let asignacionesCorregidas = 0;
@@ -687,17 +840,20 @@ export const verificarYCorregirAsignaciones = async (centros, asignaciones, db) 
         console.warn("Centro inválido:", centro);
         continue;
       }
-      console.log(`Centro ${centro.centro}: ${centro.asignadas} asignadas, ${centro.plazas} plazas`);
-      const asignacionesCentro = asignaciones.filter(a => a && a.id === centro.id);
+      console.log(`Centro ${centro.centro}: ${centro.asignacionesReales} asignaciones reales, ${centro.plazas} plazas`);
+      
+      // Filtrar solo asignaciones válidas para este centro
+      const asignacionesCentro = asignacionesValidas.filter(a => a && (a.centerId === centro.id || a.id === centro.id));
+      
       if (!asignacionesCentro.length) {
-        console.warn(`No se encontraron asignaciones para ${centro.centro}`);
+        console.warn(`No se encontraron asignaciones válidas para ${centro.centro}`);
         continue;
       }
       
       // Ordenar asignaciones por número de orden (prioridad)
       asignacionesCentro.sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0));
       
-      const exceso = centro.asignadas - centro.plazas;
+      const exceso = centro.asignacionesReales - centro.plazas;
       if (exceso <= 0) continue;
       
       // Tomar las asignaciones que exceden según orden de prioridad (las de mayor orden = menor prioridad)

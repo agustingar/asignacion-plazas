@@ -79,8 +79,8 @@ const SolicitudesPendientes = ({ solicitudes = [], assignments = [], availablePl
       
       // Convertir a número si es el campo 'orden'
       if (sortConfig.key === 'orden') {
-        aValue = Number(aValue) || 0;
-        bValue = Number(bValue) || 0;
+        aValue = Number(aValue || a.numeroOrden) || 0;
+        bValue = Number(bValue || b.numeroOrden) || 0;
       }
       
       if (aValue < bValue) {
@@ -103,7 +103,8 @@ const SolicitudesPendientes = ({ solicitudes = [], assignments = [], availablePl
       if (!solicitud) return false;
       
       // Validar que tenga número de orden
-      if (solicitud.orden === undefined || solicitud.orden === null) {
+      if ((solicitud.orden === undefined || solicitud.orden === null) && 
+          (solicitud.numeroOrden === undefined || solicitud.numeroOrden === null)) {
         console.warn('Solicitud sin número de orden:', solicitud);
         return false;
       }
@@ -120,7 +121,7 @@ const SolicitudesPendientes = ({ solicitudes = [], assignments = [], availablePl
     // Aplicar filtro de búsqueda
     return solicitudesValidas.filter(solicitud => {
       const searchFields = [
-        solicitud.orden?.toString(),
+        (solicitud.orden || solicitud.numeroOrden)?.toString(),
         ...(solicitud.centrosIds || solicitud.centrosSeleccionados || []).map(centroId => {
           const centro = availablePlazas.find(p => p.id === centroId);
           return centro ? [centro.nombre || centro.nombreCentro || centro.centro, centro.localidad, centro.municipio] : [];
@@ -317,10 +318,10 @@ const SolicitudesPendientes = ({ solicitudes = [], assignments = [], availablePl
               const fechaFormateada = `${fecha.toLocaleDateString()} ${fecha.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
               
               // Verificar si tiene asignación
-              const tieneAsignacion = assignments.some(a => a.order === solicitud.orden);
+              const tieneAsignacion = assignments.some(a => a.order === (solicitud.orden || solicitud.numeroOrden));
               
               // Obtener el centro asignado si existe
-              const asignacion = assignments.find(a => a.order === solicitud.orden);
+              const asignacion = assignments.find(a => a.order === (solicitud.orden || solicitud.numeroOrden));
               
               // Color de fondo según tiene asignación y alternancia de filas
               const backgroundColor = tieneAsignacion 
@@ -337,10 +338,10 @@ const SolicitudesPendientes = ({ solicitudes = [], assignments = [], availablePl
                     border: '1px solid #ddd', 
                     padding: '12px 15px', 
                     fontWeight: 'bold',
-                    backgroundColor: solicitud.orden <= 50 ? '#fff3cd' : 'inherit' // Destacar órdenes bajos
+                    backgroundColor: (solicitud.orden || solicitud.numeroOrden) <= 50 ? '#fff3cd' : 'inherit' // Destacar órdenes bajos
                   }}>
-                    {solicitud.orden}
-                    {solicitud.orden <= 50 && (
+                    {solicitud.orden || solicitud.numeroOrden}
+                    {(solicitud.orden || solicitud.numeroOrden) <= 50 && (
                       <span style={{ 
                         display: 'inline-block', 
                         marginLeft: '8px', 
