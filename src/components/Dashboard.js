@@ -84,10 +84,6 @@ const Dashboard = ({ assignments }) => {
       flexWrap: 'wrap'
     },
     statCard: {
-<<<<<<< Updated upstream
-      backgroundColor: 'white',
-      padding: '12px 18px',
-=======
       backgroundColor: '#ffffff',
       borderRadius: '6px',
       padding: '15px',
@@ -128,7 +124,6 @@ const Dashboard = ({ assignments }) => {
     tableContainer: {
       overflowX: 'auto',
       backgroundColor: '#ffffff',
->>>>>>> Stashed changes
       borderRadius: '8px',
       boxShadow: '0 2px 6px rgba(0,0,0,0.05)',
       border: '1px solid #eaeaea',
@@ -150,15 +145,6 @@ const Dashboard = ({ assignments }) => {
     },
     statContent: {
       flex: 1
-    },
-    statValue: {
-      fontSize: '18px',
-      fontWeight: 'bold',
-      color: '#2c3e50'
-    },
-    statLabel: {
-      fontSize: '12px',
-      color: '#95a5a6'
     },
     infoBox: {
       padding: '12px 15px',
@@ -210,12 +196,6 @@ const Dashboard = ({ assignments }) => {
       fontSize: '14px',
       color: '#666',
       marginBottom: '15px'
-    },
-    tableContainer: {
-      overflowX: 'auto',
-      paddingBottom: '5px',
-      border: '1px solid #eaeaea',
-      borderRadius: '8px'
     },
     table: {
       width: '100%',
