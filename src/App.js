@@ -99,6 +99,10 @@ function App() {
   // Estado para manejar el proceso de carga
   const [isLoading, setIsLoading] = useState(false);
 
+  // Variable para almacenar el timestamp de la última actualización
+  let ultimaActualizacionCentros = 0;
+  const INTERVALO_ACTUALIZACION = 2 * 60 * 1000; // 2 minutos en milisegundos
+
   // Función para mostrar un popup con mensaje
   const showNotification = (message, type = 'success') => {
     setPopupMessage(message);
@@ -955,72 +959,19 @@ function App() {
   const setupFirebaseListeners = () => {
     // Listener para los centros
     const unsubscribeCentros = onSnapshot(collection(db, "centros"), (snapshot) => {
-      // Reproducir la misma lógica de filtrado que en cargarDatosDesdeFirebase
-      const idsUnicos = new Set();
-      const nombresUnicos = new Map();
-      const todosCentros = [];
-      
-      // Primera pasada: recopilar todos los centros
-      snapshot.forEach((doc) => {
-        const data = doc.data();
-        
-        // Normalizar el nombre para detectar duplicados
-        const nombre = data.nombre || data.centro || "Centro sin nombre";
-        const nombreNormalizado = nombre.toLowerCase()
-          .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // Eliminar acentos
-          .replace(/\s+/g, ' ').trim(); // Normalizar espacios
-        
-        // Añadir a la lista completa
-        todosCentros.push({
-          ...data,
-          docId: doc.id,
-          id: doc.id,
-          nombre: nombre,
-          nombreNormalizado: nombreNormalizado,
-          esDuplicado: false,
-          duplicadoDe: null
-        });
-      });
-      
-      // Segunda pasada: marcar duplicados
-      for (let i = 0; i < todosCentros.length; i++) {
-        const centro = todosCentros[i];
-        
-        // Si ya está marcado como duplicado, continuar
-        if (centro.esDuplicado) continue;
-        
-        // Verificar si el ID ya fue procesado
-        if (idsUnicos.has(centro.id)) {
-          centro.esDuplicado = true;
-          continue;
-        }
-        
-        // Verificar si el nombre normalizado ya fue procesado
-        if (nombresUnicos.has(centro.nombreNormalizado)) {
-          centro.esDuplicado = true;
-          centro.duplicadoDe = nombresUnicos.get(centro.nombreNormalizado);
-          continue;
-        }
-        
-        // Si llegamos aquí, este centro es único hasta ahora
-        idsUnicos.add(centro.id);
-        nombresUnicos.set(centro.nombreNormalizado, centro.id);
-      }
-      
-      // Filtrar duplicados
-      let centrosFiltrados = todosCentros.filter(centro => !centro.esDuplicado);
-      
-      // Limitar a 366 centros si hay más
-      if (centrosFiltrados.length > 366) {
-        // Ordenar por número de plazas (mayor a menor)
-        centrosFiltrados = [...centrosFiltrados].sort((a, b) => 
-          (b.plazas || b.plazasTotal || 0) - (a.plazas || a.plazasTotal || 0)
-        ).slice(0, 366);
-      }
-      
-      if (centrosFiltrados.length > 0) {
+      const ahora = Date.now();
+      // Solo actualizar si han pasado 2 minutos desde la última actualización
+      if (ahora - ultimaActualizacionCentros >= INTERVALO_ACTUALIZACION) {
+        const centrosFiltrados = snapshot.docs
+          .map(doc => ({
+            ...doc.data(),
+            docId: doc.id
+          }))
+          .filter(centro => centro.id && centro.centro);
+
         setAvailablePlazas(centrosFiltrados);
         console.log(`Listener: Actualizados ${centrosFiltrados.length} centros filtrados`);
+        ultimaActualizacionCentros = ahora;
       }
     });
     
@@ -3400,6 +3351,75 @@ function App() {
     return () => {};
   }, []); // Sin dependencias para ejecutar solo una vez al montar
 
+  // Función para eliminar una entrada del historial de solicitudes
+  const eliminarHistorialSolicitud = async (historialId) => {
+    if (!historialId) return;
+    
+    if (window.confirm("¿Está seguro de que desea eliminar esta entrada del historial? Esta acción no se puede deshacer.")) {
+      try {
+        setIsProcessing(true);
+        setProcessingMessage("Eliminando entrada del historial...");
+        
+        await deleteDoc(doc(db, "historialSolicitudes", historialId));
+        
+        // Añadir a elementos borrados para evitar recreación
+        await addDoc(collection(db, "elementosBorrados"), {
+          tipo: "historial",
+          itemId: historialId,
+          eliminadaEn: serverTimestamp(),
+          eliminadaPor: "usuario"
+        });
+        
+        showNotification("Entrada del historial eliminada correctamente", "success");
+        await cargarDatosDesdeFirebase();
+      } catch (error) {
+        console.error("Error al eliminar entrada del historial:", error);
+        showNotification(`Error al eliminar: ${error.message}`, "error");
+      } finally {
+        setIsProcessing(false);
+        setProcessingMessage("");
+      }
+    }
+  };
+
+  // Función para actualizar manualmente los datos
+  const actualizarDatosManualmente = async () => {
+    try {
+      setIsLoading(true);
+      showNotification("Actualizando datos...", "info");
+
+      // Obtener datos actualizados de centros
+      const centrosSnapshot = await getDocs(collection(db, "centros"));
+      const centrosFiltrados = centrosSnapshot.docs
+        .map(doc => ({
+          ...doc.data(),
+          docId: doc.id
+        }))
+        .filter(centro => centro.id && centro.centro);
+
+      setAvailablePlazas(centrosFiltrados);
+      
+      // Actualizar el timestamp de la última actualización
+      ultimaActualizacionCentros = Date.now();
+      
+      // Obtener datos actualizados de asignaciones
+      const asignacionesSnapshot = await getDocs(collection(db, "asignaciones"));
+      const asignacionesActualizadas = asignacionesSnapshot.docs.map(doc => ({
+        ...doc.data(),
+        docId: doc.id
+      }));
+      
+      setAssignments(asignacionesActualizadas);
+      
+      showNotification("Datos actualizados correctamente", "success");
+    } catch (error) {
+      console.error("Error al actualizar datos:", error);
+      showNotification("Error al actualizar los datos", "error");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // Renderizado condicional basado en la ruta
   if (isAdminView) {
     return (
@@ -3418,6 +3438,7 @@ function App() {
         showNotification={showNotification}
         lastProcessed={lastProcessed}
         procesarSolicitudes={procesarSolicitudes}
+        eliminarHistorialSolicitud={eliminarHistorialSolicitud}
       />
     );
   }
@@ -3693,7 +3714,7 @@ function App() {
           <h3 style={styles.sectionTitle}>Historial de Asignaciones</h3>
           <Dashboard 
             assignments={assignments} 
-            availablePlazas={availablePlazas} 
+            availablePlazas={availablePlazas}
           />
         </div>
       )}

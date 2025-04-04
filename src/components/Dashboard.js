@@ -780,7 +780,7 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
                           <strong>{asignacion.nombreCentro || asignacion.centerName || asignacion.centro}</strong>
                           {asignacion.reasignado && (
                             <div style={{fontSize: '12px', color: '#d53f8c', marginTop: '4px'}}>
-                              Reasignado: {asignacion.centroOriginal || asignacion.centroPrevio}
+                              Reasignado de: {asignacion.centroOriginal || asignacion.centroPrevio}
                             </div>
                           )}
                         </div>
@@ -817,7 +817,7 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
             })}
             {currentItems.length === 0 && (
               <tr>
-                <td colSpan="5" style={{...styles.tableCell, textAlign: 'center', padding: '30px 15px'}}>
+                <td colSpan="4" style={{...styles.tableCell, textAlign: 'center', padding: '30px 15px'}}>
                   No se encontraron asignaciones que coincidan con los filtros.
                 </td>
               </tr>
