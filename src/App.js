@@ -99,9 +99,13 @@ function App() {
   // Estado para manejar el proceso de carga
   const [isLoading, setIsLoading] = useState(false);
 
-  // Variable para almacenar el timestamp de la última actualización
+  // Constante para el intervalo de actualización (5 minutos)
+  const INTERVALO_ACTUALIZACION = 5 * 60 * 1000;
+
+  // Variable para rastrear la última actualización
   let ultimaActualizacionCentros = 0;
-  const INTERVALO_ACTUALIZACION = 2 * 60 * 1000; // 2 minutos en milisegundos
+  let ultimaActualizacionAsignaciones = 0;
+  let ultimaActualizacionSolicitudes = 0;
 
   // Función para mostrar un popup con mensaje
   const showNotification = (message, type = 'success') => {
@@ -960,7 +964,6 @@ function App() {
     // Listener para los centros
     const unsubscribeCentros = onSnapshot(collection(db, "centros"), (snapshot) => {
       const ahora = Date.now();
-      // Solo actualizar si han pasado 2 minutos desde la última actualización
       if (ahora - ultimaActualizacionCentros >= INTERVALO_ACTUALIZACION) {
         const centrosFiltrados = snapshot.docs
           .map(doc => ({
@@ -977,52 +980,54 @@ function App() {
     
     // Listener para asignaciones
     const unsubscribeAsignaciones = onSnapshot(collection(db, "asignaciones"), (snapshot) => {
-      const asignacionesData = [];
-      snapshot.forEach((doc) => {
-        const data = doc.data();
-        // Normalizar y validar los datos de la asignación
-        const asignacion = {
-          ...data,
-          docId: doc.id,
-          // Asegurar que todos los campos necesarios existan
-          order: typeof data.order === 'number' ? data.order : Number(data.order) || 0,
-          centro: data.centro || 'No disponible',
-          localidad: data.localidad || 'No disponible',
-          municipio: data.municipio || 'No disponible',
-          timestamp: data.timestamp || Date.now(),
-          estado: data.estado || 'ASIGNADA'
-        };
-        asignacionesData.push(asignacion);
-      });
-      
-      // Ordenar por número de orden
-      asignacionesData.sort((a, b) => {
-        const ordenA = Number(a.order) || 0;
-        const ordenB = Number(b.order) || 0;
-        return ordenA - ordenB;
-      });
-      
-      setAssignments(asignacionesData);
+      const ahora = Date.now();
+      if (ahora - ultimaActualizacionAsignaciones >= INTERVALO_ACTUALIZACION) {
+        const asignacionesData = [];
+        snapshot.forEach((doc) => {
+          const data = doc.data();
+          const asignacion = {
+            ...data,
+            docId: doc.id,
+            order: typeof data.order === 'number' ? data.order : Number(data.order) || 0,
+            centro: data.centro || 'No disponible',
+            localidad: data.localidad || 'No disponible',
+            municipio: data.municipio || 'No disponible',
+            timestamp: data.timestamp || Date.now(),
+            estado: data.estado || 'ASIGNADA'
+          };
+          asignacionesData.push(asignacion);
+        });
+        
+        asignacionesData.sort((a, b) => {
+          const ordenA = Number(a.order) || 0;
+          const ordenB = Number(b.order) || 0;
+          return ordenA - ordenB;
+        });
+        
+        setAssignments(asignacionesData);
+        ultimaActualizacionAsignaciones = ahora;
+      }
     });
     
     // Listener para solicitudes pendientes
     const unsubscribeSolicitudes = onSnapshot(collection(db, "solicitudesPendientes"), (snapshot) => {
-      const solicitudesData = [];
-      snapshot.forEach((doc) => {
-        const data = doc.data();
-        // Normalizar y validar los datos de la solicitud
-        const solicitud = {
-          ...data,
-          docId: doc.id,
-          // Normalizar el número de orden
-          orden: typeof data.orden === 'number' ? data.orden : Number(data.orden) || 0,
-          // Normalizar la lista de centros (puede estar como centrosIds o centrosSeleccionados)
-          centrosIds: data.centrosIds || data.centrosSeleccionados || []
-        };
-        solicitudesData.push(solicitud);
-      });
-      
-      setSolicitudes(solicitudesData);
+      const ahora = Date.now();
+      if (ahora - ultimaActualizacionSolicitudes >= INTERVALO_ACTUALIZACION) {
+        const solicitudesData = [];
+        snapshot.forEach((doc) => {
+          const data = doc.data();
+          const solicitud = {
+            ...data,
+            docId: doc.id,
+            orden: typeof data.orden === 'number' ? data.orden : Number(data.orden) || 0,
+            centrosIds: data.centrosIds || data.centrosSeleccionados || []
+          };
+          solicitudesData.push(solicitud);
+        });
+        
+        setSolicitudes(solicitudesData);
+        ultimaActualizacionSolicitudes = ahora;
+      }
     });
     
     // Listener para historial de solicitudes
@@ -1768,8 +1773,8 @@ function App() {
    * @param {number} orderNumber - Número de orden
    * @param {Array} selectedCenters - IDs de centros seleccionados
    */
-  const enviarSolicitud = async (orderNumber, selectedCenters) => {
-    console.log(`Iniciando envío de solicitud para orden ${orderNumber}`);
+  const enviarSolicitud = async (orderNumber, selectedCenters, isManualMode = false) => {
+    console.log(`Iniciando envío de solicitud para orden ${orderNumber} en modo ${isManualMode ? 'manual' : 'automático'}`);
     
     // Validación más robusta de entradas
     if (orderNumber === undefined || orderNumber === null || orderNumber === '') {
@@ -1840,42 +1845,41 @@ function App() {
       
       // Añadir/actualizar la solicitud en la colección de solicitudes pendientes
       try {
-          if (existingRequestId) {
-            // Actualizar la solicitud existente
-          await updateDoc(doc(db, "solicitudesPendientes", existingRequestId), {
-              centrosSeleccionados: selectedCenters,
-              timestamp: serverTimestamp()
-            });
-            console.log(`Actualizada solicitud existente ${existingRequestId} para orden ${orderNumberNumeric}`);
-          } else {
-            // Crear una nueva solicitud
-            const newRequest = {
-              orden: orderNumberNumeric,
-            centrosIds: selectedCenters,
-              timestamp: serverTimestamp()
-            };
-            
-          await setDoc(doc(collection(db, "solicitudesPendientes")), newRequest);
-            console.log(`Creada nueva solicitud para orden ${orderNumberNumeric}`);
-          }
+        const newRequest = {
+          orden: orderNumberNumeric,
+          centrosIds: selectedCenters,
+          timestamp: serverTimestamp(),
+          isManualMode: isManualMode // Añadimos flag para modo manual
+        };
+        
+        if (existingRequestId) {
+          // Actualizar la solicitud existente
+          const solicitudRef = doc(db, "solicitudesPendientes", existingRequestId.toString());
+          await updateDoc(solicitudRef, newRequest);
+          console.log(`Actualizada solicitud existente ${existingRequestId} para orden ${orderNumberNumeric}`);
+        } else {
+          // Crear una nueva solicitud
+          const solicitudesRef = collection(db, "solicitudesPendientes");
+          const nuevaSolicitudRef = doc(solicitudesRef);
+          await setDoc(nuevaSolicitudRef, newRequest);
+          console.log(`Creada nueva solicitud para orden ${orderNumberNumeric}`);
+        }
         
         console.log(`Solicitud para orden ${orderNumberNumeric} enviada correctamente`);
-        showNotification(`Solicitud para orden ${orderNumberNumeric} enviada correctamente. Será procesada automáticamente.`, "success");
+        showNotification(`Solicitud para orden ${orderNumberNumeric} enviada correctamente. ${isManualMode ? 'Se procesará manualmente.' : 'Será procesada automáticamente.'}`, "success");
         
-        // Recargar datos después de la operación SOLO para mostrar la nueva solicitud pendiente
-        // NO procesamos la solicitud inmediatamente
-        await cargarDatosDesdeFirebase();
-        
-        // Registrar en historial - Usar formato de fecha correcto para evitar "invalid date"
+        // Registrar en historial
         const ahora = new Date();
-        const historialRef = doc(collection(db, "historialSolicitudes"));
-        await setDoc(historialRef, {
+        const historialRef = collection(db, "historialSolicitudes");
+        const nuevoHistorialRef = doc(historialRef);
+        await setDoc(nuevoHistorialRef, {
           orden: orderNumberNumeric,
           centrosIds: selectedCenters,
           estado: "PENDIENTE",
-          mensaje: "Solicitud añadida a la cola de procesamiento",
-          fechaHistorico: ahora.toISOString(), // Usar formato ISO estándar
-          timestamp: ahora.getTime() // Usar timestamp numérico
+          mensaje: isManualMode ? "Solicitud manual añadida" : "Solicitud añadida a la cola de procesamiento",
+          fechaHistorico: ahora.toISOString(),
+          timestamp: ahora.getTime(),
+          isManualMode: isManualMode
         });
         
         // Limpiar los campos del formulario
@@ -2969,7 +2973,7 @@ function App() {
       // Eliminar historial duplicado
       for (const item of historialDuplicado) {
         try {
-          const docRef = doc(db, "historialSolicitudes", item.id);
+          const docRef = doc(db, "historialSolicitudes", String(item.id));
           await deleteDoc(docRef);
           
           // Registrar en elementos borrados
@@ -2990,7 +2994,7 @@ function App() {
       // Eliminar asignaciones duplicadas
       for (const asignacion of asignacionesDuplicadas) {
         try {
-          const docRef = doc(db, "asignaciones", asignacion.id);
+          const docRef = doc(db, "asignaciones", String(asignacion.id));
           await deleteDoc(docRef);
           
           // Registrar en elementos borrados
@@ -3007,44 +3011,8 @@ function App() {
         }
       }
       
-      // Configurar un listener para prevenir recreación
-      const unsubscribe = onSnapshot(collection(db, "asignaciones"), async (snapshot) => {
-        const cambios = snapshot.docChanges();
-        
-        for (const cambio of cambios) {
-          if (cambio.type === "added") {
-            const nuevaAsignacion = {
-              id: cambio.doc.id,
-              ...cambio.doc.data()
-            };
-            
-            const orden = nuevaAsignacion.order || nuevaAsignacion.numeroOrden;
-            if (!orden) {
-              console.log(`Asignación sin número de orden: ${nuevaAsignacion.id}`);
-              continue;
-            }
-            
-            // Verificar si esta asignación fue borrada previamente
-            const borradasQuery = query(
-              elementosBorradosRef, 
-              where("tipo", "==", "asignacion"),
-              where("orden", "==", orden || 0)
-            );
-            
-            const borradasSnapshot = await getDocs(borradasQuery);
-            
-            if (!borradasSnapshot.empty) {
-              console.log(`Eliminando asignación recreada: ${nuevaAsignacion.id}`);
-              await deleteDoc(doc(db, "asignaciones", nuevaAsignacion.id));
-            }
-          }
-        }
-      });
-      
-      // Desactivar listener después de 10 minutos
-      setTimeout(() => {
-        if (unsubscribe) unsubscribe();
-      }, 10 * 60 * 1000);
+      // Ya no configuramos el listener para evitar mensajes constantes en consola
+      // La detección de asignaciones recreadas ahora sólo se hará desde el panel de administración
       
       setIsLoading(false);
       return {
@@ -3568,50 +3536,32 @@ function App() {
 
       
       <div style={styles.header}>
-        <h1 style={styles.title}>Sistema de Asignación de Plazas</h1>
+        <h1 style={{
+          ...styles.title,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '15px',
+          fontSize: '2.2rem',
+          color: '#2c3e50',
+          textShadow: '2px 2px 4px rgba(0,0,0,0.1)',
+          padding: '20px 0',
+          margin: '0',
+          fontFamily: "'Helvetica Neue', Arial, sans-serif",
+          letterSpacing: '0.5px'
+        }}>
+          <span role="img" aria-label="enfermera" style={{
+            fontSize: '2.5rem',
+            filter: 'drop-shadow(2px 2px 4px rgba(0,0,0,0.1))'
+          }}>👩‍⚕️</span>
+          Sistema de Asignación de Plazas
+          <span role="img" aria-label="hospital" style={{
+            fontSize: '2.5rem',
+            filter: 'drop-shadow(2px 2px 4px rgba(0,0,0,0.1))'
+          }}>🏥</span>
+        </h1>
         
-        {/* Botón de verificación para administrador - solo aparece si no se ha ejecutado hoy */}
-        {(() => {
-          const ultimaVerificacion = localStorage.getItem('ultimaVerificacionDiaria');
-          if (!ultimaVerificacion) return true; // Nunca se ha ejecutado
-          
-          const fechaUltimaVerificacion = new Date(Number(ultimaVerificacion));
-          const ahora = new Date();
-          
-          // Comparar fecha (ignorando la hora)
-          const noSeHaEjecutadoHoy = !(fechaUltimaVerificacion.getDate() === ahora.getDate() &&
-                     fechaUltimaVerificacion.getMonth() === ahora.getMonth() &&
-                     fechaUltimaVerificacion.getFullYear() === ahora.getFullYear());
-          
-          return noSeHaEjecutadoHoy; // Mostrar solo si no se ha ejecutado hoy
-        })() && (
-          <div style={{
-            position: 'absolute',
-            top: '20px',
-            right: '20px',
-            zIndex: 50
-          }}>
-            <button
-              onClick={() => setShowPasswordModal(true)}
-              style={{
-                padding: '12px 20px',
-                backgroundColor: '#3498db',
-                color: 'white',
-                border: 'none',
-                borderRadius: '6px',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: '15px',
-                fontWeight: '500',
-                boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
-              }}
-            >
-              🔄 Verificar Asignaciones Hoy
-            </button>
-      </div>
-        )}
+      
       
       <div style={styles.tabs}>
         <div 

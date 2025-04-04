@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { writeBatch, doc, collection, serverTimestamp, onSnapshot, query, where, addDoc, updateDoc, getDocs, deleteDoc } from "firebase/firestore";
 import * as XLSX from 'xlsx';
+import { db } from '../firebase';
 
 /**
  * Componente que muestra el panel de administración
@@ -60,7 +61,154 @@ const Admin = ({
   const [modalReasignacion, setModalReasignacion] = useState(false);
   const [centroSeleccionadoReasignacion, setCentroSeleccionadoReasignacion] = useState("");
   const [asignacionesSeleccionadas, setAsignacionesSeleccionadas] = useState({});
-  
+  const [feedbackSolicitudes, setFeedbackSolicitudes] = useState([]);
+  const [showFeedback, setShowFeedback] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [activeTab, setActiveTab] = useState('solicitudes');
+  const [showReasignacionModal, setShowReasignacionModal] = useState(false);
+  const [showAsignacionManualModal, setShowAsignacionManualModal] = useState(false);
+  const [asignacionesRecreadas, setAsignacionesRecreadas] = useState([]);
+  const [loadingAsignacionesRecreadas, setLoadingAsignacionesRecreadas] = useState(false);
+
+  // Estilos comunes
+  const tabButtonStyle = {
+    padding: '10px 20px',
+    marginRight: '10px',
+    border: 'none',
+    borderRadius: '5px',
+    color: 'white',
+    cursor: 'pointer',
+    fontWeight: 'bold'
+  };
+
+  // Función de renderizado del formulario de login
+  const renderLoginForm = () => {
+    return (
+      <div style={{
+        maxWidth: '1280px',
+        margin: '0 auto',
+        padding: '20px',
+        fontFamily: 'Arial, sans-serif',
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        minHeight: '100vh',
+        flexDirection: 'column'
+      }}>
+        <h1 style={{ marginBottom: '30px', color: '#2c3e50' }}>Panel de Administración</h1>
+        
+        <div style={{ 
+          backgroundColor: 'white', 
+          padding: '30px', 
+          borderRadius: '10px',
+          boxShadow: '0 4px 15px rgba(0,0,0,0.1)',
+          width: '100%',
+          maxWidth: '400px'
+        }}>
+          <h2 style={{ textAlign: 'center', marginBottom: '25px' }}>Autenticación Requerida</h2>
+          
+          {adminAuthAttempted && (
+            <div style={{
+              backgroundColor: '#f8d7da',
+              color: '#721c24',
+              padding: '10px',
+              borderRadius: '5px',
+              marginBottom: '15px',
+              textAlign: 'center'
+            }}>
+              Contraseña incorrecta. Inténtalo de nuevo.
+            </div>
+          )}
+          
+          <div style={{ marginBottom: '20px' }}>
+            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>
+              Contraseña de Administrador:
+            </label>
+            <input
+              type="password"
+              value={adminPassword}
+              onChange={(e) => setAdminPassword(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '12px',
+                border: '1px solid #ddd',
+                borderRadius: '5px',
+                fontSize: '16px'
+              }}
+              placeholder="Ingrese la contraseña"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  if (adminPassword === 'SoyAdmin') {
+                    setIsAdminAuthenticated(true);
+                    setIsAdmin(true);
+                  } else {
+                    setAdminAuthAttempted(true);
+                  }
+                }
+              }}
+            />
+          </div>
+          
+          <button
+            onClick={() => {
+              if (adminPassword === 'SoyAdmin') {
+                setIsAdminAuthenticated(true);
+                setIsAdmin(true);
+              } else {
+                setAdminAuthAttempted(true);
+              }
+            }}
+            style={{
+              width: '100%',
+              padding: '12px',
+              backgroundColor: '#3498db',
+              color: 'white',
+              border: 'none',
+              borderRadius: '5px',
+              fontSize: '16px',
+              fontWeight: 'bold',
+              cursor: 'pointer'
+            }}
+          >
+            Acceder
+          </button>
+          
+          <div style={{ marginTop: '20px', textAlign: 'center' }}>
+            <a 
+              href="/"
+              style={{
+                color: '#3498db',
+                textDecoration: 'none'
+              }}
+            >
+              Volver a la página principal
+            </a>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Corregir el useEffect para que no sea condicional
+  useEffect(() => {
+    let unsubscribe = () => {};
+    
+    if (isAdmin) {
+      unsubscribe = onSnapshot(collection(db, 'feedback'), (snapshot) => {
+        const feedbackData = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+        setFeedbackSolicitudes(feedbackData);
+      });
+      
+      // Cargar asignaciones recreadas
+      cargarAsignacionesRecreadas();
+    }
+    
+    return () => unsubscribe();
+  }, [isAdmin, db]);
+
   // Si no está autenticado, mostrar formulario de login
   if (!isAdminAuthenticated) {
     return (
@@ -120,6 +268,7 @@ const Admin = ({
                 if (e.key === 'Enter') {
                   if (adminPassword === 'SoyAdmin') {
                     setIsAdminAuthenticated(true);
+                    setIsAdmin(true);
                   } else {
                     setAdminAuthAttempted(true);
                   }
@@ -132,6 +281,7 @@ const Admin = ({
             onClick={() => {
               if (adminPassword === 'SoyAdmin') {
                 setIsAdminAuthenticated(true);
+                setIsAdmin(true);
               } else {
                 setAdminAuthAttempted(true);
               }
@@ -221,6 +371,7 @@ const Admin = ({
       });
       setCentroSeleccionadoReasignacion("");
       setModalReasignacion(true);
+      setShowReasignacionModal(true); // Añadir esta línea
       
     } catch (error) {
       console.error("Error al preparar reasignación:", error);
@@ -851,14 +1002,15 @@ const Admin = ({
     );
   };
   
-  // Nueva función para abrir modal de asignación manual
+  // Modificar la función abrirModalAsignacionManual
   const abrirModalAsignacionManual = (solicitud) => {
     setSolicitudSeleccionada(solicitud);
     setCentroSeleccionadoManual("");
     setModalAsignacionManual(true);
+    setShowAsignacionManualModal(true); // Añadir esta línea
   };
 
-  // Nueva función para realizar asignación manual
+  // Modificar la función realizarAsignacionManual
   const realizarAsignacionManual = async () => {
     if (!solicitudSeleccionada || !centroSeleccionadoManual) {
       showNotification("Por favor, seleccione un centro para asignar", "error");
@@ -963,6 +1115,7 @@ const Admin = ({
 
       showNotification(`Orden ${ordenSolicitud} asignada manualmente a ${centroInfo.nombre || centroInfo.centro}`, "success");
       setModalAsignacionManual(false);
+      setShowAsignacionManualModal(false); // Añadir esta línea
       setSolicitudSeleccionada(null);
     } catch (error) {
       console.error("Error al realizar asignación manual:", error);
@@ -1977,6 +2130,7 @@ const Admin = ({
 
       showNotification(`Asignación #${ordenAsignacion} reasignada correctamente de ${centroActualNombre} a ${nuevoCentroInfo.nombre || nuevoCentroInfo.centro}`, "success");
       setModalReasignacion(false);
+      setShowReasignacionModal(false); // Añadir esta línea
       setAsignacionParaReasignar(null);
       setCentroSeleccionadoReasignacion("");
     } catch (error) {
@@ -2060,6 +2214,7 @@ const Admin = ({
       
       showNotification(`Solicitud ${ordenSolicitud} marcada como no asignable por falta de opciones`, "info");
       setModalAsignacionManual(false);
+      setShowAsignacionManualModal(false); // Añadir esta línea
       setSolicitudSeleccionada(null);
                                 } catch (error) {
       console.error("Error al marcar como no asignable:", error);
@@ -2243,153 +2398,50 @@ const Admin = ({
     );
   };
 
+  // Función para manejar el cierre del modal
+  const handleCloseModal = () => {
+    setModalReasignacion(false);
+    setShowReasignacionModal(false); // Añadir esta línea
+    setAsignacionParaReasignar(null);
+    setCentroSeleccionadoReasignacion("");
+    setSearchTermCentros("");
+  };
+
   // Renderizar modal de reasignación
   const renderModalReasignacion = () => {
     if (!asignacionParaReasignar) return null;
 
-    // Obtener los centros seleccionados para la reasignación
-    const centrosIds = asignacionParaReasignar.centrosIdsOriginales || [];
-    
-    // Filtrar solo los centros seleccionados que existen en availablePlazas y mantener el orden original
-    const centrosDisponibles = centrosIds
-      .map(id => availablePlazas.find(centro => centro.id === id))
-      .filter(Boolean);
-    
-    // Filtrar centros adicionales basados en la búsqueda
-    const centrosAdicionales = availablePlazas
-      .filter(centro => 
-        // Excluir los centros que ya están en la lista original y el centro actual
-        !centrosIds.includes(centro.id) &&
-        centro.id !== asignacionParaReasignar.centerId &&
-        // Filtrar por término de búsqueda
-        (centro.nombre?.toLowerCase().includes(searchTermCentros.toLowerCase()) ||
-         centro.centro?.toLowerCase().includes(searchTermCentros.toLowerCase()) ||
-         centro.localidad?.toLowerCase().includes(searchTermCentros.toLowerCase()) ||
-         centro.municipio?.toLowerCase().includes(searchTermCentros.toLowerCase()))
-      );
-
-    // Calcular plazas disponibles actualizadas para cada centro
-    const calcularPlazasDisponibles = (centro) => {
-      // Contar cuántas asignaciones existen para este centro, excluyendo las no viables
-      const asignacionesParaCentro = assignments.filter(a => 
-        a.centerId === centro.id && 
-        !a.noAsignable && 
-        a.estado !== "NO_ASIGNABLE" && 
-        a.estado !== "REASIGNACION_NO_VIABLE" // Esta asignación no contará para las plazas ocupadas
-      ).length;
-      
-      const plazasTotal = centro.plazasTotal || centro.plazas || 0;
-      const plazasOcupadas = centro.plazasOcupadas || centro.asignadas || asignacionesParaCentro || 0;
-      const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
-      
-      return {
-        ...centro,
-        plazasDisponiblesActualizadas: plazasDisponibles,
-        plazasOcupadasActualizadas: plazasOcupadas
-      };
-    };
-
-    const centrosConPlazasActualizadas = centrosDisponibles.map(calcularPlazasDisponibles);
-    const centrosAdicionalesActualizados = centrosAdicionales.map(calcularPlazasDisponibles);
-
-    // Verificar si hay al menos un centro con plazas disponibles (diferente del actual)
-    const centroActualId = asignacionParaReasignar.centerId;
-    const centrosDisponiblesParaReasignacion = [...centrosConPlazasActualizadas, ...centrosAdicionalesActualizados]
-      .filter(c => c.id !== centroActualId && c.plazasDisponiblesActualizadas > 0);
-    
-    // Verificar si solo hay un centro disponible o ninguno
-    const noHayCentrosDisponiblesParaReasignacion = centrosDisponiblesParaReasignacion.length === 0;
-    const soloUnCentroDisponible = centrosDisponiblesParaReasignacion.length === 1;
-    const mostrarBotonNoReasignable = noHayCentrosDisponiblesParaReasignacion || soloUnCentroDisponible;
-
-    // Obtener información de la orden actual
-    const ordenActual = asignacionParaReasignar.order || asignacionParaReasignar.numeroOrden || 0;
-    const centroActual = asignacionParaReasignar.centro || asignacionParaReasignar.centerName || 'Centro desconocido';
-
-    const renderCentroCard = (centro, index, esSeleccionOriginal = true, uniqueKey) => {
-      const sinPlazas = centro.plazasDisponiblesActualizadas <= 0;
-      const esActual = centro.id === asignacionParaReasignar.centerId;
-      
-      return (
-        <div key={uniqueKey} style={{
-          padding: '10px',
-          borderRadius: '5px',
-          border: esActual ? '2px solid #ffb74d' : '1px solid #ddd',
-          backgroundColor: centroSeleccionadoReasignacion === centro.id 
-            ? '#e3f2fd' 
-            : esActual
-              ? '#fff8e1'
-              : sinPlazas 
-                ? '#ffebee' 
-                : 'white',
-          cursor: sinPlazas ? 'not-allowed' : 'pointer',
-          opacity: sinPlazas ? 0.7 : 1
-        }} onClick={() => {
-          if (!sinPlazas) setCentroSeleccionadoReasignacion(centro.id);
-        }}>
-          <div style={{
-            fontWeight: 'bold',
-            display: 'flex',
-            justifyContent: 'space-between'
-          }}>
-            <span>
-              {esSeleccionOriginal ? `${index + 1}. ` : ''}{centro.nombre || centro.centro}
-            </span>
-            {esActual && (
-              <span style={{
-                backgroundColor: '#ff9800',
-                color: 'white',
-                padding: '2px 6px',
-                borderRadius: '3px',
-                fontSize: '11px'
-              }}>
-                Actual
-              </span>
-            )}
-          </div>
-          <div style={{ fontSize: '14px', color: '#666' }}>
-            {centro.localidad && `${centro.localidad}`}
-            {centro.municipio && centro.municipio !== centro.localidad && ` - ${centro.municipio}`}
-          </div>
-          <div style={{
-            fontSize: '14px', 
-            marginTop: '5px',
-            color: sinPlazas ? '#d32f2f' : '#388e3c',
-            fontWeight: 'bold'
-          }}>
-            Plazas: <strong>{centro.plazasDisponiblesActualizadas}</strong> disponibles 
-            de {centro.plazasTotal || centro.plazas || 0}
-            {sinPlazas && ' - SIN PLAZAS DISPONIBLES'}
-          </div>
-        </div>
-      );
-    };
-          
     return (
-      <div style={{ 
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        width: '100%',
-        height: '100%',
-        backgroundColor: 'rgba(0,0,0,0.5)',
-        zIndex: 1000,
-        display: 'flex', 
-        justifyContent: 'center',
-        alignItems: 'center'
-      }}>
-        <div style={{ 
-          backgroundColor: 'white',
-          borderRadius: '8px',
-          padding: '20px',
-          width: '90%',
-          maxWidth: '600px',
-          maxHeight: '90vh',
-          overflow: 'auto',
-          boxShadow: '0 4px 20px rgba(0,0,0,0.2)'
-        }}>
+      <div 
+        style={{ 
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          zIndex: 1000,
+          display: 'flex', 
+          justifyContent: 'center',
+          alignItems: 'center'
+        }}
+        onClick={handleCloseModal}
+      >
+        <div 
+          style={{ 
+            backgroundColor: 'white',
+            borderRadius: '8px',
+            padding: '20px',
+            width: '90%',
+            maxWidth: '600px',
+            maxHeight: '90vh',
+            overflow: 'auto',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.2)'
+          }}
+          onClick={e => e.stopPropagation()}
+        >
           <h3 style={{ borderBottom: '1px solid #eee', paddingBottom: '10px' }}>
-            Reasignación - Orden #{ordenActual}
+            Reasignación - Orden #{asignacionParaReasignar.order || asignacionParaReasignar.numeroOrden}
           </h3>
           
           <div style={{
@@ -2400,12 +2452,12 @@ const Admin = ({
             marginBottom: '15px',
             color: '#0d4c8c'
           }}>
-            <strong>Centro actual:</strong> {centroActual}
+            <strong>Centro actual:</strong> {asignacionParaReasignar.centro || asignacionParaReasignar.centerName || asignacionParaReasignar.nombreCentro || 'Centro desconocido'}
           </div>
           
           <div style={{ marginBottom: '20px' }}>
             <h4>Centros seleccionados originalmente:</h4>
-            {centrosConPlazasActualizadas.length > 0 ? (
+            {asignacionParaReasignar.centrosIdsOriginales && asignacionParaReasignar.centrosIdsOriginales.length > 0 ? (
               <div style={{ 
                 display: 'flex', 
                 flexDirection: 'column',
@@ -2416,9 +2468,42 @@ const Admin = ({
                 border: '1px solid #eee',
                 borderRadius: '5px'
               }}>
-                {centrosConPlazasActualizadas.map((centro, index) => 
-                  renderCentroCard(centro, index, true, `centro-original-${centro.id}-${index}`)
-                )}
+                {asignacionParaReasignar.centrosIdsOriginales.map((centroId, index) => {
+                  const centro = availablePlazas.find(c => c.id === centroId);
+                  if (!centro) return null;
+                  
+                  return (
+                    <div key={index} style={{
+                      padding: '10px',
+                      borderRadius: '5px',
+                      border: '1px solid #ddd',
+                      backgroundColor: centroSeleccionadoReasignacion === centroId 
+                        ? '#e3f2fd' 
+                        : 'white',
+                      cursor: 'pointer',
+                      opacity: centroSeleccionadoReasignacion === centroId ? 0.7 : 1
+                    }} onClick={() => {
+                      if (centroSeleccionadoReasignacion !== centroId) setCentroSeleccionadoReasignacion(centroId);
+                    }}>
+                      <div style={{ fontWeight: 'bold' }}>
+                        {index + 1}. {centro.nombre || centro.centro}
+                      </div>
+                      <div style={{ fontSize: '14px', color: '#666' }}>
+                        {centro.localidad && `${centro.localidad}`}
+                        {centro.municipio && centro.municipio !== centro.localidad && ` - ${centro.municipio}`}
+                      </div>
+                      <div style={{ 
+                        fontSize: '14px', 
+                        marginTop: '5px',
+                        color: '#388e3c',
+                        fontWeight: 'bold'
+                      }}>
+                        Plazas: <strong>{centro.plazasDisponiblesActualizadas}</strong> disponibles 
+                        de {centro.plazasTotal || centro.plazas || 0}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             ) : (
               <div style={{ color: '#666', padding: '10px', textAlign: 'center' }}>
@@ -2452,15 +2537,48 @@ const Admin = ({
               border: '1px solid #eee',
               borderRadius: '5px'
             }}>
-              {centrosAdicionalesActualizados.length > 0 ? (
-                centrosAdicionalesActualizados.map((centro, index) => 
-                  renderCentroCard(centro, index, false, `centro-adicional-${centro.id}-${index}`)
+              {availablePlazas
+                .filter(centro => 
+                  // Excluir los centros que ya están en la lista original y el centro actual
+                  !asignacionParaReasignar.centrosIdsOriginales.includes(centro.id) &&
+                  centro.id !== asignacionParaReasignar.centerId &&
+                  // Filtrar por término de búsqueda
+                  (centro.nombre?.toLowerCase().includes(searchTermCentros.toLowerCase()) ||
+                   centro.centro?.toLowerCase().includes(searchTermCentros.toLowerCase()) ||
+                   centro.localidad?.toLowerCase().includes(searchTermCentros.toLowerCase()) ||
+                   centro.municipio?.toLowerCase().includes(searchTermCentros.toLowerCase()))
                 )
-              ) : (
-                <div style={{ color: '#666', padding: '10px', textAlign: 'center' }}>
-                  No se encontraron centros adicionales.
-                </div>
-              )}
+                .map((centro, index) => (
+                  <div key={index} style={{
+                    padding: '10px',
+                    borderRadius: '5px',
+                    border: '1px solid #ddd',
+                    backgroundColor: centroSeleccionadoReasignacion === centro.id 
+                      ? '#e3f2fd' 
+                      : 'white',
+                    cursor: 'pointer',
+                    opacity: centroSeleccionadoReasignacion === centro.id ? 0.7 : 1
+                  }} onClick={() => {
+                    if (centroSeleccionadoReasignacion !== centro.id) setCentroSeleccionadoReasignacion(centro.id);
+                  }}>
+                    <div style={{ fontWeight: 'bold' }}>
+                      {index + 1}. {centro.nombre || centro.centro}
+                    </div>
+                    <div style={{ fontSize: '14px', color: '#666' }}>
+                      {centro.localidad && `${centro.localidad}`}
+                      {centro.municipio && centro.municipio !== centro.localidad && ` - ${centro.municipio}`}
+                    </div>
+                    <div style={{ 
+                      fontSize: '14px', 
+                      marginTop: '5px',
+                      color: '#388e3c',
+                      fontWeight: 'bold'
+                    }}>
+                      Plazas: <strong>{centro.plazasDisponiblesActualizadas}</strong> disponibles 
+                      de {centro.plazasTotal || centro.plazas || 0}
+                    </div>
+                  </div>
+                ))}
             </div>
           </div>
           
@@ -2471,7 +2589,7 @@ const Admin = ({
             borderTop: '1px solid #eee',
             paddingTop: '15px'
           }}>
-            {noHayCentrosDisponiblesParaReasignacion && (
+            {asignacionParaReasignar.centrosIdsOriginales && asignacionParaReasignar.centrosIdsOriginales.length > 0 && (
               <div style={{ 
                 marginRight: 'auto', 
                 color: '#d32f2f', 
@@ -2484,7 +2602,7 @@ const Admin = ({
               </div>
             )}
             <button 
-              onClick={() => setModalReasignacion(false)}
+              onClick={handleCloseModal}
               style={{
                 padding: '8px 15px',
                 borderRadius: '4px',
@@ -2634,54 +2752,432 @@ const Admin = ({
     }
   };
   
-  // Renderizar el panel completo de administración
-  return (
-    <div className="admin-panel" style={{ padding: '20px' }}>
-      <div style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: '20px',
-        backgroundColor: '#f5f5f5',
-        padding: '15px',
-        borderRadius: '8px',
-        boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
-      }}>
-        <h2 style={{ margin: 0 }}>Panel de Administración</h2>
-        <div style={{ display: 'flex', gap: '10px' }}>
-          <button
-            onClick={actualizarDatosManualmente}
-            disabled={isLoading}
-            style={{
-              padding: '8px 15px',
-              borderRadius: '4px',
-              border: 'none',
-              backgroundColor: '#4CAF50',
-              color: 'white',
-              cursor: isLoading ? 'not-allowed' : 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '5px',
-              fontSize: '14px',
-              fontWeight: 'bold',
-              transition: 'background-color 0.3s'
-            }}
-          >
-            <span style={{ fontSize: '16px' }}>🔄</span>
-            {isLoading ? 'Actualizando...' : 'Actualizar datos'}
-          </button>
+  const renderFeedbackSection = () => {
+    return (
+      <div style={{ marginTop: '20px', padding: '20px', backgroundColor: 'white', borderRadius: '8px', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}>
+        <h3>Solicitudes de Modificación</h3>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                <th style={{ padding: '12px', textAlign: 'left', borderBottom: '2px solid #ddd' }}>Número de Orden</th>
+                <th style={{ padding: '12px', textAlign: 'left', borderBottom: '2px solid #ddd' }}>Feedback</th>
+                <th style={{ padding: '12px', textAlign: 'left', borderBottom: '2px solid #ddd' }}>Fecha</th>
+                <th style={{ padding: '12px', textAlign: 'left', borderBottom: '2px solid #ddd' }}>Estado</th>
+              </tr>
+            </thead>
+            <tbody>
+              {feedbackSolicitudes.map((feedback) => (
+                <tr key={feedback.id}>
+                  <td style={{ padding: '12px', borderBottom: '1px solid #ddd' }}>{feedback.orderNumber}</td>
+                  <td style={{ padding: '12px', borderBottom: '1px solid #ddd' }}>{feedback.feedback}</td>
+                  <td style={{ padding: '12px', borderBottom: '1px solid #ddd' }}>
+                    {new Date(feedback.timestamp).toLocaleString()}
+                  </td>
+                  <td style={{ padding: '12px', borderBottom: '1px solid #ddd' }}>
+                    <select
+                      value={feedback.status}
+                      onChange={async (e) => {
+                        const newStatus = e.target.value;
+                        await updateDoc(doc(db, 'feedback', feedback.id), {
+                          status: newStatus
+                        });
+                      }}
+                      style={{
+                        padding: '4px 8px',
+                        borderRadius: '4px',
+                        border: '1px solid #ddd'
+                      }}
+                    >
+                      <option value="pendiente">Pendiente</option>
+                      <option value="en_proceso">En Proceso</option>
+                      <option value="completado">Completado</option>
+                      <option value="rechazado">Rechazado</option>
+                    </select>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
-
-      {/* Resto del contenido existente */}
-      {renderAccionesRapidas()}
-      {renderResumenPlazasDisponibles()}
-      {renderSolicitudesPendientes()}
-      {renderAsignacionesExistentes()}
-      {renderModalReasignacion()}
-      {renderModalAsignacionManual()}
+    );
+  };
+  
+  // Función para cargar asignaciones recreadas
+  const cargarAsignacionesRecreadas = async () => {
+    try {
+      setLoadingAsignacionesRecreadas(true);
+      const recredasSnapshot = await getDocs(collection(db, "asignacionesRecreadas"));
+      
+      if (recredasSnapshot.empty) {
+        setAsignacionesRecreadas([]);
+        setLoadingAsignacionesRecreadas(false);
+        return;
+      }
+      
+      const asignaciones = recredasSnapshot.docs
+        .map(doc => ({
+          id: doc.id,
+          ...doc.data(),
+          fechaDeteccion: doc.data().fechaDeteccion?.toDate() || new Date()
+        }))
+        .filter(a => !a.eliminada)
+        .sort((a, b) => b.fechaDeteccion - a.fechaDeteccion);
+      
+      setAsignacionesRecreadas(asignaciones);
+    } catch (error) {
+      console.error("Error al cargar asignaciones recreadas:", error);
+      showNotification("Error al cargar asignaciones recreadas", "error");
+    } finally {
+      setLoadingAsignacionesRecreadas(false);
+    }
+  };
+  
+  // Función para detectar manualmente asignaciones recreadas
+  const detectarAsignacionesRecreadas = async () => {
+    try {
+      setInternalProcessingMessage("Detectando asignaciones recreadas...");
+      
+      // Obtener todas las asignaciones actuales
+      const asignacionesSnapshot = await getDocs(collection(db, "asignaciones"));
+      const asignacionesActuales = asignacionesSnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      
+      // Obtener elementos borrados del tipo asignación
+      const elementosBorradosSnapshot = await getDocs(
+        query(collection(db, "elementosBorrados"), where("tipo", "==", "asignacion"))
+      );
+      
+      if (elementosBorradosSnapshot.empty) {
+        showNotification("No se encontraron registros de asignaciones eliminadas", "info");
+        setInternalProcessingMessage("");
+        return;
+      }
+      
+      // Crear un mapa de órdenes que han sido eliminados previamente
+      const ordenesEliminados = new Map();
+      elementosBorradosSnapshot.forEach(doc => {
+        const data = doc.data();
+        if (data.orden) {
+          ordenesEliminados.set(Number(data.orden), true);
+        }
+      });
+      
+      let asignacionesRecreadasDetectadas = 0;
+      const batch = writeBatch(db);
+      
+      // Verificar cada asignación actual
+      for (const asignacion of asignacionesActuales) {
+        const orden = asignacion.order || asignacion.numeroOrden;
+        if (!orden) continue;
+        
+        const ordenNumerico = Number(orden);
+        if (isNaN(ordenNumerico)) continue;
+        
+        // Si este orden está en la lista de eliminados, es una recreada
+        if (ordenesEliminados.has(ordenNumerico)) {
+          // Verificar si ya está registrada como recreada
+          const yaRegistradaSnapshot = await getDocs(
+            query(
+              collection(db, "asignacionesRecreadas"), 
+              where("asignacionId", "==", asignacion.id),
+              where("eliminada", "==", false)
+            )
+          );
+          
+          // Si no está registrada, la añadimos
+          if (yaRegistradaSnapshot.empty) {
+            const nuevaRecreadaRef = doc(collection(db, "asignacionesRecreadas"));
+            batch.set(nuevaRecreadaRef, {
+              asignacionId: asignacion.id,
+              data: asignacion,
+              orden: ordenNumerico,
+              fechaDeteccion: serverTimestamp(),
+              eliminada: false
+            });
+            
+            asignacionesRecreadasDetectadas++;
+          }
+        }
+      }
+      
+      // Guardar cambios si hay asignaciones recreadas
+      if (asignacionesRecreadasDetectadas > 0) {
+        await batch.commit();
+        showNotification(`Se detectaron ${asignacionesRecreadasDetectadas} asignaciones recreadas`, "success");
+        
+        // Recargar la lista
+        await cargarAsignacionesRecreadas();
+      } else {
+        showNotification("No se detectaron nuevas asignaciones recreadas", "info");
+      }
+    } catch (error) {
+      console.error("Error al detectar asignaciones recreadas:", error);
+      showNotification(`Error: ${error.message}`, "error");
+    } finally {
+      setInternalProcessingMessage("");
+    }
+  };
+  
+  // Función para eliminar una asignación recreada
+  const eliminarAsignacionRecreada = async (asignacion) => {
+    if (!asignacion || !asignacion.asignacionId) {
+      showNotification("Error: No se puede eliminar la asignación recreada", "error");
+      return;
+    }
+    
+    try {
+      setInternalProcessingMessage("Eliminando asignación recreada...");
+      
+      // Crear batch para operaciones atómicas
+      const batch = writeBatch(db);
+      
+      // Marcar como eliminada en la colección de recreadas
+      batch.update(doc(db, "asignacionesRecreadas", asignacion.id), {
+        eliminada: true,
+        fechaEliminacion: serverTimestamp()
+      });
+      
+      // Eliminar la asignación de la colección principal
+      batch.delete(doc(db, "asignaciones", String(asignacion.asignacionId)));
+      
+      // Registrar en el historial y elementos borrados
+      const historialData = {
+        orden: asignacion.orden || "0",
+        numeroOrden: asignacion.orden || "0",
+        centroId: asignacion.data?.centerId || "0",
+        estado: "ELIMINADA_RECREADA",
+        mensaje: `Asignación recreada eliminada manualmente desde panel de administración`,
+        fechaHistorico: new Date().toISOString(),
+        timestamp: Date.now(),
+        centroOriginal: asignacion.data?.centro || "Centro desconocido",
+        centroAsignado: asignacion.data?.centro || "Centro desconocido"
+      };
+      
+      const historialRef = doc(collection(db, "historialSolicitudes"));
+      batch.set(historialRef, historialData);
+      
+      // Registrar en elementos borrados
+      const elementosBorradosRef = doc(collection(db, "elementosBorrados"));
+      batch.set(elementosBorradosRef, {
+        tipo: "asignacion",
+        itemId: asignacion.asignacionId || "",
+        orden: asignacion.orden || 0,
+        eliminadoEn: serverTimestamp(),
+        eliminadoPorAdmin: true
+      });
+      
+      // Ejecutar todas las operaciones
+      await batch.commit();
+      
+      // Recargar datos
+      await cargarAsignacionesRecreadas();
+      await cargarDatosDesdeFirebase();
+      
+      showNotification(`Asignación recreada eliminada correctamente`, "success");
+    } catch (error) {
+      console.error("Error al eliminar asignación recreada:", error);
+      showNotification(`Error: ${error.message}`, "error");
+    } finally {
+      setInternalProcessingMessage("");
+    }
+  };
+  
+  // Función para renderizar la sección de asignaciones recreadas
+  const renderAsignacionesRecreadas = () => {
+    return (
+      <div style={{ marginTop: '20px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+          <h2 style={{ margin: 0 }}>Asignaciones Recreadas Detectadas</h2>
+          <div>
+            <button
+              onClick={detectarAsignacionesRecreadas}
+              style={{
+                backgroundColor: '#27ae60',
+                color: 'white',
+                border: 'none',
+                padding: '8px 15px',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                marginRight: '10px'
+              }}
+            >
+              Detectar Recreadas
+            </button>
+            <button
+              onClick={cargarAsignacionesRecreadas}
+              style={{
+                backgroundColor: '#3498db',
+                color: 'white',
+                border: 'none',
+                padding: '8px 15px',
+                borderRadius: '4px',
+                cursor: 'pointer'
+              }}
+            >
+              Actualizar Lista
+            </button>
+          </div>
+        </div>
+        
+        {loadingAsignacionesRecreadas ? (
+          <p>Cargando asignaciones recreadas...</p>
+        ) : asignacionesRecreadas.length === 0 ? (
+          <p>No hay asignaciones recreadas pendientes de eliminar.</p>
+        ) : (
+          <>
+            <p style={{ marginBottom: '15px' }}>
+              Las siguientes asignaciones han sido detectadas como recreadas. Estas son asignaciones que fueron eliminadas previamente pero han vuelto a aparecer.
+            </p>
+            
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ backgroundColor: '#f2f2f2' }}>
+                    <th style={{ padding: '10px', textAlign: 'left', border: '1px solid #ddd' }}>Orden</th>
+                    <th style={{ padding: '10px', textAlign: 'left', border: '1px solid #ddd' }}>Centro</th>
+                    <th style={{ padding: '10px', textAlign: 'left', border: '1px solid #ddd' }}>Fecha Detección</th>
+                    <th style={{ padding: '10px', textAlign: 'left', border: '1px solid #ddd' }}>Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {asignacionesRecreadas.map((asignacion) => (
+                    <tr key={asignacion.id} style={{ borderBottom: '1px solid #ddd' }}>
+                      <td style={{ padding: '10px', border: '1px solid #ddd' }}>{asignacion.orden}</td>
+                      <td style={{ padding: '10px', border: '1px solid #ddd' }}>
+                        {asignacion.data?.centro || asignacion.data?.centerName || "Centro desconocido"}
+                      </td>
+                      <td style={{ padding: '10px', border: '1px solid #ddd' }}>
+                        {asignacion.fechaDeteccion?.toLocaleString() || "Fecha desconocida"}
+                      </td>
+                      <td style={{ padding: '10px', border: '1px solid #ddd' }}>
+                        <button
+                          onClick={() => eliminarAsignacionRecreada(asignacion)}
+                          style={{
+                            backgroundColor: '#e74c3c',
+                            color: 'white',
+                            border: 'none',
+                            padding: '5px 10px',
+                            borderRadius: '4px',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          Eliminar
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
+  
+  // Actualizar el return principal para incluir el nuevo tab
+  return !isAdminAuthenticated ? (
+    renderLoginForm()
+  ) : (
+    <div style={{maxWidth: '1280px', margin: '0 auto', padding: '20px', fontFamily: 'Arial, sans-serif'}}>
+      <h1 style={{marginBottom: '30px', color: '#2c3e50'}}>Panel de Administración</h1>
+      
+      {internalProcessingMessage && (
+        <div style={{marginBottom: '20px', padding: '15px', backgroundColor: '#fffde7', borderLeft: '5px solid #fbc02d'}}>
+          <strong>Procesando: </strong> {internalProcessingMessage}
+        </div>
+      )}
+      
+      <div style={{marginBottom: '30px'}}>
+        <button 
+          onClick={() => setActiveTab('solicitudes')}
+          style={{
+            ...tabButtonStyle,
+            backgroundColor: activeTab === 'solicitudes' ? '#2980b9' : '#3498db'
+          }}
+        >
+          Solicitudes Pendientes
+        </button>
+        <button 
+          onClick={() => setActiveTab('asignaciones')}
+          style={{
+            ...tabButtonStyle,
+            backgroundColor: activeTab === 'asignaciones' ? '#2980b9' : '#3498db'
+          }}
+        >
+          Asignaciones
+        </button>
+        <button 
+          onClick={() => setActiveTab('centros')}
+          style={{
+            ...tabButtonStyle,
+            backgroundColor: activeTab === 'centros' ? '#2980b9' : '#3498db'
+          }}
+        >
+          Centros / Plazas
+        </button>
+        <button 
+          onClick={() => {setActiveTab('herramientas'); setShowFeedback(false);}}
+          style={{
+            ...tabButtonStyle,
+            backgroundColor: activeTab === 'herramientas' ? '#2980b9' : '#3498db'
+          }}
+        >
+          Herramientas
+        </button>
+        <button 
+          onClick={() => {setActiveTab('feedback'); setShowFeedback(true);}}
+          style={{
+            ...tabButtonStyle,
+            backgroundColor: activeTab === 'feedback' ? '#2980b9' : '#3498db'
+          }}
+        >
+          Feedback
+        </button>
+        <button 
+          onClick={() => setActiveTab('recreadas')}
+          style={{
+            ...tabButtonStyle,
+            backgroundColor: activeTab === 'recreadas' ? '#2980b9' : '#3498db'
+          }}
+        >
+          Asig. Recreadas
+        </button>
+      </div>
+      
+      {activeTab === 'solicitudes' && renderSolicitudesPendientes()}
+      {activeTab === 'asignaciones' && renderAsignacionesExistentes()}
+      {activeTab === 'centros' && renderResumenPlazasDisponibles()}
+      {activeTab === 'herramientas' && renderAccionesRapidas()}
+      {activeTab === 'feedback' && renderFeedbackSection()}
+      {activeTab === 'recreadas' && renderAsignacionesRecreadas()}
+      
+      {showAsignacionManualModal && renderModalAsignacionManual()}
+      {showReasignacionModal && renderModalReasignacion()}
+      
+      <button 
+        onClick={() => {
+          window.location.href = '/';
+        }}
+        style={{
+          display: 'block',
+          marginTop: '30px',
+          padding: '10px 20px',
+          backgroundColor: '#34495e',
+          color: 'white',
+          border: 'none',
+          borderRadius: '5px',
+          cursor: 'pointer'
+        }}
+      >
+        Volver a página principal
+      </button>
     </div>
   );
-};
+}
 
 export default Admin; 
