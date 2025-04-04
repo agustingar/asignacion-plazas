@@ -84,8 +84,51 @@ const Dashboard = ({ assignments }) => {
       flexWrap: 'wrap'
     },
     statCard: {
+<<<<<<< Updated upstream
       backgroundColor: 'white',
       padding: '12px 18px',
+=======
+      backgroundColor: '#ffffff',
+      borderRadius: '6px',
+      padding: '15px',
+      minWidth: '140px',
+      boxShadow: '0 2px 5px rgba(0,0,0,0.06)',
+      flex: 1
+    },
+    statValue: {
+      fontSize: '24px',
+      fontWeight: 'bold',
+      color: '#2d3748',
+      marginBottom: '5px'
+    },
+    statLabel: {
+      fontSize: '13px',
+      color: '#718096'
+    },
+    searchBar: {
+      display: 'flex',
+      flexWrap: 'wrap',
+      gap: '10px',
+      marginBottom: '20px'
+    },
+    input: {
+      flex: '1',
+      padding: '10px 12px',
+      borderRadius: '6px',
+      border: '1px solid #e2e8f0',
+      fontSize: '14px'
+    },
+    select: {
+      padding: '10px 12px',
+      borderRadius: '6px',
+      border: '1px solid #e2e8f0',
+      fontSize: '14px',
+      backgroundColor: '#fff'
+    },
+    tableContainer: {
+      overflowX: 'auto',
+      backgroundColor: '#ffffff',
+>>>>>>> Stashed changes
       borderRadius: '8px',
       boxShadow: '0 2px 6px rgba(0,0,0,0.05)',
       border: '1px solid #eaeaea',
