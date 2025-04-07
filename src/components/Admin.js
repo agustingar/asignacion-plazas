@@ -1289,10 +1289,32 @@ const Admin = ({
   
   // Modificar la función abrirModalAsignacionManual
   const abrirModalAsignacionManual = (solicitud) => {
+    if (!solicitud) {
+      showNotification("Error: No se ha seleccionado una solicitud válida", "error");
+      return;
+    }
+
+    // Verificar que la solicitud tiene centros seleccionados
+    const centrosIds = solicitud.centrosIds || solicitud.centrosSeleccionados || [];
+    if (!centrosIds.length) {
+      showNotification("Error: La solicitud no tiene centros seleccionados", "error");
+      return;
+    }
+
+    // Verificar que tenemos información de los centros
+    const centrosDisponibles = centrosIds
+      .map(id => availablePlazas.find(centro => centro.id === id))
+      .filter(Boolean);
+
+    if (!centrosDisponibles.length) {
+      showNotification("Error: No se encontró información de los centros seleccionados", "error");
+      return;
+    }
+
     setSolicitudSeleccionada(solicitud);
     setCentroSeleccionadoManual("");
     setModalAsignacionManual(true);
-    setShowAsignacionManualModal(true); // Añadir esta línea
+    setShowAsignacionManualModal(true);
   };
 
   // Modificar la función realizarAsignacionManual
@@ -1644,6 +1666,24 @@ const Admin = ({
 
   // Renderizar sección de solicitudes pendientes
   const renderSolicitudesPendientes = () => {
+    // Si está cargando, mostrar indicador
+    if (isLoading) {
+      return (
+        <div style={{ 
+          textAlign: 'center', 
+          padding: '40px 20px',
+          backgroundColor: '#f5f7fa',
+          borderRadius: '8px',
+          color: '#5c6c7c'
+        }}>
+          <div style={{ fontSize: '36px', marginBottom: '15px' }}>⏳</div>
+          <div style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '10px' }}>
+            Cargando solicitudes...
+          </div>
+        </div>
+      );
+    }
+
     // Ordenar solicitudes por número de orden (menor a mayor)
     const solicitudesOrdenadas = [...solicitudes].sort((a, b) => {
       const ordenA = a.orden || a.numeroOrden || 0;
@@ -2905,26 +2945,49 @@ const Admin = ({
       }
     }
     
-    if (window.confirm("¿Está seguro de que desea eliminar esta solicitud pendiente? Esta acción no se puede deshacer.")) {
+    if (window.confirm("¿Está seguro de que desea eliminar esta solicitud pendiente y su historial? Esta acción no se puede deshacer.")) {
       try {
-        setInternalProcessingMessage("Eliminando solicitud pendiente...");
+        setInternalProcessingMessage("Eliminando solicitud pendiente y su historial...");
         
-        await deleteDoc(doc(db, "solicitudesPendientes", solicitudId));
+        const batch = writeBatch(db);
         
-        // Añadir a solicitudes borradas para evitar recreación
-        await addDoc(collection(db, "solicitudesBorradas"), {
-          solicitudId: solicitudId,
-          eliminadaEn: serverTimestamp(),
-          eliminadaPor: "admin"
+        // 1. Eliminar la solicitud pendiente
+        batch.delete(doc(db, "solicitudesPendientes", solicitudId));
+        
+        // 2. Buscar y eliminar registros relacionados en historialSolicitudes
+        const orden = solicitud.orden || solicitud.numeroOrden;
+        const historialSnapshot = await getDocs(
+          query(collection(db, "historialSolicitudes"), 
+            where("orden", "in", [orden, String(orden)])
+        ));
+        
+        let historialEliminados = 0;
+        historialSnapshot.forEach(doc => {
+          batch.delete(doc.ref);
+          historialEliminados++;
         });
         
-        showNotification("Solicitud eliminada correctamente", "success");
+        // 3. Registrar en solicitudes borradas
+        const solicitudBorradaRef = doc(collection(db, "solicitudesBorradas"));
+        batch.set(solicitudBorradaRef, {
+          solicitudId: solicitudId,
+          orden: orden,
+          eliminadaEn: serverTimestamp(),
+          eliminadaPor: "admin",
+          historialEliminado: true,
+          cantidadHistorialEliminado: historialEliminados
+        });
+        
+        // 4. Ejecutar todas las operaciones
+        await batch.commit();
+        
+        showNotification(`Solicitud y ${historialEliminados} registros de historial eliminados correctamente`, "success");
         await cargarDatosDesdeFirebase();
         
-        setInternalProcessingMessage("");
       } catch (error) {
         console.error("Error al eliminar solicitud:", error);
         showNotification(`Error al eliminar: ${error.message}`, "error");
+      } finally {
         setInternalProcessingMessage("");
       }
     }

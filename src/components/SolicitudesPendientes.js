@@ -159,9 +159,24 @@ const SolicitudesPendientes = ({ solicitudes = [], assignments = [], availablePl
   
   // Función para obtener información del centro
   const getCentroInfo = (centroId) => {
+    if (!centroId) {
+      console.warn('getCentroInfo: centroId es undefined o null');
+      return [];
+    }
+
     const centro = availablePlazas.find(plaza => plaza.id === centroId);
-    // Si se encuentra el centro, devolver sus datos, sino devolver array vacío
-    return centro ? [centro.nombre || centro.nombreCentro || centro.centro, centro.localidad, centro.municipio] : [];
+    
+    if (!centro) {
+      console.warn(`No se encontró información para el centro con ID: ${centroId}`);
+      return [centroId]; // Devolver el ID si no se encuentra el centro
+    }
+
+    // Intentar obtener el nombre del centro de diferentes propiedades
+    const nombreCentro = centro.nombre || centro.nombreCentro || centro.centro || 'Centro sin nombre';
+    const localidad = centro.localidad || '';
+    const municipio = centro.municipio || '';
+
+    return [nombreCentro, localidad, municipio].filter(Boolean);
   };
   
   if (!solicitudes.length) {
