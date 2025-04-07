@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { writeBatch, doc, collection, serverTimestamp, onSnapshot, query, where, addDoc, updateDoc, getDocs, deleteDoc, getDoc, setDoc } from "firebase/firestore";
 import * as XLSX from 'xlsx';
 import { db } from '../firebase';
-import { resetearContadoresAsignaciones } from '../utils/assignmentUtils';
 
 /**
  * Componente AsignacionRow para mostrar una fila de asignación en la tabla
@@ -47,51 +46,71 @@ const AsignacionRow = React.memo(({
     ? "No hay plaza disponible" 
     : asignacion.nombreCentro || asignacion.centro || asignacion.centerName || 'Centro sin nombre';
   
-  // Obtener información completa del centro para mostrar plazas
-  // Buscar por múltiples campos para mayor flexibilidad
+  // Buscar centro por id primero
   let centroCompleto = null;
-  if (!esNoAsignable) {
-    // Intentar buscar por centerId primero
-    if (asignacion.centerId) {
-      centroCompleto = availablePlazas.find(c => c.id === asignacion.centerId);
-    }
+  if (asignacion.centerId && !esNoAsignable) {
+    centroCompleto = availablePlazas.find(c => c.id === asignacion.centerId);
     
-    // Si no se encuentra, intentar buscar por id
-    if (!centroCompleto && asignacion.id) {
-      centroCompleto = availablePlazas.find(c => c.id === asignacion.id);
-    }
-    
-    // Si aún no se encuentra, intentar buscar por nombre
-    if (!centroCompleto && (asignacion.centro || asignacion.nombreCentro)) {
-      const nombreBuscar = asignacion.centro || asignacion.nombreCentro;
-      centroCompleto = availablePlazas.find(c => 
-        (c.centro && c.centro.toLowerCase() === nombreBuscar.toLowerCase()) ||
-        (c.nombre && c.nombre.toLowerCase() === nombreBuscar.toLowerCase())
-      );
+    // Si no se encuentra por ID, intentar buscar por nombre (para manejar caracteres especiales)
+    if (!centroCompleto && nombreCentro && nombreCentro !== "Centro sin nombre") {
+      // Normalizar nombres para comparación
+      const nombreNormalizado = nombreCentro.toLowerCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+        .replace(/\s+/g, ' ').trim();
+      
+      centroCompleto = availablePlazas.find(c => {
+        if (!c || (!c.nombre && !c.centro)) return false;
+        
+        const nombreCentroNormalizado = (c.nombre || c.centro || "")
+          .toLowerCase()
+          .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, ' ').trim();
+        
+        return nombreCentroNormalizado === nombreNormalizado || 
+               nombreCentroNormalizado.includes(nombreNormalizado) || 
+               nombreNormalizado.includes(nombreCentroNormalizado);
+      });
+      
+      // Si encontramos el centro por nombre pero no por ID, actualizar el ID para futuras referencias
+      if (centroCompleto && asignacion.docId) {
+        // Solo log para debug, no actualizamos en DB aquí para evitar operaciones costosas
+        console.log(`Centro encontrado por nombre: ${nombreCentro} -> ID: ${centroCompleto.id}`);
+      }
     }
   }
   
-  // Calcular plazas - usando valores por defecto para casos no definidos
-  const plazasTotal = centroCompleto ? parseInt(centroCompleto.plazasTotal || centroCompleto.plazas || 0, 10) : 0;
+  // Calcular plazas
+  let plazasTotal = 0;
+  let plazasOcupadas = 0;
+  let plazasDisponibles = 0;
   
-  // Contar directamente las asignaciones para este centro de forma más precisa
-  let asignacionesParaCentro = 0;
-  if (!esNoAsignable && centroCompleto) {
-    asignacionesParaCentro = assignments.filter(a => 
-      (a.centerId === centroCompleto.id || a.id === centroCompleto.id) && 
+  if (centroCompleto) {
+    // Obtener plazas totales del centro
+    plazasTotal = parseInt(centroCompleto.plazasTotal || centroCompleto.plazas || 0, 10);
+    
+    // Contar asignaciones para este centro
+    const asignacionesParaCentro = assignments.filter(a => 
+      a.centerId === asignacion.centerId && 
       !a.noAsignable && 
       a.estado !== "NO_ASIGNABLE" && 
       a.estado !== "REASIGNACION_NO_VIABLE"
     ).length;
+    
+    // Determinar plazas ocupadas, priorizando el valor almacenado y usando el conteo como respaldo
+    plazasOcupadas = parseInt(centroCompleto.plazasOcupadas || centroCompleto.asignadas || asignacionesParaCentro || 0, 10);
+    
+    // Calcular plazas disponibles
+    plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
+  } else if (!esNoAsignable) {
+    // Si no encontramos el centro pero sabemos que debe existir, buscar en CSV
+    console.warn(`Centro no encontrado para asignación: ${nombreCentro} (ID: ${asignacion.centerId})`);
+    
+    // Buscar en plazas.csv por el nombre del centro
+    // Para estos casos, se mostrará un mensaje de advertencia
+    plazasTotal = 0;
+    plazasOcupadas = 0;
+    plazasDisponibles = 0;
   }
-  
-  // Usar el valor de asignadas del centro si existe, sino usar el conteo directo
-  const plazasOcupadas = centroCompleto ? 
-    parseInt(centroCompleto.asignadas || centroCompleto.plazasOcupadas || asignacionesParaCentro || 0, 10) : 
-    asignacionesParaCentro;
-  
-  // Calcular plazas disponibles asegurando que no sea negativo
-  const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
   
   // Formatear fecha
   const fecha = new Date(asignacion.timestamp);
@@ -303,7 +322,6 @@ const Admin = ({
   const [showAsignacionManualModal, setShowAsignacionManualModal] = useState(false);
   const [asignacionesRecreadas, setAsignacionesRecreadas] = useState([]);
   const [loadingAsignacionesRecreadas, setLoadingAsignacionesRecreadas] = useState(false);
-  const [actualizandoPlazas, setActualizandoPlazas] = useState(false); // Estado para controlar la actualización de plazas
   const [notificationText, setNotificationText] = useState(''); // Estado para el texto de la notificación
 
   // Estilos comunes
@@ -2077,8 +2095,6 @@ const Admin = ({
         }}>
           <h3>Asignaciones Realizadas</h3>
           <div style={{display: 'flex', gap: '10px'}}>
-        
-            
             <button
               onClick={async () => {
                 // Recargar datos completos
@@ -2301,18 +2317,39 @@ const Admin = ({
     // Calcular el total de plazas disponibles y ocupadas
     let totalPlazasDisponibles = 0;
     let totalPlazasOcupadas = 0;
+    let totalPlazas = 0;
+    let centrosConPlazas = 0;
+    let centrosSinPlazas = 0;
     
-    assignments.forEach(asignacion => {
-      if (!asignacion.noAsignable) {
-        const centro = availablePlazas.find(c => c.id === asignacion.centerId);
-        if (centro) {
-          const plazasTotal = parseInt(centro.plazasTotal || centro.plazas || '0', 10);
-          const plazasOcupadas = parseInt(centro.plazasOcupadas || centro.asignadas || '0', 10);
-          const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
-          
-          totalPlazasDisponibles += plazasDisponibles;
-          totalPlazasOcupadas += plazasOcupadas;
-        }
+    // Procesar cada plaza disponible
+    availablePlazas.forEach(centro => {
+      // Obtener datos de plazas, utilizando los campos que estén disponibles
+      const plazasTotal = parseInt(centro.plazasTotal || centro.plazas || '0', 10);
+      
+      // Contar asignaciones para este centro
+      const asignacionesParaCentro = assignments.filter(a => 
+        a.centerId === centro.id && 
+        !a.noAsignable && 
+        a.estado !== "NO_ASIGNABLE" && 
+        a.estado !== "REASIGNACION_NO_VIABLE"
+      ).length;
+      
+      // Usar plazasOcupadas del centro o calcular desde asignaciones
+      const plazasOcupadas = centro.plazasOcupadas || centro.asignadas || asignacionesParaCentro || 0;
+      
+      // Calcular plazas disponibles
+      const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
+      
+      // Actualizar conteos totales
+      totalPlazas += plazasTotal;
+      totalPlazasDisponibles += plazasDisponibles;
+      totalPlazasOcupadas += plazasOcupadas;
+      
+      // Contar centros con/sin plazas
+      if (plazasDisponibles > 0) {
+        centrosConPlazas++;
+      } else {
+        centrosSinPlazas++;
       }
     });
 
@@ -2325,12 +2362,35 @@ const Admin = ({
         marginTop: '30px'
       }}>
         <h3 style={{ marginBottom: '15px', color: '#2c3e50' }}>Resumen de Plazas Disponibles</h3>
-        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <div>
-            <strong>Total de plazas disponibles:</strong> {totalPlazasDisponibles}
+        
+        {/* Resumen general */}
+        <div style={{ 
+          display: 'flex', 
+          justifyContent: 'space-between',
+          flexWrap: 'wrap', 
+          padding: '15px',
+          backgroundColor: '#f8f9fa',
+          borderRadius: '8px'
+        }}>
+          <div style={{ flex: '1 0 200px', margin: '5px' }}>
+            <div style={{ fontWeight: 'bold', fontSize: '18px', color: '#2c3e50' }}>{totalPlazas}</div>
+            <div>Total de plazas</div>
           </div>
-          <div>
-            <strong>Total de plazas ocupadas:</strong> {totalPlazasOcupadas}
+          <div style={{ flex: '1 0 200px', margin: '5px' }}>
+            <div style={{ fontWeight: 'bold', fontSize: '18px', color: '#27ae60' }}>{totalPlazasDisponibles}</div>
+            <div>Plazas disponibles</div>
+          </div>
+          <div style={{ flex: '1 0 200px', margin: '5px' }}>
+            <div style={{ fontWeight: 'bold', fontSize: '18px', color: '#e74c3c' }}>{totalPlazasOcupadas}</div>
+            <div>Plazas ocupadas</div>
+          </div>
+          <div style={{ flex: '1 0 200px', margin: '5px' }}>
+            <div style={{ fontWeight: 'bold', fontSize: '18px', color: '#3498db' }}>{centrosConPlazas}</div>
+            <div>Centros con plazas</div>
+          </div>
+          <div style={{ flex: '1 0 200px', margin: '5px' }}>
+            <div style={{ fontWeight: 'bold', fontSize: '18px', color: '#e67e22' }}>{centrosSinPlazas}</div>
+            <div>Centros sin plazas</div>
           </div>
         </div>
       </div>
@@ -2658,6 +2718,39 @@ const Admin = ({
             }}
           >
             Recargar Datos
+          </button>
+          
+          <button
+            onClick={async () => {
+              try {
+                setInternalProcessingMessage("Actualizando plazas de centros...");
+                
+                // Actualizar datos manualmente si existe la función
+                if (typeof actualizarDatosManualmente === 'function') {
+                  await actualizarDatosManualmente();
+                } else {
+                  // Si no existe la función, hacer una recarga completa
+                  await cargarDatosDesdeFirebase();
+                }
+                
+                showNotification("Plazas de centros actualizadas correctamente", "success");
+              } catch (error) {
+                console.error("Error al actualizar plazas:", error);
+                showNotification(`Error al actualizar plazas: ${error.message}`, "error");
+              } finally {
+                setInternalProcessingMessage("");
+              }
+            }}
+            style={{
+              padding: '8px 12px',
+              backgroundColor: '#3498db',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer'
+            }}
+          >
+            Actualizar Plazas
           </button>
           
           <button
@@ -3717,42 +3810,6 @@ const Admin = ({
         </div>
       </div>
     );
-  };
-
-  // Función para actualizar las plazas disponibles
-  const actualizarPlazas = async () => {
-    try {
-      setActualizandoPlazas(true);
-      setInternalProcessingMessage("Actualizando contadores de plazas...");
-      
-      // Primero hacer una copia de seguridad de los datos actuales
-      console.log("Plazas disponibles antes de actualizar:", availablePlazas);
-      // Utilizar la función de resetearContadoresAsignaciones desde utils
-      const resultado = await resetearContadoresAsignaciones(availablePlazas, assignments, db);
-      
-      if (resultado.success) {
-        // Recargar datos para mostrar los contadores actualizados
-        if (typeof cargarDatosDesdeFirebase === 'function') {
-          await cargarDatosDesdeFirebase();
-        } else if (typeof recargarDatosCompletos === 'function') {
-          await recargarDatosCompletos();
-        } else {
-          console.error("No se encontró función para recargar datos");
-          showNotification("Error: No se pudo recargar los datos automáticamente", "error");
-        }
-        
-        showNotification(`Plazas actualizadas correctamente: ${resultado.actualizados} centros actualizados.`, "success");
-      } else {
-        showNotification(`Error al actualizar plazas: ${resultado.message}`, "error");
-      }
-      
-    } catch (error) {
-      console.error("Error al actualizar plazas:", error);
-      showNotification(`Error al actualizar plazas: ${error.message}`, "error");
-    } finally {
-      setActualizandoPlazas(false);
-      setInternalProcessingMessage("");
-    }
   };
 
   // Actualizar el return principal para incluir el nuevo tab

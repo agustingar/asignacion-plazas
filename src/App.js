@@ -3369,24 +3369,150 @@ function App() {
         }))
         .filter(centro => centro.id && centro.centro);
 
-      setAvailablePlazas(centrosFiltrados);
+      // Crear un mapa de búsqueda por ID y por nombre normalizado
+      const centrosPorId = {};
+      const centrosPorNombre = {};
       
-      // Actualizar el timestamp de la última actualización
-      ultimaActualizacionCentros = Date.now();
-      
-      // Obtener datos actualizados de asignaciones
+      centrosFiltrados.forEach(centro => {
+        // Indexar por ID
+        if (centro.id) {
+          centrosPorId[centro.id] = centro;
+        }
+        
+        // Indexar por nombre normalizado para búsquedas insensibles a acentos
+        if (centro.centro) {
+          const nombreNormalizado = centro.centro.toLowerCase()
+            .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+            .replace(/\s+/g, ' ').trim();
+          centrosPorNombre[nombreNormalizado] = centro;
+        }
+        if (centro.nombre) {
+          const nombreNormalizado = centro.nombre.toLowerCase()
+            .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+            .replace(/\s+/g, ' ').trim();
+          centrosPorNombre[nombreNormalizado] = centro;
+        }
+      });
+
+      // Obtener datos actualizados de asignaciones para calcular plazas ocupadas
       const asignacionesSnapshot = await getDocs(collection(db, "asignaciones"));
       const asignacionesActualizadas = asignacionesSnapshot.docs.map(doc => ({
         ...doc.data(),
         docId: doc.id
       }));
       
-      setAssignments(asignacionesActualizadas);
+      // Crear un batch para actualizar los datos en Firebase
+      const batch = writeBatch(db);
       
-      showNotification("Datos actualizados correctamente", "success");
+      // Actualizar el conteo de plazas ocupadas para cada centro
+      const centrosActualizados = centrosFiltrados.map(centro => {
+        // Asegurarse de que plazasTotal tenga un valor válido
+        const plazasTotal = parseInt(centro.plazasTotal || centro.plazas || '0', 10);
+        
+        // Contar asignaciones válidas para este centro, buscando por ID o nombre normalizado
+        const nombreNormalizado = (centro.centro || centro.nombre || "").toLowerCase()
+          .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+          .replace(/\s+/g, ' ').trim();
+          
+        const asignacionesParaCentro = asignacionesActualizadas.filter(a => {
+          // Verificar por ID
+          if (a.centerId === centro.id) {
+            return !a.noAsignable && a.estado !== "NO_ASIGNABLE" && a.estado !== "REASIGNACION_NO_VIABLE";
+          }
+          
+          // Si no hay coincidencia por ID, intentar por nombre normalizado
+          if (!a.centerId && (a.centro || a.nombreCentro || a.centerName)) {
+            const nombreAsignacionNormalizado = (a.centro || a.nombreCentro || a.centerName || "").toLowerCase()
+              .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+              .replace(/\s+/g, ' ').trim();
+              
+            return nombreAsignacionNormalizado === nombreNormalizado && 
+                   !a.noAsignable && 
+                   a.estado !== "NO_ASIGNABLE" && 
+                   a.estado !== "REASIGNACION_NO_VIABLE";
+          }
+          
+          return false;
+        }).length;
+        
+        // Actualizar plazasOcupadas basado en las asignaciones actuales
+        const plazasOcupadas = asignacionesParaCentro;
+        
+        // Calcular plazas disponibles
+        const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
+        
+        // Actualizar en Firebase si tiene docId
+        if (centro.docId) {
+          const centroRef = doc(db, "centros", centro.docId);
+          batch.update(centroRef, {
+            plazasTotal: plazasTotal,
+            plazasOcupadas: plazasOcupadas,
+            plazasDisponibles: plazasDisponibles,
+            asignadas: plazasOcupadas, // Para compatibilidad con código existente
+            ultimaActualizacion: new Date().toISOString()
+          });
+        }
+        
+        return {
+          ...centro,
+          plazasTotal: plazasTotal,
+          plazasOcupadas: plazasOcupadas,
+          plazasDisponibles: plazasDisponibles,
+          asignadas: plazasOcupadas // Para compatibilidad con código existente
+        };
+      });
+
+      // Comprobar asignaciones sin centro asociado y actualizar si es posible
+      for (const asignacion of asignacionesActualizadas) {
+        if (!asignacion.centerId && (asignacion.centro || asignacion.nombreCentro || asignacion.centerName)) {
+          // Normalizar nombre del centro de la asignación
+          const nombreAsignacionNormalizado = (asignacion.centro || asignacion.nombreCentro || asignacion.centerName || "").toLowerCase()
+            .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+            .replace(/\s+/g, ' ').trim();
+          
+          // Buscar centro por nombre normalizado
+          const centroEncontrado = Object.values(centrosPorNombre).find(c => {
+            const nombreCentroNormalizado = (c.centro || c.nombre || "").toLowerCase()
+              .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+              .replace(/\s+/g, ' ').trim();
+            
+            return nombreCentroNormalizado === nombreAsignacionNormalizado ||
+                   nombreCentroNormalizado.includes(nombreAsignacionNormalizado) ||
+                   nombreAsignacionNormalizado.includes(nombreCentroNormalizado);
+          });
+          
+          // Si encontramos un centro, actualizar la asignación
+          if (centroEncontrado && asignacion.docId) {
+            console.log(`Actualizando centerId para asignación ${asignacion.docId}: ${centroEncontrado.id}`);
+            const asignacionRef = doc(db, "asignaciones", asignacion.docId);
+            batch.update(asignacionRef, {
+              centerId: centroEncontrado.id
+            });
+          }
+        }
+      }
+
+      // Ejecutar todas las actualizaciones en batch
+      await batch.commit();
+      
+      // Actualizar el estado con los centros y conteos actualizados
+      setAvailablePlazas(centrosActualizados);
+      
+      // Recargar asignaciones para que tengan referencias actualizadas
+      const asignacionesActualizadasSnapshot = await getDocs(collection(db, "asignaciones"));
+      const nuevasAsignaciones = asignacionesActualizadasSnapshot.docs.map(doc => ({
+        ...doc.data(),
+        docId: doc.id
+      }));
+      setAssignments(nuevasAsignaciones);
+      
+      // Actualizar el timestamp de la última actualización
+      ultimaActualizacionCentros = Date.now();
+      
+      showNotification("Datos de plazas actualizados correctamente en la base de datos y en local", "success");
     } catch (error) {
       console.error("Error al actualizar datos:", error);
-      showNotification("Error al actualizar los datos", "error");
+      showNotification(`Error al actualizar los datos: ${error.message}`, "error");
     } finally {
       setIsLoading(false);
     }
