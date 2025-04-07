@@ -214,9 +214,17 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
 
     // Filtrar por estado si no es 'TODOS'
     if (filtroEstado !== 'TODOS') {
-      asignacionesFiltradas = asignacionesFiltradas.filter(asignacion => 
-        asignacion && asignacion.estado === filtroEstado
-      );
+      asignacionesFiltradas = asignacionesFiltradas.filter(asignacion => {
+        if (!asignacion) return false;
+        
+        if (filtroEstado === 'REASIGNADO') {
+          return asignacion.reasignado === true;
+        } else if (filtroEstado === 'NO_ASIGNABLE') {
+          return asignacion.estado === 'NO_ASIGNABLE' || asignacion.estado === 'REASIGNACION_NO_VIABLE';
+        } else {
+          return asignacion.estado === filtroEstado;
+        }
+      });
     }
 
     // Ordenar resultados
@@ -312,6 +320,7 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
     },
     searchBar: {
       display: 'flex',
+      flexWrap: 'wrap',
       gap: '10px',
       marginBottom: '20px'
     },
@@ -321,7 +330,7 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
       borderRadius: '6px',
       border: '1px solid #e2e8f0',
       fontSize: '14px'
-    },
+    }, 
     select: {
       padding: '10px 12px',
       borderRadius: '6px',
@@ -720,10 +729,8 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
               // Determinar estilo de fila según estado
               let rowStyle = {};
               
-              if (asignacion.estado === "NO_ASIGNABLE") {
+              if (asignacion.estado === "NO_ASIGNABLE" || asignacion.estado === "REASIGNACION_NO_VIABLE") {
                 rowStyle = { backgroundColor: '#fff5f5' }; // Fondo rojo claro
-              } else if (asignacion.estado === "REASIGNACION_NO_VIABLE") {
-                rowStyle = { backgroundColor: '#fffaf0' }; // Fondo naranja claro
               } else if (asignacion.reasignado) {
                 rowStyle = { backgroundColor: '#fff9fb' }; // Fondo rosa claro
               }
@@ -777,6 +784,20 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
                         </div>
                       ) : (
                         <div>
+                          {asignacion.reasignado && (
+                            <div style={{
+                              backgroundColor: '#d53f8c',
+                              color: 'white',
+                              padding: '3px 8px',
+                              borderRadius: '4px',
+                              display: 'inline-block',
+                              fontWeight: 'bold',
+                              fontSize: '12px',
+                              marginBottom: '5px'
+                            }}>
+                              Reasignado
+                            </div>
+                          )}
                           <strong>{asignacion.nombreCentro || asignacion.centerName || asignacion.centro}</strong>
                           {asignacion.reasignado && (
                             <div style={{fontSize: '12px', color: '#d53f8c', marginTop: '4px'}}>
@@ -893,6 +914,24 @@ const Dashboard = ({ assignments = [], availablePlazas = [] }) => {
         </div>
       )}
       
+      {/* Leyenda explicativa */}
+      <div style={styles.leyendaContainer}>
+        <div style={styles.leyendaTitle}>Leyenda de estados:</div>
+        <div style={styles.leyendaItems}>
+          <div style={styles.leyendaItem}>
+            <div style={{ width: '16px', height: '16px', backgroundColor: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '3px' }}></div>
+            <span>Asignación normal</span>
+          </div>
+          <div style={styles.leyendaItem}>
+            <div style={{ width: '16px', height: '16px', backgroundColor: '#fff9fb', border: '1px solid #e2e8f0', borderRadius: '3px' }}></div>
+            <span>Reasignación</span>
+          </div>
+          <div style={styles.leyendaItem}>
+            <div style={{ width: '16px', height: '16px', backgroundColor: '#fff5f5', border: '1px solid #e2e8f0', borderRadius: '3px' }}></div>
+            <span>No asignable</span>
+          </div>
+        </div>
+      </div>
   
     </div>
   );

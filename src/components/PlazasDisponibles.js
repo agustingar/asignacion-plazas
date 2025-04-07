@@ -13,6 +13,7 @@ import React, { useState, useEffect } from 'react';
  * @param {Function} props.setCentrosSeleccionados - Función para actualizar la lista de centros seleccionados
  * @param {Function} props.handleOrderSubmit - Función para manejar el envío del formulario
  * @param {Boolean} props.isProcessing - Indica si se está procesando una solicitud
+ * @param {Function} props.showNotification - Función para mostrar notificaciones
  * @returns {JSX.Element} - Componente PlazasDisponibles
  */
 const PlazasDisponibles = ({ 
@@ -25,7 +26,8 @@ const PlazasDisponibles = ({
   centrosSeleccionados = [],
   setCentrosSeleccionados,
   handleOrderSubmit,
-  isProcessing = false
+  isProcessing = false,
+  showNotification
 }) => {
   const [error, setError] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
@@ -36,6 +38,8 @@ const PlazasDisponibles = ({
   const [filterDepartamento, setFilterDepartamento] = useState('');
   const [filterMunicipio, setFilterMunicipio] = useState('');
   const [submitMessage, setSubmitMessage] = useState(null);
+  const [isManualMode, setIsManualMode] = useState(true);
+  const [errorMessage, setErrorMessage] = useState('');
   
   // Validar props requeridas
   useEffect(() => {
@@ -117,32 +121,50 @@ const PlazasDisponibles = ({
   // Validar envío del formulario
   const handleSubmit = (e) => {
     e.preventDefault();
-    setError('');
     
-    // Validar número de orden
-    if (!orderNumber) {
-      setError('Por favor ingrese un número de orden');
+    // Convertir orderNumber a string antes de usar trim()
+    const orderNumberStr = String(orderNumber || '');
+    const trimmedOrderNumber = orderNumberStr.trim();
+    
+    // Validación de número de orden
+    if (!trimmedOrderNumber) {
+      setErrorMessage("Por favor, introduce un número de orden válido.");
       return;
     }
     
-    // Validar selección de centros
-    if (!centrosSeleccionados.length) {
-      setError('Por favor seleccione al menos un centro');
+    if (!/^\d+$/.test(trimmedOrderNumber)) {
+      setErrorMessage("El número de orden debe contener solo dígitos.");
       return;
     }
     
-    // Validar que los centros seleccionados existan y tengan plazas disponibles
-    const centrosInvalidos = centrosSeleccionados.filter(centroId => {
-      const centro = availablePlazas.find(p => p.id === centroId);
-      return !centro || centro.plazas <= centro.asignadas;
+    // Validación de centros seleccionados
+    if (!centrosSeleccionados || centrosSeleccionados.length === 0) {
+      setErrorMessage("Por favor, selecciona al menos un centro.");
+      return;
+    }
+    
+    // Verificar si hay centros seleccionados sin plazas y activar modo manual
+    const centrosSinPlazas = centrosSeleccionados.filter(centroId => {
+      const centro = availablePlazas.find(plaza => plaza.centroid === centroId);
+      return centro && centro.plazas < 1;
     });
     
-    if (centrosInvalidos.length > 0) {
-      setError('Algunos centros seleccionados ya no tienen plazas disponibles');
-      return;
+    if (centrosSinPlazas.length > 0 && !isManualMode) {
+      setIsManualMode(true);
+      if (showNotification) {
+        showNotification("Se activará el modo manual ya que algunos centros seleccionados no tienen plazas disponibles.", "info");
+      }
     }
     
-    handleOrderSubmit(orderNumber, centrosSeleccionados);
+    // Limpiar mensajes de error previos
+    setErrorMessage("");
+    
+    // Enviar solicitud
+    handleOrderSubmit({
+      orderNumber: trimmedOrderNumber,
+      centrosSeleccionados,
+      isManualMode
+    });
   };
   
   // Determinar si estamos en móvil
@@ -292,7 +314,19 @@ const PlazasDisponibles = ({
         </div>
       )}
       
-   
+      {/* Mostrar mensaje de error si existe */}
+      {errorMessage && (
+        <div style={{
+          padding: '10px 15px',
+          margin: '10px 0',
+          borderRadius: '4px',
+          backgroundColor: '#f8d7da',
+          color: '#721c24',
+          border: '1px solid #f5c6cb'
+        }}>
+          {errorMessage}
+        </div>
+      )}
       
       {/* Formulario para solicitar plaza */}
       <div style={{ 
@@ -347,21 +381,20 @@ const PlazasDisponibles = ({
           
           <div style={{
             padding: '12px 15px',
-            backgroundColor: '#e6f7ff',
-            border: '1px solid #91d5ff',
+            backgroundColor: '#fff3cd',
+            border: '1px solid #ffeeba',
             borderRadius: '6px',
             marginBottom: '15px',
             fontSize: '14px',
-            color: '#1890ff',
+            color: '#856404',
             display: 'flex',
             alignItems: 'flex-start',
             gap: '10px'
           }}>
             <span style={{ fontSize: '18px' }}>ℹ️</span>
             <div>
-              <strong>Información importante:</strong> Puedes solicitar plazas aunque aparezcan como completas. 
-              El sistema asignará las plazas priorizando por número de orden (menor número = mayor prioridad), 
-              incluso si la plaza ya está asignada a alguien con un número de orden mayor.
+              <strong>Información importante:</strong>{' '}
+              Las solicitudes se procesarán manualmente por el administrador del sistema.
             </div>
           </div>
           
@@ -447,16 +480,16 @@ const PlazasDisponibles = ({
           <div style={{ textAlign: 'center' }}>
             <button 
               type="submit"
-              disabled={isProcessing || centrosSeleccionados.length === 0}
+              disabled={centrosSeleccionados.length === 0}
               style={{ 
                 padding: '12px 25px', 
                 backgroundImage: isProcessing ? 
-                  'linear-gradient(to right, #cccccc, #dddddd)' : 
+                  'linear-gradient(to right, #f39c12, #e67e22)' : // Naranja cuando está procesando 
                   'linear-gradient(to right, #3498db, #2980b9)',
                 color: 'white', 
                 border: 'none', 
                 borderRadius: '6px', 
-                cursor: isProcessing || centrosSeleccionados.length === 0 ? 'not-allowed' : 'pointer',
+                cursor: centrosSeleccionados.length === 0 ? 'not-allowed' : 'pointer',
                 display: 'inline-flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -477,7 +510,7 @@ const PlazasDisponibles = ({
                     animation: 'spin 1s linear infinite',
                     marginRight: '10px'
                   }} />
-                  Procesando...
+                  Enviar de todos modos
                 </>
               ) : (
                 <>Solicitar Plaza</>

@@ -567,16 +567,55 @@ function App() {
         console.log("✅ Se encontraron asignaciones en la colección 'asignaciones':", asignacionesSnapshot.size);
       }
       
-      // Contar asignaciones por centro
+      // Cargar asignaciones recreadas para filtrarlas
+      let idsAsignacionesRecreadas = new Set();
+      try {
+        const asignacionesRecreadasSnapshot = await getDocs(collection(db, "asignacionesRecreadas"));
+        if (!asignacionesRecreadasSnapshot.empty) {
+          asignacionesRecreadasSnapshot.forEach(doc => {
+            const data = doc.data();
+            if (data && !data.eliminada && data.asignacionId) {
+              idsAsignacionesRecreadas.add(data.asignacionId);
+            }
+          });
+          console.log(`Se encontraron ${idsAsignacionesRecreadas.size} asignaciones recreadas que serán filtradas`);
+        }
+      } catch (error) {
+        console.warn("No se pudieron cargar las asignaciones recreadas:", error);
+      }
+      
+      // Contar asignaciones por centro (excluyendo las recreadas)
       const asignacionesPorCentro = {};
+      let asignacionesValidas = [];
       asignacionesSnapshot.forEach(doc => {
         const data = doc.data();
+        // Excluir asignaciones recreadas
+        if (idsAsignacionesRecreadas.has(doc.id)) {
+          console.log(`Filtrando asignación recreada: ${doc.id}`);
+          return;
+        }
+        
+        asignacionesValidas.push({
+          id: doc.id,
+          docId: doc.id,
+          ...data
+        });
+        
         if (data && data.centerId) {
           const centroId = data.centerId;
           asignacionesPorCentro[centroId] = (asignacionesPorCentro[centroId] || 0) + 1;
         }
       });
       
+      // Asegurar que cada asignación tenga la propiedad reasignado correctamente definida
+      asignacionesValidas = asignacionesValidas.map(asignacion => {
+        // Establecer reasignado = true si el estado es REASIGNADO, aunque la propiedad no esté definida
+        if (asignacion.estado === 'REASIGNADO' && !asignacion.reasignado) {
+          return { ...asignacion, reasignado: true };
+        }
+        return asignacion;
+      });
+
       console.log("Conteo de asignaciones por centro:", asignacionesPorCentro);
       
       // Creamos estructuras para detectar duplicados
@@ -721,6 +760,12 @@ function App() {
       // Cargar asignaciones para mostrar en el panel de admin
       console.log("Procesando asignaciones para mostrar...");
       
+      // Usar las asignaciones válidas ya filtradas en lugar de volver a cargar
+      let assignmentsData = {};
+      asignacionesValidas.forEach(asignacion => {
+        assignmentsData[asignacion.id] = asignacion;
+      });
+      
       // Crear índices de búsqueda para centros (por ID y por nombre)
       const centrosPorId = {};
       const centrosPorNombre = {};
@@ -819,7 +864,10 @@ function App() {
             timestamp: data.timestamp || Date.now(),
             fechaAsignacion: data.fechaAsignacion || new Date().toISOString(),
             // Guardar referencia al centro real para calcular plazas disponibles
-            centroAsociado: centroBuscado
+            centroAsociado: centroBuscado,
+            // Asegurar que reasignado se maneje correctamente
+            estado: data.estado || "ASIGNADA",
+            reasignado: data.reasignado === true || data.estado === 'REASIGNADO'
           };
         }
       });
@@ -979,11 +1027,32 @@ function App() {
     });
     
     // Listener para asignaciones
-    const unsubscribeAsignaciones = onSnapshot(collection(db, "asignaciones"), (snapshot) => {
+    const unsubscribeAsignaciones = onSnapshot(collection(db, "asignaciones"), async (snapshot) => {
       const ahora = Date.now();
       if (ahora - ultimaActualizacionAsignaciones >= INTERVALO_ACTUALIZACION) {
+        // Cargar asignaciones recreadas para filtrarlas
+        let idsAsignacionesRecreadas = new Set();
+        try {
+          const asignacionesRecreadasSnapshot = await getDocs(
+            query(collection(db, "asignacionesRecreadas"), where("eliminada", "==", false))
+          );
+          asignacionesRecreadasSnapshot.forEach(doc => {
+            const data = doc.data();
+            if (data && data.asignacionId) {
+              idsAsignacionesRecreadas.add(data.asignacionId);
+            }
+          });
+        } catch (error) {
+          console.warn("Error al cargar asignaciones recreadas en listener:", error);
+        }
+        
         const asignacionesData = [];
         snapshot.forEach((doc) => {
+          // Filtrar asignaciones recreadas
+          if (idsAsignacionesRecreadas.has(doc.id)) {
+            return; // Saltar esta asignación
+          }
+          
           const data = doc.data();
           const asignacion = {
             ...data,
@@ -993,10 +1062,17 @@ function App() {
             localidad: data.localidad || 'No disponible',
             municipio: data.municipio || 'No disponible',
             timestamp: data.timestamp || Date.now(),
-            estado: data.estado || 'ASIGNADA'
+            estado: data.estado || 'ASIGNADA',
+            // Asegurar que reasignado se mantenga como booleano
+            reasignado: data.reasignado === true || data.estado === 'REASIGNADO'
           };
+          
+          // Ya no es necesario el if adicional, ya que lo incluimos en la asignación directamente
+          
           asignacionesData.push(asignacion);
         });
+        
+        console.log("Asignaciones cargadas:", asignacionesData.length, "Reasignadas:", asignacionesData.filter(a => a.reasignado).length);
         
         asignacionesData.sort((a, b) => {
           const ordenA = Number(a.order) || 0;
@@ -1770,138 +1846,58 @@ function App() {
 
   /**
    * Enviar una solicitud de plaza
-   * @param {number} orderNumber - Número de orden
-   * @param {Array} selectedCenters - IDs de centros seleccionados
+   * @param {Object} solicitudData - Datos de la solicitud
+   * @param {string} solicitudData.orderNumber - Número de orden
+   * @param {Array} solicitudData.centrosSeleccionados - IDs de centros seleccionados
+   * @param {boolean} solicitudData.isManualMode - Indica si está en modo manual
    */
-  const enviarSolicitud = async (orderNumber, selectedCenters, isManualMode = false) => {
+  const enviarSolicitud = async (solicitudData) => {
+    // Extraer los datos del objeto
+    const { orderNumber, centrosSeleccionados, isManualMode = false } = solicitudData;
+    
     console.log(`Iniciando envío de solicitud para orden ${orderNumber} en modo ${isManualMode ? 'manual' : 'automático'}`);
     
-    // Validación más robusta de entradas
-    if (orderNumber === undefined || orderNumber === null || orderNumber === '') {
-      console.error("Error en enviarSolicitud: orderNumber es null, undefined o vacío");
-      showNotification("Error: Número de orden inválido", "error");
-      return false;
-    }
-    
-    // Validar centros seleccionados con comprobación más estricta
-    if (!selectedCenters || !Array.isArray(selectedCenters) || selectedCenters.length === 0) {
-      console.error("Error en enviarSolicitud: No hay centros seleccionados", selectedCenters);
-      showNotification("Error: Debe seleccionar al menos un centro", "error");
-      return false;
-    }
-    
-    // Convertir a número para consistencia
-    const orderNumberNumeric = Number(orderNumber);
-    if (isNaN(orderNumberNumeric)) {
-      console.error("Error en enviarSolicitud: orderNumber no es un número válido", orderNumber);
-      showNotification("Error: Número de orden inválido", "error");
-      return false;
-    }
-    
-    console.log(`Procesando solicitud para orden ${orderNumberNumeric} con centros:`, selectedCenters);
-    
     try {
-      // Verificar conexión a Firebase primero
-      const conexionResult = await verificarConexionFirebase();
-      if (!conexionResult || !conexionResult.success) {
-        console.error("Error de conexión con Firebase:", conexionResult?.error || "Sin detalles adicionales");
-        showNotification("Error de conexión con la base de datos. Por favor, verifica tu conexión a internet.", "error");
+      // Solo mostramos el indicador de procesamiento, pero no bloqueamos la UI
+      setIsProcessing(true);
+      setProcessingMessage(`Agregando solicitud para orden ${orderNumber} a la cola...`);
+      
+      // Validaciones básicas sin esperar
+      if (!orderNumber || !centrosSeleccionados || centrosSeleccionados.length === 0) {
+        showNotification("Error: Faltan datos necesarios para la solicitud", "error");
         return false;
       }
       
-      // Verificar si ya existe una asignación para este número de orden
-      try {
-        const existingAssignmentSnapshot = await getDocs(
-          query(collection(db, "asignaciones"), where("order", "==", orderNumberNumeric))
-        );
-        
-        if (!existingAssignmentSnapshot.empty) {
-          console.log(`Ya existe una asignación para la orden ${orderNumberNumeric}`);
-          showNotification(`La orden ${orderNumberNumeric} ya tiene una asignación en el sistema.`, "error");
-          return false;
-        }
-      } catch (error) {
-        console.error("Error al verificar asignaciones existentes:", error);
-        showNotification("Error al verificar asignaciones existentes. Intente nuevamente.", "error");
-        return false;
-      }
+      // Agregar a la cola de procesamiento
+      setSolicitudesPendientesEnvio(prev => [
+        ...prev, 
+        {orderNumber, selectedCenters: centrosSeleccionados, isManualMode}
+      ]);
       
-      // Verificar si ya existe una solicitud pendiente para este número de orden
-      let existingRequestId = null;
-      try {
-        const existingRequestSnapshot = await getDocs(
-          query(collection(db, "solicitudesPendientes"), where("orden", "==", orderNumberNumeric))
-        );
-        
-        if (!existingRequestSnapshot.empty) {
-          existingRequestId = existingRequestSnapshot.docs[0].id;
-          console.log(`Encontrada solicitud existente con ID ${existingRequestId} para orden ${orderNumberNumeric}`);
-        }
-      } catch (error) {
-        console.error("Error al verificar solicitudes pendientes existentes:", error);
-        showNotification("Error al verificar solicitudes pendientes. Intente nuevamente.", "error");
-        return false;
-      }
+      // Limpiar el formulario inmediatamente
+      setOrderNumber('');
+      setCentrosSeleccionados([]);
       
-      // Añadir/actualizar la solicitud en la colección de solicitudes pendientes
-      try {
-        const newRequest = {
-          orden: orderNumberNumeric,
-          centrosIds: selectedCenters,
-          timestamp: serverTimestamp(),
-          isManualMode: isManualMode // Añadimos flag para modo manual
-        };
-        
-        if (existingRequestId) {
-          // Actualizar la solicitud existente
-          const solicitudRef = doc(db, "solicitudesPendientes", existingRequestId.toString());
-          await updateDoc(solicitudRef, newRequest);
-          console.log(`Actualizada solicitud existente ${existingRequestId} para orden ${orderNumberNumeric}`);
-        } else {
-          // Crear una nueva solicitud
-          const solicitudesRef = collection(db, "solicitudesPendientes");
-          const nuevaSolicitudRef = doc(solicitudesRef);
-          await setDoc(nuevaSolicitudRef, newRequest);
-          console.log(`Creada nueva solicitud para orden ${orderNumberNumeric}`);
-        }
-        
-        console.log(`Solicitud para orden ${orderNumberNumeric} enviada correctamente`);
-        showNotification(`Solicitud para orden ${orderNumberNumeric} enviada correctamente. ${isManualMode ? 'Se procesará manualmente.' : 'Será procesada automáticamente.'}`, "success");
-        
-        // Registrar en historial
-        const ahora = new Date();
-        const historialRef = collection(db, "historialSolicitudes");
-        const nuevoHistorialRef = doc(historialRef);
-        await setDoc(nuevoHistorialRef, {
-          orden: orderNumberNumeric,
-          centrosIds: selectedCenters,
-          estado: "PENDIENTE",
-          mensaje: isManualMode ? "Solicitud manual añadida" : "Solicitud añadida a la cola de procesamiento",
-          fechaHistorico: ahora.toISOString(),
-          timestamp: ahora.getTime(),
-          isManualMode: isManualMode
-        });
-        
-        // Limpiar los campos del formulario
-        setOrderNumber('');
-        setCentrosSeleccionados([]);
-        
-        // Cambiar la pestaña activa a "solicitudes"
+      // Cambiar la pestaña activa a "solicitudes" después de un breve retraso
+      setTimeout(() => {
         setActiveTab('solicitudes');
-        
-        return true;
-      } catch (error) {
-        console.error("Error al guardar solicitud:", error);
-        showNotification(`Error al procesar la solicitud: ${error.message}`, "error");
-        return false;
-      }
+      }, 1000);
+      
+      showNotification(`Solicitud para orden ${orderNumber} agregada a la cola de procesamiento`, "success");
+      return true;
     } catch (error) {
-      console.error(`Error al enviar solicitud para orden ${orderNumberNumeric}:`, error);
-      showNotification(`Error al enviar solicitud: ${error.message}`, "error");
+      console.error(`Error al encolar solicitud para orden ${orderNumber}:`, error);
+      showNotification(`Error al agregar solicitud a la cola: ${error.message}`, "error");
       return false;
+    } finally {
+      // Resetear el estado de procesamiento después de un breve retraso
+      setTimeout(() => {
+        setIsProcessing(false);
+        setProcessingMessage("");
+      }, 1500);
     }
   };
-  
+
   // Definir estilos para la interfaz mejorada
   const styles = {
     container: {
@@ -3388,6 +3384,248 @@ function App() {
     }
   };
 
+  // Cola para almacenar solicitudes pendientes
+  const [solicitudesPendientesEnvio, setSolicitudesPendientesEnvio] = useState([]);
+  const procesandoSolicitudRef = useRef(false);
+
+  // Función para procesar la cola de solicitudes pendientes
+  const procesarColaSolicitudes = async () => {
+    // Si ya se está procesando o no hay solicitudes, salir
+    if (procesandoSolicitudRef.current || solicitudesPendientesEnvio.length === 0) {
+      console.log("Cola de solicitudes: Ya está procesando o no hay solicitudes");
+      return;
+    }
+
+    // Marcar que se está procesando
+    procesandoSolicitudRef.current = true;
+    console.log("Iniciando procesamiento de cola de solicitudes");
+    
+    try {
+      // Obtener la primera solicitud de la cola (sin modificar el array original)
+      const solicitud = solicitudesPendientesEnvio[0];
+      console.log(`Procesando solicitud desde cola: ${solicitud.orderNumber}`);
+      
+      // Convertir a número para búsquedas consistentes
+      const orderNumberNumeric = Number(solicitud.orderNumber);
+      
+      // COMPROBACIÓN 1: Verificar si ya existe una asignación para este número de orden
+      try {
+        const existingAssignmentSnapshot = await getDocs(
+          query(collection(db, "asignaciones"), where("order", "==", orderNumberNumeric))
+        );
+        
+        if (!existingAssignmentSnapshot.empty) {
+          console.log(`Ya existe una asignación para la orden ${orderNumberNumeric}, omitiendo procesamiento.`);
+          showNotification(`La orden ${orderNumberNumeric} ya tiene una asignación en el sistema.`, "warning");
+          // Eliminar la solicitud de la cola sin procesarla
+          setSolicitudesPendientesEnvio(prev => prev.slice(1));
+          return; // Salir sin procesar
+        }
+      } catch (error) {
+        console.error("Error al verificar asignaciones existentes:", error);
+      }
+      
+      // COMPROBACIÓN 2: Verificar si ya existe una solicitud pendiente para este número
+      try {
+        const existingRequestSnapshot = await getDocs(
+          query(collection(db, "solicitudesPendientes"), where("orden", "==", orderNumberNumeric))
+        );
+        
+        if (!existingRequestSnapshot.empty) {
+          const existingRequestId = existingRequestSnapshot.docs[0].id;
+          console.log(`Ya existe una solicitud pendiente para orden ${orderNumberNumeric} con ID ${existingRequestId}`);
+          showNotification(`Ya existe una solicitud para la orden ${orderNumberNumeric} en el sistema.`, "info");
+          // Eliminar duplicado de la cola
+          setSolicitudesPendientesEnvio(prev => prev.slice(1));
+          return; // Salir sin procesar
+        }
+      } catch (error) {
+        console.error("Error al verificar solicitudes pendientes existentes:", error);
+      }
+      
+      // Si llegamos aquí, podemos procesar la solicitud con seguridad
+      await procesarSolicitudIndividual(
+        solicitud.orderNumber,
+        solicitud.selectedCenters,
+        solicitud.isManualMode
+      );
+      
+      // Eliminar la solicitud procesada de la cola
+      setSolicitudesPendientesEnvio(prev => prev.filter((_, index) => index !== 0));
+      
+    } catch (error) {
+      console.error("Error al procesar solicitud de la cola:", error);
+      showNotification("Error al procesar solicitud. Por favor, inténtelo de nuevo.", "error");
+    } finally {
+      // Marcar que ya no se está procesando
+      procesandoSolicitudRef.current = false;
+      
+      console.log("Procesamiento de solicitud finalizado");
+    }
+  };
+
+  // Efecto para procesar la cola cuando cambia
+  useEffect(() => {
+    // Usar un temporizador para evitar múltiples llamadas
+    let timeoutId = null;
+    
+    const iniciarProcesamiento = () => {
+      // Solo iniciar si hay solicitudes y no se está procesando ya
+      if (solicitudesPendientesEnvio.length > 0 && !procesandoSolicitudRef.current) {
+        console.log(`Programando proceso de cola (${solicitudesPendientesEnvio.length} pendientes)`);
+        
+        // Cancelar cualquier temporizador existente
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
+        
+        // Programar el procesamiento con un retraso
+        timeoutId = setTimeout(() => {
+          procesarColaSolicitudes();
+        }, 3000); // Aumentar a 3 segundos para dar más margen
+      }
+    };
+    
+    // Iniciar el procesamiento
+    iniciarProcesamiento();
+    
+    // Limpiar timeout en el cleanup
+    return () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [solicitudesPendientesEnvio]);
+
+  // Efecto para cerrar automáticamente la pantalla de mantenimiento cuando no hay solicitudes pendientes
+  useEffect(() => {
+    // Solo verificar si está en modo mantenimiento
+    if (isVerificationMaintenance) {
+      // Intervalo para actualizar regularmente el conteo de solicitudes pendientes
+      const intervaloActualizacion = setInterval(async () => {
+        try {
+          // Verificar las solicitudes pendientes en Firebase
+          const solicitudesSnapshot = await getDocs(collection(db, "solicitudesPendientes"));
+          const solicitudesArray = solicitudesSnapshot.docs.map(doc => ({
+            ...doc.data(),
+            docId: doc.id
+          }));
+          
+          // Actualizar el estado de solicitudes
+          setSolicitudes(solicitudesArray);
+          
+          console.log(`Actualizando conteo de solicitudes pendientes: ${solicitudesArray.length}`);
+          
+          // Si no hay solicitudes pendientes y el progreso está completo
+          if (solicitudesArray.length === 0 && maintenanceProgress >= 100) {
+            console.log("No hay solicitudes pendientes y el mantenimiento está completo");
+          }
+        } catch (error) {
+          console.error("Error al actualizar solicitudes pendientes:", error);
+        }
+      }, 5000); // Actualizar cada 5 segundos
+      
+      // Limpiar intervalo al desmontar
+      return () => {
+        clearInterval(intervaloActualizacion);
+      };
+    }
+  }, [isVerificationMaintenance, maintenanceProgress]);
+
+  /**
+   * Procesa una solicitud individual.
+   * @param {string} orderNumber - Número de orden
+   * @param {Array} selectedCenters - Centros seleccionados  
+   * @param {boolean} isManualMode - Modo manual
+   * @returns {Promise<boolean>} - Devuelve true si se procesó correctamente
+   */
+  const procesarSolicitudIndividual = async (orderNumber, selectedCenters, isManualMode = false) => {
+    console.log(`Procesando solicitud para orden ${orderNumber} en modo ${isManualMode ? 'manual' : 'automático'}`);
+    
+    if (!orderNumber || !selectedCenters || selectedCenters.length === 0) {
+      console.error("Datos de solicitud incompletos");
+      return false;
+    }
+    
+    console.log(`Procesando solicitud para orden ${orderNumber} con centros:`, selectedCenters);
+    
+    try {
+      // Verificar Firebase
+      const checkConnection = await verificarConexionFirebase();
+      if (!checkConnection.success) {
+        console.error("Error de conexión a Firebase:", checkConnection.message);
+        showNotification(`Error de conexión: ${checkConnection.message}`, "error");
+        return false;
+      }
+      
+      // Convertir orderNumber a número para consistencia
+      const orderNumberNumeric = Number(orderNumber);
+      
+      // Verificar si ya existe una solicitud para este número de orden
+      // para evitar duplicados y procesamiento innecesario
+      let existingSolicitudId = null;
+      const existingSolicitudSnapshot = await getDocs(
+        query(collection(db, "solicitudesPendientes"), where("orden", "==", orderNumberNumeric))
+      );
+      
+      if (!existingSolicitudSnapshot.empty) {
+        // Ya existe una solicitud - No la actualizamos, simplemente notificamos
+        existingSolicitudId = existingSolicitudSnapshot.docs[0].id;
+        console.log(`Encontrada solicitud existente con ID ${existingSolicitudId} para orden ${orderNumberNumeric}`);
+        showNotification(`Ya existe una solicitud para la orden ${orderNumberNumeric}`, "info");
+        
+        // Devolver true porque la solicitud ya está en el sistema
+        return true;
+      }
+      
+      // Verificar si ya existe una asignación para este número de orden
+      const existingAssignmentSnapshot = await getDocs(
+        query(collection(db, "asignaciones"), where("order", "==", orderNumberNumeric))
+      );
+      
+      if (!existingAssignmentSnapshot.empty) {
+        // Ya existe una asignación para este número de orden
+        console.log(`Ya existe una asignación para la orden ${orderNumberNumeric}, omitiendo procesamiento.`);
+        showNotification(`La orden ${orderNumberNumeric} ya tiene una asignación en el sistema.`, "warning");
+        return false;
+      }
+      
+      // Aquí estamos seguros de que no existe ni solicitud ni asignación
+      // Crear la nueva solicitud pendiente
+      const newRequest = {
+        orden: orderNumberNumeric,
+        centrosIds: selectedCenters,
+        timestamp: serverTimestamp(),
+        isManualMode: isManualMode
+      };
+          
+      // Crear una nueva solicitud
+      const solicitudesRef = collection(db, "solicitudesPendientes");
+      const nuevaSolicitudRef = await addDoc(solicitudesRef, newRequest);
+      console.log(`Creada nueva solicitud para orden ${orderNumberNumeric} con ID ${nuevaSolicitudRef.id}`);
+      
+      // Registrar en historial
+      const historialRef = collection(db, "historialSolicitudes");
+      await addDoc(historialRef, {
+        orden: orderNumberNumeric,
+        centrosIds: selectedCenters,
+        estado: "PENDIENTE",
+        mensaje: isManualMode ? "Solicitud enviada en modo manual" : "Solicitud enviada",
+        fechaHistorico: new Date().toISOString(),
+        timestamp: Date.now()
+      });
+      
+      console.log(`Solicitud para orden ${orderNumberNumeric} enviada correctamente`);
+      showNotification(`Solicitud para orden ${orderNumberNumeric} enviada correctamente`, "success");
+      return true;
+      
+    } catch (error) {
+      console.error(`Error al procesar solicitud para orden ${orderNumber}:`, error);
+      showNotification(`Error al procesar solicitud: ${error.message}`, "error");
+      return false;
+    }
+  };
+
   // Renderizado condicional basado en la ruta
   if (isAdminView) {
     return (
@@ -3522,13 +3760,56 @@ function App() {
         {maintenanceProgress}% completado
       </div>
       
-      <div style={{
-        marginTop: '30px',
-        fontSize: '14px',
-        color: '#8892b0',
-        fontStyle: 'italic'
-      }}>
-        Por favor espere. El sistema volverá a estar disponible automáticamente.
+      <div style={{ marginTop: '30px' }}>
+        {solicitudes.length === 0 ? (
+          <div style={{
+            fontSize: '16px',
+            color: '#64ffda',
+            marginBottom: '20px'
+          }}>
+            ✅ No hay solicitudes pendientes. El mantenimiento ha finalizado.
+          </div>
+        ) : (
+          <div style={{
+            fontSize: '16px',
+            color: '#ffd700',
+            marginBottom: '20px'
+          }}>
+            ⚠️ Hay {solicitudes.length} solicitudes pendientes por procesar.
+          </div>
+        )}
+        
+        <div style={{ display: 'flex', justifyContent: 'center', gap: '10px' }}>
+          <button 
+            onClick={() => setIsVerificationMaintenance(false)}
+            style={{
+              padding: '10px 20px',
+              backgroundColor: '#64ffda',
+              color: '#0a192f',
+              border: 'none',
+              borderRadius: '4px',
+              fontWeight: 'bold',
+              cursor: 'pointer'
+            }}
+          >
+            Continuar
+          </button>
+          
+          <button 
+            onClick={() => window.location.reload()}
+            style={{
+              padding: '10px 20px',
+              backgroundColor: 'transparent',
+              color: '#64ffda',
+              border: '1px solid #64ffda',
+              borderRadius: '4px',
+              fontWeight: 'bold',
+              cursor: 'pointer'
+            }}
+          >
+            Recargar página
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -3607,9 +3888,20 @@ function App() {
         borderRadius: '6px'
       }}>
         <div>
-          <span style={{fontWeight: 'bold', marginRight: '5px'}}>Plazas disponibles:</span>
-          {7066 - assignments.length} de 7066
-           {' '}
+  
+          {(() => {
+             const totalPlazas = availablePlazas ? availablePlazas.reduce((acc, centro) => acc + parseInt(centro.plazasTotal || centro.plazas || '0', 10), 0) : 7066;
+             const totalPlazasDisponibles = availablePlazas ? availablePlazas.reduce((acc, centro) => {
+                const total = parseInt(centro.plazasTotal || centro.plazas || '0', 10);
+                const ocupadas = parseInt(centro.plazasOcupadas || centro.asignadas || '0', 10);
+                return acc + Math.max(0, total - ocupadas);
+             }, 0) : (7066 - assignments.length);
+             return (
+               <span style={{fontWeight: 'bold', marginRight: '5px'}}>
+                 Plazas disponibles: {totalPlazasDisponibles} de {totalPlazas}
+               </span>
+             );
+          })()}
         </div>
         <div style={{display: 'flex', alignItems: 'center',flexWrap: 'wrap'}}>
           {solicitudes.length > 0 && (
@@ -3695,6 +3987,7 @@ function App() {
               setCentrosSeleccionados={setCentrosSeleccionados}
               handleOrderSubmit={enviarSolicitud}
               isProcessing={isProcessing}
+              showNotification={showNotification}
             />
           ) : (
             <div style={{ 
