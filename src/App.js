@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import './App.css';
-import { collection, onSnapshot, addDoc, updateDoc, doc, getDocs, query, deleteDoc, setDoc, runTransaction, orderBy, where, writeBatch, limit, serverTimestamp } from "firebase/firestore";
+import { collection, onSnapshot, addDoc, updateDoc, doc, getDocs, query, deleteDoc, setDoc, runTransaction, orderBy, where, writeBatch, limit, serverTimestamp, getDoc } from "firebase/firestore";
 import { db } from './utils/firebaseConfig';
 import { 
   procesarSolicitudes, 
@@ -98,6 +98,7 @@ function App() {
 
   // Estado para manejar el proceso de carga
   const [isLoading, setIsLoading] = useState(false);
+  const [globalNotification, setGlobalNotification] = useState(''); // Estado para la notificación global
 
   // Constante para el intervalo de actualización (5 minutos)
   const INTERVALO_ACTUALIZACION = 5 * 60 * 1000;
@@ -1926,24 +1927,31 @@ function App() {
       fontWeight: 'normal',
       margin: 0
     },
+    nav: { // Modificar estilos de la navegación
+      display: 'flex', // Cambiar a flex para poner en fila
+      justifyContent: 'center', // Centrar las pestañas
+      gap: '10px', // Espacio entre pestañas
+      marginBottom: '20px'
+    },
     tabs: {
-      display: 'flex',
+      // display: 'flex', // Ya no se usa aquí, se aplica en nav
       gap: '2px',
-      marginBottom: '20px',
-      backgroundColor: '#e9ecef',
-      borderRadius: '10px',
-      padding: '3px',
-      overflow: 'hidden'
+      // marginBottom: '20px', // Ya no se usa aquí
+      // backgroundColor: '#e9ecef', // Ya no se usa aquí
+      // borderRadius: '10px', // Ya no se usa aquí
+      // padding: '3px', // Ya no se usa aquí
+      // overflow: 'hidden' // Ya no se usa aquí
     },
     tab: {
       padding: '12px 20px',
       cursor: 'pointer',
-      flex: 1,
+      // flex: 1, // Quitar flex: 1 para que no ocupen todo el ancho
       textAlign: 'center',
       borderRadius: '8px',
       transition: 'all 0.3s ease',
       fontSize: '15px',
-      fontWeight: '500'
+      fontWeight: '500',
+      border: '1px solid transparent' // Añadir borde transparente para mantener tamaño
     },
     activeTab: {
       backgroundColor: '#fff',
@@ -3626,6 +3634,20 @@ function App() {
     }
   };
 
+  // Listener para la notificación global
+  useEffect(() => {
+    const configDocRef = doc(db, 'config', 'general');
+    const unsubscribe = onSnapshot(configDocRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setGlobalNotification(docSnap.data().notificationText || '');
+      } else {
+        setGlobalNotification('');
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
   // Renderizado condicional basado en la ruta
   if (isAdminView) {
     return (
@@ -3842,37 +3864,52 @@ function App() {
           }}>🏥</span>
         </h1>
         
-      
-      
-      <div style={styles.tabs}>
-        <div 
-          style={{
-            ...styles.tab,
-            ...(activeTab === 'asignaciones' ? styles.activeTab : styles.inactiveTab)
-          }}
-          onClick={() => setActiveTab('asignaciones')}
-        >
-          📋 Historial de Asignaciones
-        </div>
-        <div 
-          style={{
-            ...styles.tab,
-            ...(activeTab === 'solicitudes' ? styles.activeTab : styles.inactiveTab)
-          }}
-          onClick={() => setActiveTab('solicitudes')}
-        >
-          🔍 Solicitudes Pendientes
-        </div>
-        <div 
-          style={{
-            ...styles.tab,
-            ...(activeTab === 'plazas' ? styles.activeTab : styles.inactiveTab)
-          }}
-          onClick={() => setActiveTab('plazas')}
-        >
-          🏢 Plazas Disponibles
+        { /* Mostrar notificación global si existe */}
+        {globalNotification && (
+          <div style={{
+            backgroundColor: '#fff3cd',
+            color: '#856404',
+            padding: '15px',
+            margin: '20px auto',
+            borderRadius: '5px',
+            border: '1px solid #ffeeba',
+            textAlign: 'center',
+            fontWeight: 'bold',
+            maxWidth: '900px' // Limitar ancho
+          }}>
+            {globalNotification}
           </div>
-        </div>
+        )}
+
+        <nav style={styles.nav}>
+          <div 
+            style={{
+              ...styles.tab,
+              ...(activeTab === 'asignaciones' ? styles.activeTab : styles.inactiveTab)
+            }}
+            onClick={() => setActiveTab('asignaciones')}
+          >
+            📋 Historial de Asignaciones
+          </div>
+          <div 
+            style={{
+              ...styles.tab,
+              ...(activeTab === 'solicitudes' ? styles.activeTab : styles.inactiveTab)
+            }}
+            onClick={() => setActiveTab('solicitudes')}
+          >
+            🔍 Solicitudes Pendientes
+          </div>
+          <div 
+            style={{
+              ...styles.tab,
+              ...(activeTab === 'plazas' ? styles.activeTab : styles.inactiveTab)
+            }}
+            onClick={() => setActiveTab('plazas')}
+          >
+            🏢 Plazas Disponibles
+          </div>
+        </nav>
       </div>
       
       {/* Información de última actualización */}

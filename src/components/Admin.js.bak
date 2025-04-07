@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { writeBatch, doc, collection, serverTimestamp, onSnapshot, query, where, addDoc, updateDoc, getDocs, deleteDoc, getDoc, setDoc } from "firebase/firestore";
+import { writeBatch, doc, collection, serverTimestamp, onSnapshot, query, where, addDoc, updateDoc, getDocs, deleteDoc, setDoc, getDoc } from "firebase/firestore";
 import * as XLSX from 'xlsx';
 import { db } from '../firebase';
 
@@ -274,7 +274,8 @@ const Admin = ({
   const [showAsignacionManualModal, setShowAsignacionManualModal] = useState(false);
   const [asignacionesRecreadas, setAsignacionesRecreadas] = useState([]);
   const [loadingAsignacionesRecreadas, setLoadingAsignacionesRecreadas] = useState(false);
-  const [notificationText, setNotificationText] = useState(''); // Estado para el texto de la notificación
+  const [notificacionGlobal, setNotificacionGlobal] = useState('');
+  const [notificacionActiva, setNotificacionActiva] = useState(false);
 
   // Estilos comunes
   const tabButtonStyle = {
@@ -424,38 +425,43 @@ const Admin = ({
     );
   };
 
-  // Corregir el useEffect para que no sea condicional
+  // Cargar notificación actual al iniciar
   useEffect(() => {
-    let unsubscribe = () => {};
-    
-    if (isAdmin) {
-      unsubscribe = onSnapshot(collection(db, 'feedback'), (snapshot) => {
-        const feedbackData = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
-        setFeedbackSolicitudes(feedbackData);
-      });
-      
-      // Cargar asignaciones recreadas
-      cargarAsignacionesRecreadas();
-    }
-    
-    // Listener para el texto de la notificación
-    const configDocRef = doc(db, 'config', 'general');
-    const unsubscribeConfig = onSnapshot(configDocRef, (docSnap) => {
-      if (docSnap.exists()) {
-        setNotificationText(docSnap.data().notificationText || '');
-      } else {
-        setNotificationText('');
+    const cargarNotificacionGlobal = async () => {
+      try {
+        const notificacionRef = doc(db, "configuracion", "notificacionGlobal");
+        const notificacionDoc = await getDoc(notificacionRef);
+        
+        if (notificacionDoc.exists()) {
+          const datos = notificacionDoc.data();
+          setNotificacionGlobal(datos.mensaje || '');
+          setNotificacionActiva(datos.activa || false);
+        }
+      } catch (error) {
+        console.error("Error al cargar notificación global:", error);
       }
-    });
+    };
+    
+    cargarNotificacionGlobal();
+  }, []);
 
-    return () => {
-      unsubscribe();
-      unsubscribeConfig(); // Limpiar listener de config
+  const actualizarNotificacionGlobal = async () => {
+    setInternalProcessingMessage("Actualizando notificación global...");
+    try {
+      const notificacionRef = doc(db, "configuracion", "notificacionGlobal");
+      await setDoc(notificacionRef, {
+        mensaje: notificacionGlobal,
+        activa: notificacionActiva,
+        ultimaActualizacion: serverTimestamp()
+      });
+      showNotification("Notificación global actualizada correctamente", "success");
+    } catch (error) {
+      console.error("Error al actualizar notificación global:", error);
+      showNotification(`Error: ${error.message}`, "error");
+    } finally {
+      setInternalProcessingMessage("");
     }
-  }, [isAdmin, db]);
+  };
 
   // Si no está autenticado, mostrar formulario de login
   if (!isAdminAuthenticated) {
@@ -3592,101 +3598,100 @@ const Admin = ({
     }
   };
   
-  // Función para publicar la notificación global
-  const handlePublishNotification = async () => {
-    try {
-      setInternalProcessingMessage("Publicando notificación...");
-      const configDocRef = doc(db, 'config', 'general');
-      await setDoc(configDocRef, { notificationText: notificationText }, { merge: true });
-      showNotification("Notificación publicada correctamente", "success");
-    } catch (error) {
-      console.error("Error al publicar notificación:", error);
-      showNotification(`Error al publicar notificación: ${error.message}`, "error");
-    } finally {
-      setInternalProcessingMessage("");
-    }
-  };
-
-  // Función para eliminar la notificación global
-  const handleDeleteNotification = async () => {
-    if (window.confirm("¿Está seguro de que desea eliminar la notificación actual?")) {
-      try {
-        setInternalProcessingMessage("Eliminando notificación...");
-        const configDocRef = doc(db, 'config', 'general');
-        await setDoc(configDocRef, { notificationText: '' }, { merge: true });
-        setNotificationText(''); // Limpiar estado local también
-        showNotification("Notificación eliminada correctamente", "success");
-      } catch (error) {
-        console.error("Error al eliminar notificación:", error);
-        showNotification(`Error al eliminar notificación: ${error.message}`, "error");
-      } finally {
-        setInternalProcessingMessage("");
-      }
-    }
-  };
-
-  // Renderizar el panel de notificaciones
-  const renderNotificationPanel = () => {
+  // Añadir la función para gestionar las notificaciones
     return (
-      <div style={{
-        backgroundColor: 'white',
-        borderRadius: '10px',
-        padding: '20px',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-        marginTop: '30px'
-      }}>
-        <h3 style={{ marginBottom: '15px', color: '#2c3e50' }}>Notificación Global</h3>
-        <p style={{ marginBottom: '15px', fontSize: '14px', color: '#666' }}>
-          El texto introducido aquí se mostrará como un aviso en la parte superior del Dashboard para todos los usuarios.
-        </p>
-        <textarea
-          value={notificationText}
-          onChange={(e) => setNotificationText(e.target.value)}
-          placeholder="Escribe aquí la notificación... (deja vacío para no mostrar nada)"
-          style={{
-            width: '100%',
-            minHeight: '100px',
-            padding: '10px',
-            border: '1px solid #ddd',
-            borderRadius: '4px',
-            marginBottom: '15px',
-            fontSize: '14px'
-          }}
-        />
-        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+      <div style={{ marginTop: '30px', padding: '20px', backgroundColor: 'white', borderRadius: '8px', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}>
+        <h3 style={{ marginBottom: '20px' }}>Panel de Notificaciones Globales</h3>
+        
+        <div style={{ marginBottom: '20px' }}>
+          <label style={{ display: 'block', marginBottom: '10px', fontWeight: 'bold' }}>
+            Mensaje de Notificación:
+          </label>
+          <textarea
+            value={notificacionGlobal}
+            onChange={(e) => setNotificacionGlobal(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '12px',
+              borderRadius: '4px',
+              border: '1px solid #ddd',
+              minHeight: '100px',
+              resize: 'vertical'
+            }}
+            placeholder="Escribe aquí el mensaje que quieres mostrar en el dashboard..."
+          />
+        </div>
+        
+        <div style={{ marginBottom: '20px' }}>
+          <label style={{ 
+            display: 'flex', 
+            alignItems: 'center',
+            cursor: 'pointer'
+          }}>
+            <input
+              type="checkbox"
+              checked={notificacionActiva}
+              onChange={(e) => setNotificacionActiva(e.target.checked)}
+              style={{ marginRight: '10px' }}
+              />
+            Mostrar notificación en el dashboard
+          </label>
+        </div>
+        
+        <div style={{ display: 'flex', gap: '10px' }}>
           <button
-            onClick={handleDeleteNotification}
+            onClick={actualizarNotificacionGlobal}
             style={{
               padding: '10px 20px',
-              backgroundColor: '#e74c3c',
+              backgroundColor: '#4CAF50',
               color: 'white',
               border: 'none',
-              borderRadius: '5px',
-              cursor: 'pointer'
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontWeight: 'bold'
             }}
-            disabled={internalProcessingMessage !== ''}
           >
-            {internalProcessingMessage === 'Eliminando notificación...' ? 'Eliminando...' : 'Eliminar Notificación'}
+            Guardar Notificación
           </button>
+          
           <button
-            onClick={handlePublishNotification}
+            onClick={() => {
+              setNotificacionGlobal('');
+              setNotificacionActiva(false);
+              actualizarNotificacionGlobal();
+            }}
             style={{
               padding: '10px 20px',
-              backgroundColor: '#2ecc71',
+              backgroundColor: '#f44336',
               color: 'white',
               border: 'none',
-              borderRadius: '5px',
-              cursor: 'pointer'
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontWeight: 'bold'
             }}
-            disabled={internalProcessingMessage !== ''}
           >
-            {internalProcessingMessage === 'Publicando notificación...' ? 'Publicando...' : 'Publicar Notificación'}
+            Borrar Notificación
           </button>
         </div>
+        
+        {notificacionActiva && notificacionGlobal && (
+          <div style={{
+            marginTop: '20px',
+            padding: '15px',
+            backgroundColor: '#fff3cd',
+            border: '1px solid #ffeeba',
+            borderRadius: '4px'
+          }}>
+            <strong>Vista previa:</strong>
+            <div style={{ marginTop: '10px' }}>
+              {notificacionGlobal}
+            </div>
+          </div>
+        )}
       </div>
     );
   };
-
+  
   // Actualizar el return principal para incluir el nuevo tab
   return !isAdminAuthenticated ? (
     renderLoginForm()
@@ -3762,7 +3767,7 @@ const Admin = ({
       )}
       {activeTab === 'feedback' && renderFeedbackSection()}
       {activeTab === 'recreadas' && renderAsignacionesRecreadas()}
-      {activeTab === 'notificaciones' && renderNotificationPanel()} { /* Añadir renderizado del nuevo panel */ }
+      {activeTab === 'notificaciones' && renderPanelNotificaciones()}
       
       {showAsignacionManualModal && renderModalAsignacionManual()}
       {showReasignacionModal && renderModalReasignacion()}
