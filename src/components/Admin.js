@@ -49,26 +49,100 @@ const AsignacionRow = React.memo(({
   // Obtener información completa del centro para mostrar plazas
   const centroCompleto = !esNoAsignable ? availablePlazas.find(c => c.id === asignacion.centerId) : null;
   
-  // Calcular plazas
-  const plazasTotal = centroCompleto ? (centroCompleto.plazasTotal || centroCompleto.plazas || 0) : 0;
-  const asignacionesParaCentro = centroCompleto ? 
-    assignments.filter(a => 
+  // Cálculo mejorado de plazas - asegurarse de que valores numéricos se procesen correctamente
+  let plazasTotal = 0;
+  
+  if (centroCompleto) {
+    // Intentar obtener plazasTotal o plazas, asegurándose de que sea un número válido
+    const plazasTotalRaw = centroCompleto.plazasTotal !== undefined ? centroCompleto.plazasTotal : 
+                           centroCompleto.plazas !== undefined ? centroCompleto.plazas : null;
+    
+    if (plazasTotalRaw !== null && plazasTotalRaw !== undefined) {
+      // Convertir a número, asegurándose de que '0' string se convierta a 0 número
+      plazasTotal = parseInt(plazasTotalRaw, 10);
+      
+      // Si hubo error de conversión (NaN), usar 0
+      if (isNaN(plazasTotal)) {
+        plazasTotal = 0;
+      }
+    }
+  }
+  
+  // Verificar si hay información válida sobre plazas configuradas en el centro
+  // En lugar de verificar undefined, hacemos una comprobación más robusta
+  // Consideramos que hay información si el centro existe y tiene algún valor de plazas
+  // incluyendo 0 (que es un valor válido para plazas)
+  const hayInfoPlazas = !!centroCompleto;
+  
+  // Calcular plazas ocupadas verificando todas las asignaciones activas para este centro
+  // Esto proporciona un dato más preciso que el almacenado en el centro
+  const asignacionesActivas = assignments.filter(a => 
       a.centerId === asignacion.centerId && 
       !a.noAsignable && 
       a.estado !== "NO_ASIGNABLE" && 
       a.estado !== "REASIGNACION_NO_VIABLE"
-    ).length 
-    : 0;
-  const plazasOcupadas = centroCompleto ? 
-    (centroCompleto.plazasOcupadas || centroCompleto.asignadas || asignacionesParaCentro || 0) : 
-    asignacionesParaCentro;
+  );
+  
+  const asignacionesParaCentro = asignacionesActivas.length;
+  
+  // Usar primero los datos del centro si están disponibles, sino calcular basado en asignaciones
+  let plazasOcupadas;
+  if (centroCompleto && (centroCompleto.plazasOcupadas !== undefined || centroCompleto.asignadas !== undefined)) {
+    plazasOcupadas = parseInt(centroCompleto.plazasOcupadas || centroCompleto.asignadas, 10);
+    
+    // Verificación de integridad: si el número calculado es mayor, usamos ese
+    if (asignacionesParaCentro > plazasOcupadas) {
+      plazasOcupadas = asignacionesParaCentro;
+      
+      // En desarrollo, mostrar advertencia si hay discrepancia
+      if (process.env.NODE_ENV === 'development') {
+        console.warn(`Discrepancia de plazas en centro ${asignacion.centerId}: 
+          Guardadas: ${centroCompleto.plazasOcupadas || centroCompleto.asignadas}, 
+          Calculadas: ${asignacionesParaCentro}`);
+      }
+    }
+  } else {
+    plazasOcupadas = asignacionesParaCentro;
+  }
+  
+  // REGLA DE CONSISTENCIA: Si hay plazas ocupadas, el total NUNCA puede ser cero
+  if (plazasOcupadas > 0 && plazasTotal === 0) {
+    // Si hay plazas ocupadas pero el total es 0, ajustar el total al número de ocupadas
+    plazasTotal = plazasOcupadas;
+    
+    // En desarrollo, mostrar advertencia
+    if (process.env.NODE_ENV === 'development') {
+      console.warn(`Inconsistencia detectada para centro ${asignacion.centerId || 'desconocido'}: 
+        Hay ${plazasOcupadas} plazas ocupadas pero 0 plazas totales. 
+        Se ha ajustado el total para evitar mostrar datos inconsistentes.`);
+    }
+  }
+  
+  // Calcular plazas disponibles (nunca negativo)
   const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
+  
+  // Porcentaje de ocupación para visualización
+  const porcentajeOcupacion = plazasTotal > 0 ? Math.min(100, Math.round((plazasOcupadas / plazasTotal) * 100)) : 100;
+  
+  // Determinar color según porcentaje de ocupación
+  let colorOcupacion;
+  if (porcentajeOcupacion >= 90) {
+    colorOcupacion = '#d32f2f'; // Rojo - muy ocupado
+  } else if (porcentajeOcupacion >= 75) {
+    colorOcupacion = '#ff9800'; // Naranja - bastante ocupado
+  } else if (porcentajeOcupacion >= 50) {
+    colorOcupacion = '#ffc107'; // Amarillo - medio ocupado
+  } else {
+    colorOcupacion = '#388e3c'; // Verde - poca ocupación
+  }
   
   // Formatear fecha
   const fecha = new Date(asignacion.timestamp);
   const fechaFormateada = fecha && !isNaN(fecha.getTime())
     ? fecha.toLocaleDateString() + ' ' + fecha.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
     : 'Fecha no disponible';
+  
+  // Verificar si hay información válida sobre plazas
   
   return (
     <tr style={{
@@ -139,14 +213,41 @@ const AsignacionRow = React.memo(({
         {!esNoAsignable ? (
           <div>
             <div style={{ 
-              color: plazasDisponibles === 0 ? '#d32f2f' : plazasDisponibles < 3 ? '#ff9800' : '#388e3c',
               fontWeight: 'bold',
-              fontSize: '13px'
+              fontSize: '13px',
+              display: 'flex',
+              alignItems: 'center',
+              marginBottom: '3px'
             }}>
-              {plazasDisponibles} disponibles / {plazasTotal} totales
+              <span style={{ 
+                color: plazasDisponibles === 0 ? '#d32f2f' : '#388e3c', 
+                marginRight: '6px' 
+              }}>
+                {plazasDisponibles} disponibles
+              </span>
+              <span style={{ color: '#666' }}>
+                / {plazasTotal} totales
+              </span>
             </div>
+            
+            {/* Barra de progreso para visualizar ocupación */}
+            <div style={{ 
+              width: '100%', 
+              height: '6px', 
+              backgroundColor: '#e0e0e0', 
+              borderRadius: '3px',
+              marginBottom: '5px'
+            }}>
+              <div style={{ 
+                width: `${porcentajeOcupacion}%`, 
+                height: '100%', 
+                backgroundColor: colorOcupacion,
+                borderRadius: '3px'
+              }}></div>
+            </div>
+            
             <div style={{ fontSize: '12px', color: '#666' }}>
-              {plazasOcupadas} plazas ocupadas
+              {plazasOcupadas} ocupadas ({porcentajeOcupacion}%)
             </div>
           </div>
         ) : (
@@ -275,6 +376,8 @@ const Admin = ({
   const [asignacionesRecreadas, setAsignacionesRecreadas] = useState([]);
   const [loadingAsignacionesRecreadas, setLoadingAsignacionesRecreadas] = useState(false);
   const [notificationText, setNotificationText] = useState(''); // Estado para el texto de la notificación
+  // Estado para el modo forzado de reasignación
+  const [modoForzadoReasignacion, setModoForzadoReasignacion] = useState(false);
 
   // Estilos comunes
   const tabButtonStyle = {
@@ -642,7 +745,7 @@ const Admin = ({
         const todosLosDocumentos = {};
         
         historialSnapshot.forEach(doc => {
-          const data = doc.data();
+              const data = doc.data();
           data.docId = doc.id;
           data.timestamp = data.timestamp || 0; // Por si no tiene timestamp
           
@@ -719,7 +822,7 @@ const Admin = ({
               if (centroEncontrado) {
                 centrosParaSolicitud.push(centroEncontrado.id);
                 console.log("Encontrado centro por nombre en historial:", centroEncontrado.id);
-                break;
+              break;
               }
             }
           }
@@ -2965,10 +3068,11 @@ const Admin = ({
   // Función para manejar el cierre del modal
   const handleCloseModal = () => {
     setModalReasignacion(false);
-    setShowReasignacionModal(false); // Añadir esta línea
+    setShowReasignacionModal(false);
     setAsignacionParaReasignar(null);
     setCentroSeleccionadoReasignacion("");
     setSearchTermCentros("");
+    setModoForzadoReasignacion(false); // Resetear el modo forzado al cerrar el modal
   };
 
   // Renderizar modal de reasignación
@@ -2998,9 +3102,9 @@ const Admin = ({
       if (centro) return centro;
       
       // 4. Búsqueda caso insensitivo (por si los IDs están en mayúsculas/minúsculas diferentes)
-      centro = availablePlazas.find(c => 
-        (c.id && c.id.toLowerCase() === id.toLowerCase()) || 
-        (c.docId && c.docId.toLowerCase() === id.toLowerCase())
+        centro = availablePlazas.find(c => 
+          (c.id && c.id.toLowerCase() === id.toLowerCase()) || 
+          (c.docId && c.docId.toLowerCase() === id.toLowerCase())
       );
       if (centro) return centro;
       
@@ -3031,7 +3135,7 @@ const Admin = ({
                                   asignacionParaReasignar.centrosCompletos.length > 0
       ? asignacionParaReasignar.centrosCompletos.map((centro, index) => {
           // Garantizar que todos los centros tengan una propiedad nombre y prioridad
-          return {
+        return { 
             ...centro,
             nombre: centro.nombre || centro.centro || `Opción ${index + 1}`,
             centro: centro.centro || centro.nombre || `Opción ${index + 1}`,
@@ -3041,49 +3145,49 @@ const Admin = ({
           };
         })
       : centrosOriginales.map((centroId, index) => {
-          // Intentar encontrar el centro con búsqueda flexible
-          const centro = buscarCentroFlexible(centroId);
-          
-          // Si no se encuentra el centro, crear un objeto "placeholder"
-          if (!centro) {
+        // Intentar encontrar el centro con búsqueda flexible
+        const centro = buscarCentroFlexible(centroId);
+        
+        // Si no se encuentra el centro, crear un objeto "placeholder"
+        if (!centro) {
             console.log(`Centro con ID ${centroId} no encontrado en el modal, creando placeholder para Opción ${index + 1}`);
-            return {
-              id: centroId,
-              nombre: `Opción ${index + 1}`,
-              centro: `Opción ${index + 1}`,
-              plazasTotal: 0,
-              plazas: 0,
-              localidad: '',
-              municipio: '',
-              prioridad: index + 1,
-              plazasDisponiblesActualizadas: 0,
-              sinPlazas: true,
-              noEncontrado: true
-            };
-          }
-          
-          // Procesamiento normal para centros encontrados
-          const asignacionesParaCentro = assignments.filter(a => 
-            a.centerId === centroId && 
-            !a.noAsignable && 
-            a.estado !== "NO_ASIGNABLE" && 
-            a.estado !== "REASIGNACION_NO_VIABLE"
-          ).length;
-          
-          const plazasTotal = parseInt(centro.plazasTotal || centro.plazas || '0', 10);
-          const plazasOcupadas = parseInt(centro.plazasOcupadas || centro.asignadas || '0', 10);
-          const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
-          const sinPlazas = plazasDisponibles <= 0;
-          
           return {
-            ...centro,
-            nombre: centro.nombre || centro.centro,
+            id: centroId,
+            nombre: `Opción ${index + 1}`,
+            centro: `Opción ${index + 1}`,
+            plazasTotal: 0,
+            plazas: 0,
+            localidad: '',
+            municipio: '',
             prioridad: index + 1,
-            plazasDisponiblesActualizadas: plazasDisponibles,
-            sinPlazas: sinPlazas
+            plazasDisponiblesActualizadas: 0,
+            sinPlazas: true,
+            noEncontrado: true
           };
-        });
-    
+        }
+        
+        // Procesamiento normal para centros encontrados
+        const asignacionesParaCentro = assignments.filter(a => 
+          a.centerId === centroId && 
+          !a.noAsignable && 
+          a.estado !== "NO_ASIGNABLE" && 
+          a.estado !== "REASIGNACION_NO_VIABLE"
+        ).length;
+        
+        const plazasTotal = parseInt(centro.plazasTotal || centro.plazas || '0', 10);
+        const plazasOcupadas = parseInt(centro.plazasOcupadas || centro.asignadas || '0', 10);
+        const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
+        const sinPlazas = plazasDisponibles <= 0;
+        
+        return {
+          ...centro,
+          nombre: centro.nombre || centro.centro,
+          prioridad: index + 1,
+          plazasDisponiblesActualizadas: plazasDisponibles,
+          sinPlazas: sinPlazas
+        };
+      });
+
     return (
       <div 
         style={{ 
@@ -3158,13 +3262,25 @@ const Admin = ({
                           : centro.sinPlazas 
                             ? '#ffebee' 
                             : 'white',
-                      cursor: centro.noEncontrado || centro.sinPlazas ? 'not-allowed' : 'pointer',
-                      opacity: centro.noEncontrado ? 0.8 : centro.sinPlazas ? 0.7 : 1,
+                      cursor: centro.noEncontrado 
+                        ? 'not-allowed' 
+                        : (centro.sinPlazas && !modoForzadoReasignacion) 
+                          ? 'not-allowed' 
+                          : 'pointer',
+                      opacity: centro.noEncontrado 
+                        ? 0.8 
+                        : (centro.sinPlazas && !modoForzadoReasignacion) 
+                          ? 0.7 
+                          : 1,
                       position: 'relative',
                       boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
                       marginBottom: '8px'
                     }} onClick={() => {
-                      if (!centro.noEncontrado && !centro.sinPlazas) setCentroSeleccionadoReasignacion(centro.id);
+                      if (!centro.noEncontrado) {
+                        if (!centro.sinPlazas || modoForzadoReasignacion) {
+                          setCentroSeleccionadoReasignacion(centro.id);
+                        }
+                      }
                     }}>
                       <div style={{ 
                         position: 'absolute', 
@@ -3315,10 +3431,13 @@ const Admin = ({
                           : esPrioritario
                             ? '#e0f2f1'
                             : 'white',
-                      cursor: sinPlazas ? 'not-allowed' : 'pointer',
-                      opacity: sinPlazas ? 0.7 : 1
+                      cursor: sinPlazas && !modoForzadoReasignacion ? 'not-allowed' : 'pointer',
+                      opacity: sinPlazas && !modoForzadoReasignacion ? 0.7 : 1
                     }} onClick={() => {
-                      if (!sinPlazas) setCentroSeleccionadoReasignacion(centro.id);
+                      // Permitir seleccionar aunque no tenga plazas si modo forzado está activado
+                      if (!sinPlazas || modoForzadoReasignacion) {
+                        setCentroSeleccionadoReasignacion(centro.id);
+                      }
                     }}>
                       <div style={{ 
                         display: 'flex',
@@ -3372,6 +3491,27 @@ const Admin = ({
                   );
                 })}
             </div>
+          </div>
+          
+          <div style={{
+            backgroundColor: '#fffde7',
+            border: '1px solid #ffd54f',
+            borderRadius: '4px',
+            padding: '10px',
+            marginBottom: '15px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px'
+          }}>
+            <input
+              type="checkbox"
+              id="modo-forzado"
+              checked={modoForzadoReasignacion}
+              onChange={() => setModoForzadoReasignacion(!modoForzadoReasignacion)}
+            />
+            <label htmlFor="modo-forzado" style={{ cursor: 'pointer' }}>
+              <strong>Modo forzado:</strong> Permitir asignar a centros sin plazas disponibles (sobreocupación)
+            </label>
           </div>
           
           <div style={{ 
