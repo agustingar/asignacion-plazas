@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { writeBatch, doc, collection, serverTimestamp, onSnapshot, query, where, addDoc, updateDoc, getDocs, deleteDoc, getDoc, setDoc } from "firebase/firestore";
 import * as XLSX from 'xlsx';
 import { db } from '../firebase';
+import { resetearContadoresAsignaciones } from '../utils/assignmentUtils';
 
 /**
  * Componente AsignacionRow para mostrar una fila de asignación en la tabla
@@ -47,21 +48,49 @@ const AsignacionRow = React.memo(({
     : asignacion.nombreCentro || asignacion.centro || asignacion.centerName || 'Centro sin nombre';
   
   // Obtener información completa del centro para mostrar plazas
-  const centroCompleto = !esNoAsignable ? availablePlazas.find(c => c.id === asignacion.centerId) : null;
+  // Buscar por múltiples campos para mayor flexibilidad
+  let centroCompleto = null;
+  if (!esNoAsignable) {
+    // Intentar buscar por centerId primero
+    if (asignacion.centerId) {
+      centroCompleto = availablePlazas.find(c => c.id === asignacion.centerId);
+    }
+    
+    // Si no se encuentra, intentar buscar por id
+    if (!centroCompleto && asignacion.id) {
+      centroCompleto = availablePlazas.find(c => c.id === asignacion.id);
+    }
+    
+    // Si aún no se encuentra, intentar buscar por nombre
+    if (!centroCompleto && (asignacion.centro || asignacion.nombreCentro)) {
+      const nombreBuscar = asignacion.centro || asignacion.nombreCentro;
+      centroCompleto = availablePlazas.find(c => 
+        (c.centro && c.centro.toLowerCase() === nombreBuscar.toLowerCase()) ||
+        (c.nombre && c.nombre.toLowerCase() === nombreBuscar.toLowerCase())
+      );
+    }
+  }
   
-  // Calcular plazas
-  const plazasTotal = centroCompleto ? (centroCompleto.plazasTotal || centroCompleto.plazas || 0) : 0;
-  const asignacionesParaCentro = centroCompleto ? 
-    assignments.filter(a => 
-      a.centerId === asignacion.centerId && 
+  // Calcular plazas - usando valores por defecto para casos no definidos
+  const plazasTotal = centroCompleto ? parseInt(centroCompleto.plazasTotal || centroCompleto.plazas || 0, 10) : 0;
+  
+  // Contar directamente las asignaciones para este centro de forma más precisa
+  let asignacionesParaCentro = 0;
+  if (!esNoAsignable && centroCompleto) {
+    asignacionesParaCentro = assignments.filter(a => 
+      (a.centerId === centroCompleto.id || a.id === centroCompleto.id) && 
       !a.noAsignable && 
       a.estado !== "NO_ASIGNABLE" && 
       a.estado !== "REASIGNACION_NO_VIABLE"
-    ).length 
-    : 0;
+    ).length;
+  }
+  
+  // Usar el valor de asignadas del centro si existe, sino usar el conteo directo
   const plazasOcupadas = centroCompleto ? 
-    (centroCompleto.plazasOcupadas || centroCompleto.asignadas || asignacionesParaCentro || 0) : 
+    parseInt(centroCompleto.asignadas || centroCompleto.plazasOcupadas || asignacionesParaCentro || 0, 10) : 
     asignacionesParaCentro;
+  
+  // Calcular plazas disponibles asegurando que no sea negativo
   const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
   
   // Formatear fecha
@@ -274,6 +303,7 @@ const Admin = ({
   const [showAsignacionManualModal, setShowAsignacionManualModal] = useState(false);
   const [asignacionesRecreadas, setAsignacionesRecreadas] = useState([]);
   const [loadingAsignacionesRecreadas, setLoadingAsignacionesRecreadas] = useState(false);
+  const [actualizandoPlazas, setActualizandoPlazas] = useState(false); // Estado para controlar la actualización de plazas
   const [notificationText, setNotificationText] = useState(''); // Estado para el texto de la notificación
 
   // Estilos comunes
@@ -2047,6 +2077,8 @@ const Admin = ({
         }}>
           <h3>Asignaciones Realizadas</h3>
           <div style={{display: 'flex', gap: '10px'}}>
+        
+            
             <button
               onClick={async () => {
                 // Recargar datos completos
@@ -3685,6 +3717,42 @@ const Admin = ({
         </div>
       </div>
     );
+  };
+
+  // Función para actualizar las plazas disponibles
+  const actualizarPlazas = async () => {
+    try {
+      setActualizandoPlazas(true);
+      setInternalProcessingMessage("Actualizando contadores de plazas...");
+      
+      // Primero hacer una copia de seguridad de los datos actuales
+      console.log("Plazas disponibles antes de actualizar:", availablePlazas);
+      // Utilizar la función de resetearContadoresAsignaciones desde utils
+      const resultado = await resetearContadoresAsignaciones(availablePlazas, assignments, db);
+      
+      if (resultado.success) {
+        // Recargar datos para mostrar los contadores actualizados
+        if (typeof cargarDatosDesdeFirebase === 'function') {
+          await cargarDatosDesdeFirebase();
+        } else if (typeof recargarDatosCompletos === 'function') {
+          await recargarDatosCompletos();
+        } else {
+          console.error("No se encontró función para recargar datos");
+          showNotification("Error: No se pudo recargar los datos automáticamente", "error");
+        }
+        
+        showNotification(`Plazas actualizadas correctamente: ${resultado.actualizados} centros actualizados.`, "success");
+      } else {
+        showNotification(`Error al actualizar plazas: ${resultado.message}`, "error");
+      }
+      
+    } catch (error) {
+      console.error("Error al actualizar plazas:", error);
+      showNotification(`Error al actualizar plazas: ${error.message}`, "error");
+    } finally {
+      setActualizandoPlazas(false);
+      setInternalProcessingMessage("");
+    }
   };
 
   // Actualizar el return principal para incluir el nuevo tab
