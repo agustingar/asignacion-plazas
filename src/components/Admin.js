@@ -2658,6 +2658,11 @@ const Admin = ({
 
     try {
       setInternalProcessingMessage("Realizando reasignación...");
+      
+      // Logging para depuración
+      console.log("Iniciando reasignación:");
+      console.log("- Centro seleccionado ID:", centroSeleccionadoReasignacion);
+      console.log("- Asignación para reasignar:", asignacionParaReasignar);
 
       // Obtener información de la orden
       const ordenAsignacion = asignacionParaReasignar.order || asignacionParaReasignar.numeroOrden;
@@ -2691,14 +2696,38 @@ const Admin = ({
       asignacionesPorOrder.forEach(doc => asignacionesAEliminar.add(doc.id));
       asignacionesPorNumeroOrden.forEach(doc => asignacionesAEliminar.add(doc.id));
       
+      console.log(`- Se eliminarán ${asignacionesAEliminar.size} asignaciones existentes`);
+      
       asignacionesAEliminar.forEach(docId => {
         batch.delete(doc(db, "asignaciones", docId));
       });
 
-      // PASO 2: Obtener información del nuevo centro
-      const nuevoCentroInfo = availablePlazas.find(c => c.id === centroSeleccionadoReasignacion);
+      // PASO 2: Obtener información del nuevo centro con búsqueda más flexible
+      let nuevoCentroInfo = null;
+      
+      // 1. Buscar directamente por ID
+      nuevoCentroInfo = availablePlazas.find(c => c.id === centroSeleccionadoReasignacion);
+      
+      // 2. Si no se encuentra, intentar por docId
+      if (!nuevoCentroInfo) {
+        nuevoCentroInfo = availablePlazas.find(c => c.docId === centroSeleccionadoReasignacion);
+      }
+      
+      // 3. Si aún no se encuentra, buscar insensible a mayúsculas/minúsculas
+      if (!nuevoCentroInfo && centroSeleccionadoReasignacion) {
+        const idLowerCase = String(centroSeleccionadoReasignacion).toLowerCase();
+        nuevoCentroInfo = availablePlazas.find(c => 
+          (c.id && String(c.id).toLowerCase() === idLowerCase) || 
+          (c.docId && String(c.docId).toLowerCase() === idLowerCase)
+        );
+      }
+      
+      console.log("- Centro encontrado para reasignación:", nuevoCentroInfo);
+      
       if (!nuevoCentroInfo) {
         showNotification("Error: Información del nuevo centro no encontrada", "error");
+        console.error("No se encontró información del centro con ID:", centroSeleccionadoReasignacion);
+        console.log("availablePlazas:", availablePlazas.map(c => ({ id: c.id, nombre: c.nombre })));
         setInternalProcessingMessage("");
         return;
       }
@@ -3133,25 +3162,14 @@ const Admin = ({
     const centrosOriginalesData = asignacionParaReasignar.centrosCompletos && 
                                   Array.isArray(asignacionParaReasignar.centrosCompletos) && 
                                   asignacionParaReasignar.centrosCompletos.length > 0
-      ? asignacionParaReasignar.centrosCompletos.map((centro, index) => {
-          // Garantizar que todos los centros tengan una propiedad nombre y prioridad
-        return { 
-            ...centro,
-            nombre: centro.nombre || centro.centro || `Opción ${index + 1}`,
-            centro: centro.centro || centro.nombre || `Opción ${index + 1}`,
-            prioridad: centro.prioridad || (index + 1),
-            noEncontrado: centro.noEncontrado || false,
-            sinPlazas: centro.sinPlazas || false
-          };
-        })
+      ? asignacionParaReasignar.centrosCompletos
       : centrosOriginales.map((centroId, index) => {
         // Intentar encontrar el centro con búsqueda flexible
         const centro = buscarCentroFlexible(centroId);
         
         // Si no se encuentra el centro, crear un objeto "placeholder"
         if (!centro) {
-            console.log(`Centro con ID ${centroId} no encontrado en el modal, creando placeholder para Opción ${index + 1}`);
-          return {
+            return {
             id: centroId,
             nombre: `Opción ${index + 1}`,
             centro: `Opción ${index + 1}`,
@@ -3167,24 +3185,12 @@ const Admin = ({
         }
         
         // Procesamiento normal para centros encontrados
-        const asignacionesParaCentro = assignments.filter(a => 
-          a.centerId === centroId && 
-          !a.noAsignable && 
-          a.estado !== "NO_ASIGNABLE" && 
-          a.estado !== "REASIGNACION_NO_VIABLE"
-        ).length;
-        
-        const plazasTotal = parseInt(centro.plazasTotal || centro.plazas || '0', 10);
-        const plazasOcupadas = parseInt(centro.plazasOcupadas || centro.asignadas || '0', 10);
-        const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
-        const sinPlazas = plazasDisponibles <= 0;
-        
         return {
           ...centro,
           nombre: centro.nombre || centro.centro,
           prioridad: index + 1,
-          plazasDisponiblesActualizadas: plazasDisponibles,
-          sinPlazas: sinPlazas
+          plazasDisponiblesActualizadas: Math.max(0, parseInt(centro.plazasTotal || centro.plazas || '0', 10) - parseInt(centro.plazasOcupadas || centro.asignadas || '0', 10)),
+          sinPlazas: (Math.max(0, parseInt(centro.plazasTotal || centro.plazas || '0', 10) - parseInt(centro.plazasOcupadas || centro.asignadas || '0', 10)) <= 0)
         };
       });
 
@@ -3250,6 +3256,7 @@ const Admin = ({
                 backgroundColor: '#f5f5f5'
               }}>
                 {centrosOriginalesData.map((centro, index) => {
+                  // Eliminamos el log que causa re-renderizados
                   return (
                     <div key={`original-${centro.id}-${index}`} style={{
                       padding: '12px',
@@ -3276,10 +3283,12 @@ const Admin = ({
                       boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
                       marginBottom: '8px'
                     }} onClick={() => {
+                      // Simplificamos esta condición para permitir seleccionar cualquier opción que no sea "noEncontrado"
                       if (!centro.noEncontrado) {
-                        if (!centro.sinPlazas || modoForzadoReasignacion) {
-                          setCentroSeleccionadoReasignacion(centro.id);
-                        }
+                        // Permitir seleccionar el centro independientemente de las plazas
+                        // cuando el modo forzado está activo
+                        setCentroSeleccionadoReasignacion(centro.id);
+                        // Eliminar este log también para evitar re-renderizado
                       }
                     }}>
                       <div style={{ 
@@ -3434,10 +3443,8 @@ const Admin = ({
                       cursor: sinPlazas && !modoForzadoReasignacion ? 'not-allowed' : 'pointer',
                       opacity: sinPlazas && !modoForzadoReasignacion ? 0.7 : 1
                     }} onClick={() => {
-                      // Permitir seleccionar aunque no tenga plazas si modo forzado está activado
-                      if (!sinPlazas || modoForzadoReasignacion) {
-                        setCentroSeleccionadoReasignacion(centro.id);
-                      }
+                      // Siempre permitir seleccionar cualquier centro, independientemente de sus plazas
+                      setCentroSeleccionadoReasignacion(centro.id);
                     }}>
                       <div style={{ 
                         display: 'flex',
