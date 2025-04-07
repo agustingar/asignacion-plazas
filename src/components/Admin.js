@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react';
 import { writeBatch, doc, collection, serverTimestamp, onSnapshot, query, where, addDoc, updateDoc, getDocs, deleteDoc, getDoc, setDoc } from "firebase/firestore";
 import * as XLSX from 'xlsx';
 import { db } from '../firebase';
@@ -46,71 +46,23 @@ const AsignacionRow = React.memo(({
     ? "No hay plaza disponible" 
     : asignacion.nombreCentro || asignacion.centro || asignacion.centerName || 'Centro sin nombre';
   
-  // Buscar centro por id primero
-  let centroCompleto = null;
-  if (asignacion.centerId && !esNoAsignable) {
-    centroCompleto = availablePlazas.find(c => c.id === asignacion.centerId);
-    
-    // Si no se encuentra por ID, intentar buscar por nombre (para manejar caracteres especiales)
-    if (!centroCompleto && nombreCentro && nombreCentro !== "Centro sin nombre") {
-      // Normalizar nombres para comparación
-      const nombreNormalizado = nombreCentro.toLowerCase()
-        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-        .replace(/\s+/g, ' ').trim();
-      
-      centroCompleto = availablePlazas.find(c => {
-        if (!c || (!c.nombre && !c.centro)) return false;
-        
-        const nombreCentroNormalizado = (c.nombre || c.centro || "")
-          .toLowerCase()
-          .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-          .replace(/\s+/g, ' ').trim();
-        
-        return nombreCentroNormalizado === nombreNormalizado || 
-               nombreCentroNormalizado.includes(nombreNormalizado) || 
-               nombreNormalizado.includes(nombreCentroNormalizado);
-      });
-      
-      // Si encontramos el centro por nombre pero no por ID, actualizar el ID para futuras referencias
-      if (centroCompleto && asignacion.docId) {
-        // Solo log para debug, no actualizamos en DB aquí para evitar operaciones costosas
-        console.log(`Centro encontrado por nombre: ${nombreCentro} -> ID: ${centroCompleto.id}`);
-      }
-    }
-  }
+  // Obtener información completa del centro para mostrar plazas
+  const centroCompleto = !esNoAsignable ? availablePlazas.find(c => c.id === asignacion.centerId) : null;
   
   // Calcular plazas
-  let plazasTotal = 0;
-  let plazasOcupadas = 0;
-  let plazasDisponibles = 0;
-  
-  if (centroCompleto) {
-    // Obtener plazas totales del centro
-    plazasTotal = parseInt(centroCompleto.plazasTotal || centroCompleto.plazas || 0, 10);
-    
-    // Contar asignaciones para este centro
-    const asignacionesParaCentro = assignments.filter(a => 
+  const plazasTotal = centroCompleto ? (centroCompleto.plazasTotal || centroCompleto.plazas || 0) : 0;
+  const asignacionesParaCentro = centroCompleto ? 
+    assignments.filter(a => 
       a.centerId === asignacion.centerId && 
       !a.noAsignable && 
       a.estado !== "NO_ASIGNABLE" && 
       a.estado !== "REASIGNACION_NO_VIABLE"
-    ).length;
-    
-    // Determinar plazas ocupadas, priorizando el valor almacenado y usando el conteo como respaldo
-    plazasOcupadas = parseInt(centroCompleto.plazasOcupadas || centroCompleto.asignadas || asignacionesParaCentro || 0, 10);
-    
-    // Calcular plazas disponibles
-    plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
-  } else if (!esNoAsignable) {
-    // Si no encontramos el centro pero sabemos que debe existir, buscar en CSV
-    console.warn(`Centro no encontrado para asignación: ${nombreCentro} (ID: ${asignacion.centerId})`);
-    
-    // Buscar en plazas.csv por el nombre del centro
-    // Para estos casos, se mostrará un mensaje de advertencia
-    plazasTotal = 0;
-    plazasOcupadas = 0;
-    plazasDisponibles = 0;
-  }
+    ).length 
+    : 0;
+  const plazasOcupadas = centroCompleto ? 
+    (centroCompleto.plazasOcupadas || centroCompleto.asignadas || asignacionesParaCentro || 0) : 
+    asignacionesParaCentro;
+  const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
   
   // Formatear fecha
   const fecha = new Date(asignacion.timestamp);
@@ -622,99 +574,278 @@ const Admin = ({
         return;
       }
       
-      // Buscar en el historial si esta orden tiene centros seleccionados guardados
+      // Obtener el número de orden de la asignación
       const ordenAsignacion = assignment.numeroOrden || assignment.order;
+      if (!ordenAsignacion) {
+        showNotification("Error: No se pudo determinar el número de orden de la asignación", "error");
+        return;
+      }
 
-      // Búsqueda más completa en historial:
-      // 1. Buscar por orden exacto
-      // 2. Buscar por numeroOrden exacto
-      // 3. Buscar por orden como string
-      // 4. Buscar por numeroOrden como string
-      const historialQueries = [
-        // Buscar por orden como número 
-        query(collection(db, "historialSolicitudes"), where("orden", "==", ordenAsignacion)),
-        // Buscar por numeroOrden como número
-        query(collection(db, "historialSolicitudes"), where("numeroOrden", "==", ordenAsignacion)),
-        // Buscar por orden como string
-        query(collection(db, "historialSolicitudes"), where("orden", "==", String(ordenAsignacion))),
-        // Buscar por numeroOrden como string
-        query(collection(db, "historialSolicitudes"), where("numeroOrden", "==", String(ordenAsignacion)))
-      ];
+      console.log("Buscando opciones originales para la orden:", ordenAsignacion);
+      setInternalProcessingMessage("Buscando opciones de centros originales...");
       
-      let historialData = [];
+      // Array para almacenar los centros seleccionados
+      let centrosParaSolicitud = [];
+      let centrosInfoCompleta = [];
       
-      // Realizar todas las búsquedas en paralelo
-      const promesas = historialQueries.map(q => getDocs(q));
-      const resultados = await Promise.all(promesas);
+      // Verificar si la asignación ya tiene referencia a la solicitud original
+      if (assignment.solicitudId) {
+        setInternalProcessingMessage("Buscando solicitud original por ID...");
+        try {
+          const solicitudRef = doc(db, "solicitudes", assignment.solicitudId);
+          const solicitudDoc = await getDoc(solicitudRef);
+          
+          if (solicitudDoc.exists()) {
+            const solicitudData = solicitudDoc.data();
+            if (solicitudData.centrosSeleccionados && Array.isArray(solicitudData.centrosSeleccionados) && solicitudData.centrosSeleccionados.length > 0) {
+              centrosParaSolicitud = [...solicitudData.centrosSeleccionados];
+              console.log("Centros encontrados en la solicitud original:", centrosParaSolicitud);
+            }
+          }
+        } catch (error) {
+          console.error("Error al buscar solicitud original:", error);
+        }
+      }
       
-      // Combinar resultados sin duplicados usando docId como clave
-      const historialPorId = {};
+      // Si no se encontraron centros, buscar en solicitudes pendientes
+      if (centrosParaSolicitud.length === 0) {
+        setInternalProcessingMessage("Buscando en solicitudes pendientes...");
+        const solicitudesQuery = query(
+          collection(db, "solicitudes"), 
+          where("numeroOrden", "==", ordenAsignacion)
+        );
+        const solicitudesSnapshot = await getDocs(solicitudesQuery);
+        
+        // Verificar si se encontró alguna solicitud
+        if (!solicitudesSnapshot.empty) {
+          solicitudesSnapshot.forEach(doc => {
+            const data = doc.data();
+            if (data.centrosSeleccionados && Array.isArray(data.centrosSeleccionados) && data.centrosSeleccionados.length > 0) {
+              centrosParaSolicitud = [...data.centrosSeleccionados];
+              console.log("Centros encontrados en solicitud pendiente:", centrosParaSolicitud);
+            }
+          });
+        }
+      }
       
-      resultados.forEach(snapshot => {
-        snapshot.forEach(doc => {
-          if (!historialPorId[doc.id]) {
-            historialPorId[doc.id] = doc.data();
+      // Si aún no se encontraron centros, buscar en historial
+      if (centrosParaSolicitud.length === 0) {
+        setInternalProcessingMessage("Buscando en historial de solicitudes...");
+        
+        const historialQuery = query(
+          collection(db, "historialSolicitudes"),
+          where("numeroOrden", "==", ordenAsignacion)
+        );
+        const historialSnapshot = await getDocs(historialQuery);
+        
+        // Procesar todos los documentos del historial
+        const todosLosDocumentos = {};
+        
+        historialSnapshot.forEach(doc => {
+          const data = doc.data();
+          data.docId = doc.id;
+          data.timestamp = data.timestamp || 0; // Por si no tiene timestamp
+          
+          // Guardar/actualizar documento en nuestro objeto
+          todosLosDocumentos[doc.id] = data;
+          
+          // Buscar en diferentes campos que podrían contener centros
+          const camposPosiblesCentros = [
+            { nombre: 'centrosSeleccionados', valores: data.centrosSeleccionados },
+            { nombre: 'centrosIdsOriginales', valores: data.centrosIdsOriginales },
+            { nombre: 'opcionesOriginales', valores: data.opcionesOriginales },
+            { nombre: 'centros', valores: data.centros }
+          ].filter(campo => 
+            campo.valores && Array.isArray(campo.valores) && campo.valores.length > 0
+          );
+          
+          if (camposPosiblesCentros.length > 0) {
+            console.log(`Documento ${Object.keys(todosLosDocumentos).length} (${data.estado || 'sin estado'}, ID: ${doc.id}):`);
+            console.log("  Campos que podrían contener centros:", camposPosiblesCentros);
+            
+            // Tomar los centros del primer array no vacío
+            for (const campo of camposPosiblesCentros) {
+              // Verificar si los elementos del array son strings (IDs) u objetos
+              const primerElemento = campo.valores[0];
+              
+              if (typeof primerElemento === 'string') {
+                console.log(`Centros encontrados en campo ${campo.nombre}:`, campo.valores);
+                if (centrosParaSolicitud.length === 0) {
+                  centrosParaSolicitud = [...campo.valores];
+                }
+              } else if (typeof primerElemento === 'object' && primerElemento !== null) {
+                // Si son objetos, extraer los IDs
+                const ids = campo.valores
+                  .map(obj => obj.id || obj.centroId || obj.docId)
+                  .filter(Boolean);
+                  
+                console.log(`IDs extraídos de objetos en campo ${campo.nombre}:`, ids);
+                if (centrosParaSolicitud.length === 0 && ids.length > 0) {
+                  centrosParaSolicitud = [...ids];
+                }
+                
+                // También guardar la información completa
+                if (centrosInfoCompleta.length === 0) {
+                  centrosInfoCompleta = [...campo.valores];
+                }
+              }
+            }
           }
         });
-      });
-      
-      historialData = Object.values(historialPorId);
-      
-      console.log(`Se encontraron ${historialData.length} registros en historial para orden ${ordenAsignacion}`);
-      
-      // Obtener centros seleccionados del historial o usar el centro actual
-      let centrosParaSolicitud = [];
-      
-      // Ordenar historial por timestamp (más reciente primero) para obtener la solicitud original
-      historialData.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-      
-      // Buscar primero el registro con estado "SOLICITUD" que contiene las opciones originales
-      const solicitudOriginal = historialData.find(data => data.estado === "SOLICITUD");
-      
-      // Si encontramos la solicitud original, usar sus centros seleccionados
-      if (solicitudOriginal && solicitudOriginal.centrosSeleccionados && Array.isArray(solicitudOriginal.centrosSeleccionados)) {
-        centrosParaSolicitud = solicitudOriginal.centrosSeleccionados;
-        console.log("Centros de solicitud original encontrados:", centrosParaSolicitud);
-      } 
-      // Si no, intentar buscar en cualquier registro del historial
-      else {
-        // Buscar primero en entradas más antiguas que podrían tener la selección original
-        historialData.reverse();
         
-        for (const data of historialData) {
-          if (data.centrosSeleccionados && Array.isArray(data.centrosSeleccionados) && data.centrosSeleccionados.length > 0) {
-            centrosParaSolicitud = data.centrosSeleccionados;
-            console.log("Centros encontrados en historial:", centrosParaSolicitud);
-            break;
+        // Convertir a array para ordenar por timestamp
+        const historialDocs = Object.values(todosLosDocumentos);
+        
+        // Si después de revisar todo el historial no se encontraron centros,
+        // y si hay algún historial disponible, intentar inferir el centro original
+        if (centrosParaSolicitud.length === 0 && historialDocs.length > 0) {
+          // Ordenar por timestamp (descendente)
+          historialDocs.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+          
+          // Buscar el primer documento que tenga centroId o centroAsignado
+          for (const doc of historialDocs) {
+            if (doc.centroId) {
+              centrosParaSolicitud.push(doc.centroId);
+              console.log("Usando centroId del historial como opción:", doc.centroId);
+              break;
+            } else if (doc.centroAsignado) {
+              // Intentar encontrar el ID del centro por nombre
+              const centroNombre = doc.centroAsignado.toLowerCase().trim();
+              const centroEncontrado = availablePlazas.find(
+                centro => (centro.nombre && centro.nombre.toLowerCase().trim() === centroNombre) ||
+                          (centro.centro && centro.centro.toLowerCase().trim() === centroNombre)
+              );
+              
+              if (centroEncontrado) {
+                centrosParaSolicitud.push(centroEncontrado.id);
+                console.log("Encontrado centro por nombre en historial:", centroEncontrado.id);
+                break;
+              }
+            }
           }
         }
       }
       
-      // Si no encontramos centros en el historial, buscar en solicitudes pendientes
-      if (centrosParaSolicitud.length === 0) {
-        console.log("Buscando en solicitudes pendientes...");
-        const solicitudPendiente = solicitudes.find(sol => 
-          (sol.orden === ordenAsignacion || sol.numeroOrden === ordenAsignacion));
+      console.log("Resultado final - centros para reasignación:", centrosParaSolicitud);
+      setInternalProcessingMessage("");
+      
+      // Intentar obtener información completa de los centros
+      const centrosCompletos = await Promise.all(centrosParaSolicitud.map(async (id, index) => {
+        // Primero, intentar encontrar el centro en availablePlazas con búsqueda flexible
+        const centroEnDisponibles = (() => {
+          // Validación
+          if (!id || typeof id !== 'string') return null;
+          
+          // Búsqueda exacta
+          let centro = availablePlazas.find(c => c.id === id || c.docId === id || c.codigo === id);
+          if (centro) return centro;
+          
+          // Búsqueda insensible a mayúsculas/minúsculas
+          const idLower = id.toLowerCase();
+          centro = availablePlazas.find(c => 
+            (c.id && c.id.toLowerCase() === idLower) || 
+            (c.docId && c.docId.toLowerCase() === idLower) ||
+            (c.codigo && c.codigo.toLowerCase() === idLower)
+          );
+          if (centro) return centro;
+          
+          // Búsqueda por prefijo
+          if (id.length > 4) {
+            const prefix = id.substring(0, 8);
+            centro = availablePlazas.find(c => 
+              (c.id && c.id.startsWith(prefix)) || 
+              (c.docId && c.docId.startsWith(prefix))
+            );
+            if (centro) return centro;
+          }
+          
+          return null;
+        })();
         
-        if (solicitudPendiente && (
-            (solicitudPendiente.centrosIds && Array.isArray(solicitudPendiente.centrosIds)) ||
-            (solicitudPendiente.centrosSeleccionados && Array.isArray(solicitudPendiente.centrosSeleccionados))
-          )) {
-          centrosParaSolicitud = solicitudPendiente.centrosIds || solicitudPendiente.centrosSeleccionados;
-          console.log("Centros encontrados en solicitud pendiente:", centrosParaSolicitud);
+        // Buscar en la información completa si existe
+        const centroEnInfoCompleta = centrosInfoCompleta.find(c => 
+          c && (c.id === id || c.centroId === id || c.docId === id)
+        );
+        
+        // Si encontramos el centro en alguna de las fuentes de memoria, usarlo
+        if (centroEnDisponibles || centroEnInfoCompleta) {
+          return {
+            id: id,
+            ...(centroEnInfoCompleta || {}),
+            ...(centroEnDisponibles || {}),
+            nombre: (centroEnDisponibles?.nombre || centroEnDisponibles?.centro || 
+                    centroEnInfoCompleta?.nombre || centroEnInfoCompleta?.centro || 
+                    `Opción ${index + 1}`),
+            centro: (centroEnDisponibles?.centro || centroEnDisponibles?.nombre || 
+                    centroEnInfoCompleta?.centro || centroEnInfoCompleta?.nombre || 
+                    `Opción ${index + 1}`),
+            prioridad: index + 1,
+            encontrado: true
+          };
         }
-      }
+        
+        // Si no se encuentra en memoria, buscar directamente en la base de datos
+        try {
+          console.log(`Buscando centro con ID ${id} directamente en la base de datos...`);
+          setInternalProcessingMessage(`Buscando centro ${index + 1} en la base de datos...`);
+          
+          // Intentar buscar por docId
+          let centroDoc = await getDoc(doc(db, "centros", id));
+          
+          // Si no se encuentra por docId, buscar por id en la colección
+          if (!centroDoc.exists()) {
+            const centrosQuery = query(
+              collection(db, "centros"),
+              where("id", "==", id)
+            );
+            const centrosQuerySnapshot = await getDocs(centrosQuery);
+            
+            if (!centrosQuerySnapshot.empty) {
+              centroDoc = centrosQuerySnapshot.docs[0];
+            }
+          }
+          
+          // Si encontramos el centro en la base de datos
+          if (centroDoc && centroDoc.exists()) {
+            const datosCentro = centroDoc.data();
+            console.log(`Centro con ID ${id} encontrado en la base de datos:`, datosCentro);
+            
+            return {
+              id: id,
+              docId: centroDoc.id,
+              ...datosCentro,
+              nombre: datosCentro.nombre || datosCentro.centro || `Opción ${index + 1}`,
+              centro: datosCentro.centro || datosCentro.nombre || `Opción ${index + 1}`,
+              prioridad: index + 1,
+              encontrado: true
+            };
+          }
+        } catch (error) {
+          console.error(`Error al buscar centro con ID ${id} en la base de datos:`, error);
+        }
+        
+        // Si no se encuentra en ninguna fuente, crear un objeto básico pero descriptivo
+        console.log(`Centro con ID ${id} no encontrado en ninguna fuente, creando placeholder para la opción ${index + 1}`);
+        return {
+          id: id,
+          nombre: `Opción ${index + 1} [ID: ${id.substring(0, 6)}...]`,
+          centro: `Opción ${index + 1}`,
+          prioridad: index + 1,
+          plazasTotal: 0,
+          plazas: 0,
+          localidad: '',
+          municipio: '',
+          plazasDisponiblesActualizadas: 0,
+          sinPlazas: true,
+          noEncontrado: true
+        };
+      }));
       
-      // Si no encontramos centros en el historial, usar el centro actual como única opción
-      if (centrosParaSolicitud.length === 0 && assignment.centerId) {
-        centrosParaSolicitud = [assignment.centerId];
-        console.log("Usando centro actual como única opción:", centrosParaSolicitud);
-      }
-      
-      // Configurar estados para la reasignación
+      // Configurar estados para la reasignación y mostrar el modal
       setAsignacionParaReasignar({
         ...assignment,
-        centrosIdsOriginales: centrosParaSolicitud
+        centrosIdsOriginales: centrosParaSolicitud,
+        centrosCompletos: centrosCompletos
       });
       setCentroSeleccionadoReasignacion("");
       setModalReasignacion(true);
@@ -722,6 +853,7 @@ const Admin = ({
       
     } catch (error) {
       console.error("Error al preparar reasignación:", error);
+      setInternalProcessingMessage("");
       showNotification(`Error al preparar reasignación: ${error.message}`, "error");
     }
   };
@@ -1502,9 +1634,26 @@ const Admin = ({
     const centrosIds = solicitudSeleccionada.centrosIds || 
                         solicitudSeleccionada.centrosSeleccionados || [];
     
+    // Función para buscar un centro de forma más flexible
+    const buscarCentroFlexible = (id) => {
+      let centro = availablePlazas.find(c => c.id === id);
+      if (centro) return centro;
+      centro = availablePlazas.find(c => c.docId === id);
+      if (centro) return centro;
+      centro = availablePlazas.find(c => c.codigo === id);
+      if (centro) return centro;
+      if (typeof id === 'string') {
+        centro = availablePlazas.find(c => 
+          (c.id && c.id.toLowerCase() === id.toLowerCase()) || 
+          (c.docId && c.docId.toLowerCase() === id.toLowerCase())
+        );
+      }
+      return centro;
+    };
+
     // Filtrar solo los centros seleccionados que existen en availablePlazas y mantener el orden original
     const centrosDisponibles = centrosIds
-      .map(id => availablePlazas.find(centro => centro.id === id))
+      .map(id => buscarCentroFlexible(id))
       .filter(Boolean);
 
     // Verificar si hay solicitudes con orden menor
@@ -2826,6 +2975,115 @@ const Admin = ({
   const renderModalReasignacion = () => {
     if (!asignacionParaReasignar) return null;
 
+    // Obtener todos los centros seleccionados por orden de prioridad original
+    const centrosOriginales = asignacionParaReasignar.centrosIdsOriginales || [];
+    
+    // Función para buscar un centro de forma más flexible
+    const buscarCentroFlexible = (id) => {
+      // Validación de entrada
+      if (!id || typeof id !== 'string') {
+        return null;
+      }
+      
+      // 1. Búsqueda exacta por id
+      let centro = availablePlazas.find(c => c.id === id);
+      if (centro) return centro;
+      
+      // 2. Búsqueda por docId
+      centro = availablePlazas.find(c => c.docId === id);
+      if (centro) return centro;
+      
+      // 3. Búsqueda por código
+      centro = availablePlazas.find(c => c.codigo === id);
+      if (centro) return centro;
+      
+      // 4. Búsqueda caso insensitivo (por si los IDs están en mayúsculas/minúsculas diferentes)
+      centro = availablePlazas.find(c => 
+        (c.id && c.id.toLowerCase() === id.toLowerCase()) || 
+        (c.docId && c.docId.toLowerCase() === id.toLowerCase())
+      );
+      if (centro) return centro;
+      
+      // 5. Búsqueda por prefijo del ID (primeros caracteres)
+      if (id.length > 4) {
+        const idPrefix = id.substring(0, 8);
+        centro = availablePlazas.find(c => 
+          (c.id && c.id.startsWith(idPrefix)) || 
+          (c.docId && c.docId.startsWith(idPrefix))
+        );
+        if (centro) return centro;
+      }
+      
+      // 6. Como último recurso, buscar por nombre o codigo en toda la colección
+      for (const centro of availablePlazas) {
+        if (centro.codigo && centro.codigo === id) return centro;
+        if (centro.nombre && centro.nombre === id) return centro;
+        if (centro.centro && centro.centro === id) return centro;
+      }
+      
+      // No encontrado
+      return null;
+    };
+    
+    // Usar información de centros completa si está disponible
+    const centrosOriginalesData = asignacionParaReasignar.centrosCompletos && 
+                                  Array.isArray(asignacionParaReasignar.centrosCompletos) && 
+                                  asignacionParaReasignar.centrosCompletos.length > 0
+      ? asignacionParaReasignar.centrosCompletos.map((centro, index) => {
+          // Garantizar que todos los centros tengan una propiedad nombre y prioridad
+          return {
+            ...centro,
+            nombre: centro.nombre || centro.centro || `Opción ${index + 1}`,
+            centro: centro.centro || centro.nombre || `Opción ${index + 1}`,
+            prioridad: centro.prioridad || (index + 1),
+            noEncontrado: centro.noEncontrado || false,
+            sinPlazas: centro.sinPlazas || false
+          };
+        })
+      : centrosOriginales.map((centroId, index) => {
+          // Intentar encontrar el centro con búsqueda flexible
+          const centro = buscarCentroFlexible(centroId);
+          
+          // Si no se encuentra el centro, crear un objeto "placeholder"
+          if (!centro) {
+            console.log(`Centro con ID ${centroId} no encontrado en el modal, creando placeholder para Opción ${index + 1}`);
+            return {
+              id: centroId,
+              nombre: `Opción ${index + 1}`,
+              centro: `Opción ${index + 1}`,
+              plazasTotal: 0,
+              plazas: 0,
+              localidad: '',
+              municipio: '',
+              prioridad: index + 1,
+              plazasDisponiblesActualizadas: 0,
+              sinPlazas: true,
+              noEncontrado: true
+            };
+          }
+          
+          // Procesamiento normal para centros encontrados
+          const asignacionesParaCentro = assignments.filter(a => 
+            a.centerId === centroId && 
+            !a.noAsignable && 
+            a.estado !== "NO_ASIGNABLE" && 
+            a.estado !== "REASIGNACION_NO_VIABLE"
+          ).length;
+          
+          const plazasTotal = parseInt(centro.plazasTotal || centro.plazas || '0', 10);
+          const plazasOcupadas = parseInt(centro.plazasOcupadas || centro.asignadas || '0', 10);
+          const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
+          const sinPlazas = plazasDisponibles <= 0;
+          
+          return {
+            ...centro,
+            nombre: centro.nombre || centro.centro,
+            prioridad: index + 1,
+            plazasDisponiblesActualizadas: plazasDisponibles,
+            sinPlazas: sinPlazas
+          };
+        });
+    
     return (
       <div 
         style={{ 
@@ -2848,7 +3106,7 @@ const Admin = ({
             borderRadius: '8px',
             padding: '20px',
             width: '90%',
-            maxWidth: '600px',
+            maxWidth: '700px',
             maxHeight: '90vh',
             overflow: 'auto',
             boxShadow: '0 4px 20px rgba(0,0,0,0.2)'
@@ -2871,64 +3129,124 @@ const Admin = ({
           </div>
           
           <div style={{ marginBottom: '20px' }}>
-            <h4>Centros seleccionados originalmente:</h4>
-            {asignacionParaReasignar.centrosIdsOriginales && asignacionParaReasignar.centrosIdsOriginales.length > 0 ? (
+            <h4 style={{ color: '#004d40', borderBottom: '2px solid #26a69a', paddingBottom: '8px', marginBottom: '12px' }}>
+              Opciones seleccionadas por el usuario (en orden de prioridad): {centrosOriginalesData.length}
+            </h4>
+            
+            {centrosOriginalesData.length > 0 ? (
               <div style={{ 
                 display: 'flex', 
                 flexDirection: 'column',
                 gap: '10px',
-                maxHeight: '200px',
+                maxHeight: '250px',
                 overflow: 'auto',
                 padding: '10px',
-                border: '1px solid #eee',
-                borderRadius: '5px'
+                border: '1px solid #26a69a',
+                borderRadius: '5px',
+                backgroundColor: '#f5f5f5'
               }}>
-                {asignacionParaReasignar.centrosIdsOriginales.map((centroId, index) => {
-                  const centro = availablePlazas.find(c => c.id === centroId);
-                  if (!centro) return null;
-                  
+                {centrosOriginalesData.map((centro, index) => {
                   return (
-                    <div key={index} style={{
-                      padding: '10px',
+                    <div key={`original-${centro.id}-${index}`} style={{
+                      padding: '12px',
                       borderRadius: '5px',
                       border: '1px solid #ddd',
-                      backgroundColor: centroSeleccionadoReasignacion === centroId 
-                        ? '#e3f2fd' 
-                        : 'white',
-                      cursor: 'pointer',
-                      opacity: centroSeleccionadoReasignacion === centroId ? 0.7 : 1
+                      backgroundColor: centro.noEncontrado 
+                        ? '#fff3cd'
+                        : centroSeleccionadoReasignacion === centro.id 
+                          ? '#e3f2fd' 
+                          : centro.sinPlazas 
+                            ? '#ffebee' 
+                            : 'white',
+                      cursor: centro.noEncontrado || centro.sinPlazas ? 'not-allowed' : 'pointer',
+                      opacity: centro.noEncontrado ? 0.8 : centro.sinPlazas ? 0.7 : 1,
+                      position: 'relative',
+                      boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
+                      marginBottom: '8px'
                     }} onClick={() => {
-                      if (centroSeleccionadoReasignacion !== centroId) setCentroSeleccionadoReasignacion(centroId);
+                      if (!centro.noEncontrado && !centro.sinPlazas) setCentroSeleccionadoReasignacion(centro.id);
                     }}>
-                      <div style={{ fontWeight: 'bold' }}>
-                        {index + 1}. {centro.nombre || centro.centro}
-                      </div>
-                      <div style={{ fontSize: '14px', color: '#666' }}>
-                        {centro.localidad && `${centro.localidad}`}
-                        {centro.municipio && centro.municipio !== centro.localidad && ` - ${centro.municipio}`}
-                      </div>
                       <div style={{ 
-                        fontSize: '14px', 
-                        marginTop: '5px',
-                        color: '#388e3c',
-                        fontWeight: 'bold'
+                        position: 'absolute', 
+                        top: '8px', 
+                        left: '8px',
+                        backgroundColor: centro.noEncontrado ? '#ffc107' : '#26a69a',
+                        color: centro.noEncontrado ? '#856404' : 'white',
+                        borderRadius: '50%',
+                        width: '24px',
+                        height: '24px',
+                        display: 'flex',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        fontWeight: 'bold',
+                        fontSize: '14px'
                       }}>
-                        Plazas: <strong>{centro.plazasDisponibles}</strong> disponibles 
-                        de {centro.plazasTotal || centro.plazas || 0}
+                        {centro.prioridad}
                       </div>
+                      
+                      <div style={{ 
+                        fontWeight: 'bold', 
+                        fontSize: '16px',
+                        marginLeft: '30px',
+                        color: centro.noEncontrado ? '#856404' : 
+                               centro.sinPlazas ? '#d32f2f' : '#1a237e'
+                      }}>
+                        {centro.nombre || centro.centro || `Opción ${centro.prioridad}`}
+                        
+                        {centro.sinPlazas && !centro.noEncontrado && (
+                          <span style={{
+                            backgroundColor: '#f44336',
+                            color: 'white',
+                            fontSize: '11px',
+                            padding: '2px 6px',
+                            borderRadius: '4px',
+                            marginLeft: '8px'
+                          }}>
+                            Sin plazas
+                          </span>
+                        )}
+                      </div>
+                      
+                      {!centro.noEncontrado ? (
+                        <>
+                          <div style={{ fontSize: '14px', color: '#666', marginTop: '3px', marginLeft: '30px' }}>
+                            {centro.localidad && `${centro.localidad}`}
+                            {centro.municipio && centro.municipio !== centro.localidad && ` - ${centro.municipio}`}
+                            {!centro.localidad && !centro.municipio && "Sin información de ubicación"}
+                          </div>
+                          
+                          <div style={{ 
+                            fontSize: '14px', 
+                            marginTop: '5px',
+                            marginLeft: '30px',
+                            color: centro.sinPlazas ? '#d32f2f' : '#388e3c',
+                            fontWeight: 'bold'
+                          }}>
+                            Plazas: <strong>{centro.plazasDisponiblesActualizadas || 0}</strong> disponibles 
+                            de {centro.plazasTotal || centro.plazas || 0}
+                          </div>
+                        </>
+                      ) : (
+                        <div style={{ fontSize: '13px', color: '#856404', marginTop: '5px', marginLeft: '30px' }}>
+                          Este centro ya no existe en la base de datos actual
+                        </div>
+                      )}
                     </div>
                   );
                 })}
               </div>
             ) : (
-              <div style={{ color: '#666', padding: '10px', textAlign: 'center' }}>
-                No hay centros seleccionados originalmente.
+              <div style={{ color: '#666', padding: '10px', textAlign: 'center', backgroundColor: '#f9f9f9', borderRadius: '4px' }}>
+                No se encontraron las opciones originales del usuario.
               </div>
             )}
           </div>
 
           <div style={{ marginBottom: '20px' }}>
-            <h4>O selecciona otro centro:</h4>
+            <h4 style={{ color: '#0d47a1', borderBottom: '2px solid #2196f3', paddingBottom: '8px', marginBottom: '12px' }}>
+              Todos los centros disponibles:
+            </h4>
+            
             <input
               type="text"
               placeholder="Buscar por nombre, localidad o municipio..."
@@ -2936,64 +3254,123 @@ const Admin = ({
               onChange={(e) => setSearchTermCentros(e.target.value)}
               style={{
                 width: '100%',
-                padding: '8px',
-                marginBottom: '10px',
-                border: '1px solid #ddd',
+                padding: '10px',
+                marginBottom: '12px',
+                border: '1px solid #2196f3',
                 borderRadius: '4px'
               }}
             />
+            
             <div style={{ 
               display: 'flex', 
               flexDirection: 'column',
               gap: '10px',
-              maxHeight: '200px',
+              maxHeight: '250px',
               overflow: 'auto',
               padding: '10px',
-              border: '1px solid #eee',
-              borderRadius: '5px'
+              border: '1px solid #2196f3',
+              borderRadius: '5px',
+              backgroundColor: '#f5f5f5'
             }}>
               {availablePlazas
                 .filter(centro => 
-                  // Excluir los centros que ya están en la lista original y el centro actual
-                  !asignacionParaReasignar.centrosIdsOriginales.includes(centro.id) &&
+                  // No filtrar centros originales, mostrar todos excepto el actual
                   centro.id !== asignacionParaReasignar.centerId &&
                   // Filtrar por término de búsqueda
-                  (centro.nombre?.toLowerCase().includes(searchTermCentros.toLowerCase()) ||
-                   centro.centro?.toLowerCase().includes(searchTermCentros.toLowerCase()) ||
-                   centro.localidad?.toLowerCase().includes(searchTermCentros.toLowerCase()) ||
-                   centro.municipio?.toLowerCase().includes(searchTermCentros.toLowerCase()))
+                  (searchTermCentros === '' || 
+                   (centro.nombre && centro.nombre.toLowerCase().includes(searchTermCentros.toLowerCase())) ||
+                   (centro.centro && centro.centro.toLowerCase().includes(searchTermCentros.toLowerCase())) ||
+                   (centro.localidad && centro.localidad.toLowerCase().includes(searchTermCentros.toLowerCase())) ||
+                   (centro.municipio && centro.municipio.toLowerCase().includes(searchTermCentros.toLowerCase())))
                 )
-                .map((centro, index) => (
-                  <div key={index} style={{
-                    padding: '10px',
-                    borderRadius: '5px',
-                    border: '1px solid #ddd',
-                    backgroundColor: centroSeleccionadoReasignacion === centro.id 
-                      ? '#e3f2fd' 
-                      : 'white',
-                    cursor: 'pointer',
-                    opacity: centroSeleccionadoReasignacion === centro.id ? 0.7 : 1
-                  }} onClick={() => {
-                    if (centroSeleccionadoReasignacion !== centro.id) setCentroSeleccionadoReasignacion(centro.id);
-                  }}>
-                    <div style={{ fontWeight: 'bold' }}>
-                      {index + 1}. {centro.nombre || centro.centro}
-                    </div>
-                    <div style={{ fontSize: '14px', color: '#666' }}>
-                      {centro.localidad && `${centro.localidad}`}
-                      {centro.municipio && centro.municipio !== centro.localidad && ` - ${centro.municipio}`}
-                    </div>
-                    <div style={{ 
-                      fontSize: '14px', 
-                      marginTop: '5px',
-                      color: '#388e3c',
-                      fontWeight: 'bold'
+                .map((centro, index) => {
+                  // Verificar si es centro prioritario original
+                  const esCentroPrioritario = centrosOriginales.includes(centro.id);
+                  const prioridadIndex = centrosOriginales.findIndex(id => id === centro.id);
+                  
+                  // Buscar también por docId ya que puede ser que los IDs originales sean docIds
+                  const esCentroPrioritarioDocId = centro.docId && centrosOriginales.includes(centro.docId);
+                  const prioridadIndexDocId = centro.docId ? centrosOriginales.findIndex(id => id === centro.docId) : -1;
+                  
+                  // Usar la mejor coincidencia
+                  const esPrioritario = esCentroPrioritario || esCentroPrioritarioDocId;
+                  const prioridad = prioridadIndex !== -1 ? prioridadIndex + 1 : 
+                                    prioridadIndexDocId !== -1 ? prioridadIndexDocId + 1 : 0;
+                  
+                  // Calcular plazas disponibles
+                  const plazasTotal = parseInt(centro.plazasTotal || centro.plazas || '0', 10);
+                  const plazasOcupadas = parseInt(centro.plazasOcupadas || centro.asignadas || '0', 10);
+                  const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
+                  const sinPlazas = plazasDisponibles <= 0;
+                  
+                  return (
+                    <div key={`todos-${centro.id}-${index}`} style={{
+                      padding: '10px',
+                      borderRadius: '5px',
+                      border: esPrioritario ? '2px solid #26a69a' : '1px solid #ddd',
+                      backgroundColor: centroSeleccionadoReasignacion === centro.id 
+                        ? '#e3f2fd' 
+                        : sinPlazas
+                          ? '#ffebee'
+                          : esPrioritario
+                            ? '#e0f2f1'
+                            : 'white',
+                      cursor: sinPlazas ? 'not-allowed' : 'pointer',
+                      opacity: sinPlazas ? 0.7 : 1
+                    }} onClick={() => {
+                      if (!sinPlazas) setCentroSeleccionadoReasignacion(centro.id);
                     }}>
-                      Plazas: <strong>{centro.plazasDisponibles}</strong> disponibles 
-                      de {centro.plazasTotal || centro.plazas || 0}
+                      <div style={{ 
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px'
+                      }}>
+                        <div style={{ fontWeight: 'bold' }}>
+                          {centro.nombre || centro.centro}
+                        </div>
+                        
+                        {esPrioritario && (
+                          <span style={{
+                            backgroundColor: '#26a69a',
+                            color: 'white',
+                            fontSize: '11px',
+                            padding: '2px 6px',
+                            borderRadius: '4px'
+                          }}>
+                            Opción {prioridad}
+                          </span>
+                        )}
+                        
+                        {sinPlazas && (
+                          <span style={{
+                            backgroundColor: '#f44336',
+                            color: 'white',
+                            fontSize: '11px',
+                            padding: '2px 6px',
+                            borderRadius: '4px'
+                          }}>
+                            Sin plazas
+                          </span>
+                        )}
+                      </div>
+                      
+                      <div style={{ fontSize: '13px', color: '#666' }}>
+                        {centro.localidad && `${centro.localidad}`}
+                        {centro.municipio && centro.municipio !== centro.localidad && ` - ${centro.municipio}`}
+                      </div>
+                      
+                      <div style={{ 
+                        fontSize: '13px', 
+                        marginTop: '5px',
+                        color: sinPlazas ? '#d32f2f' : '#388e3c',
+                        fontWeight: 'bold'
+                      }}>
+                        Plazas: <strong>{plazasDisponibles}</strong> disponibles 
+                        de {plazasTotal}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
             </div>
           </div>
           
@@ -3004,18 +3381,6 @@ const Admin = ({
             borderTop: '1px solid #eee',
             paddingTop: '15px'
           }}>
-            {asignacionParaReasignar.centrosIdsOriginales && asignacionParaReasignar.centrosIdsOriginales.length > 0 && (
-              <div style={{ 
-                marginRight: 'auto', 
-                color: '#d32f2f', 
-                fontWeight: 'bold',
-                fontSize: '14px',
-                display: 'flex',
-                alignItems: 'center'
-              }}>
-                ⚠️ No hay centros alternativos con plazas disponibles
-              </div>
-            )}
             <button 
               onClick={handleCloseModal}
               style={{
