@@ -378,6 +378,12 @@ const Admin = ({
   const [notificationText, setNotificationText] = useState(''); // Estado para el texto de la notificación
   // Estado para el modo forzado de reasignación
   const [modoForzadoReasignacion, setModoForzadoReasignacion] = useState(false);
+  const [filtroReasignaciones, setFiltroReasignaciones] = useState(false);
+  // Estado para el panel de admin y acciones
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [passwordError, setPasswordError] = useState(false);
+  const [mostrarHistorialReasignaciones, setMostrarHistorialReasignaciones] = useState(false);
+  const [historialReasignaciones, setHistorialReasignaciones] = useState([]);
 
   // Estilos comunes
   const tabButtonStyle = {
@@ -737,96 +743,108 @@ const Admin = ({
         
         const historialQuery = query(
           collection(db, "historialSolicitudes"),
-          where("numeroOrden", "==", ordenAsignacion)
+          where("orden", "in", [ordenAsignacion, parseInt(ordenAsignacion, 10), String(ordenAsignacion)])
         );
         const historialSnapshot = await getDocs(historialQuery);
         
-        // Procesar todos los documentos del historial
-        const todosLosDocumentos = {};
+        if (historialSnapshot.empty) {
+          // Si no se encontró por orden, intentar por numeroOrden
+          const historialQueryNumeroOrden = query(
+            collection(db, "historialSolicitudes"),
+            where("numeroOrden", "in", [ordenAsignacion, parseInt(ordenAsignacion, 10), String(ordenAsignacion)])
+          );
+          const historialSnapshotNumeroOrden = await getDocs(historialQueryNumeroOrden);
+          
+          if (!historialSnapshotNumeroOrden.empty) {
+            console.log(`Encontrados ${historialSnapshotNumeroOrden.size} registros de historial por numeroOrden`);
+            // Usar este snapshot en lugar del vacío
+            historialSnapshot = historialSnapshotNumeroOrden;
+          }
+          } else {
+          console.log(`Encontrados ${historialSnapshot.size} registros de historial por orden`);
+        }
+        
+        // Procesamos todos los documentos de historial para encontrar todos los centros seleccionados
+        const centrosEncontrados = new Set(); // Usamos un Set para evitar duplicados
+        const centrosInfoCompletaMap = new Map(); // Usaremos un Map para guardar información completa
         
         historialSnapshot.forEach(doc => {
-              const data = doc.data();
+          const data = doc.data();
           data.docId = doc.id;
-          data.timestamp = data.timestamp || 0; // Por si no tiene timestamp
+          console.log(`Procesando documento de historial ID: ${doc.id}, estado: ${data.estado || 'desconocido'}`);
           
-          // Guardar/actualizar documento en nuestro objeto
-          todosLosDocumentos[doc.id] = data;
+          // Buscar centros en el campo centroId
+          if (data.centroId) {
+            centrosEncontrados.add(data.centroId);
+            console.log(`Añadido centroId: ${data.centroId}`);
+          }
           
-          // Buscar en diferentes campos que podrían contener centros
-          const camposPosiblesCentros = [
-            { nombre: 'centrosSeleccionados', valores: data.centrosSeleccionados },
-            { nombre: 'centrosIdsOriginales', valores: data.centrosIdsOriginales },
-            { nombre: 'opcionesOriginales', valores: data.opcionesOriginales },
-            { nombre: 'centros', valores: data.centros }
-          ].filter(campo => 
-            campo.valores && Array.isArray(campo.valores) && campo.valores.length > 0
-          );
+          // Buscar centros en el campo centrosSeleccionados
+          if (data.centrosSeleccionados && Array.isArray(data.centrosSeleccionados)) {
+            data.centrosSeleccionados.forEach(centroId => {
+              if (centroId) {
+                centrosEncontrados.add(centroId);
+                console.log(`Añadido desde centrosSeleccionados: ${centroId}`);
+              }
+            });
+          }
           
-          if (camposPosiblesCentros.length > 0) {
-            console.log(`Documento ${Object.keys(todosLosDocumentos).length} (${data.estado || 'sin estado'}, ID: ${doc.id}):`);
-            console.log("  Campos que podrían contener centros:", camposPosiblesCentros);
-            
-            // Tomar los centros del primer array no vacío
-            for (const campo of camposPosiblesCentros) {
-              // Verificar si los elementos del array son strings (IDs) u objetos
-              const primerElemento = campo.valores[0];
-              
-              if (typeof primerElemento === 'string') {
-                console.log(`Centros encontrados en campo ${campo.nombre}:`, campo.valores);
-                if (centrosParaSolicitud.length === 0) {
-                  centrosParaSolicitud = [...campo.valores];
-                }
-              } else if (typeof primerElemento === 'object' && primerElemento !== null) {
-                // Si son objetos, extraer los IDs
-                const ids = campo.valores
-                  .map(obj => obj.id || obj.centroId || obj.docId)
-                  .filter(Boolean);
-                  
-                console.log(`IDs extraídos de objetos en campo ${campo.nombre}:`, ids);
-                if (centrosParaSolicitud.length === 0 && ids.length > 0) {
-                  centrosParaSolicitud = [...ids];
-                }
-                
-                // También guardar la información completa
-                if (centrosInfoCompleta.length === 0) {
-                  centrosInfoCompleta = [...campo.valores];
+          // Buscar en centrosIdsOriginales
+          if (data.centrosIdsOriginales && Array.isArray(data.centrosIdsOriginales)) {
+            data.centrosIdsOriginales.forEach(centroId => {
+              if (centroId) {
+                centrosEncontrados.add(centroId);
+                console.log(`Añadido desde centrosIdsOriginales: ${centroId}`);
+              }
+            });
+          }
+          
+          // Buscar en opcionesOriginales
+          if (data.opcionesOriginales && Array.isArray(data.opcionesOriginales)) {
+            // Si son objetos, extraer los IDs
+            data.opcionesOriginales.forEach(opcion => {
+              if (typeof opcion === 'string') {
+                centrosEncontrados.add(opcion);
+                console.log(`Añadido desde opcionesOriginales (string): ${opcion}`);
+              } else if (opcion && typeof opcion === 'object') {
+                const centroId = opcion.id || opcion.centroId || opcion.docId;
+                if (centroId) {
+                  centrosEncontrados.add(centroId);
+                  console.log(`Añadido desde opcionesOriginales (objeto): ${centroId}`);
+                  // Guardar información completa
+                  centrosInfoCompletaMap.set(centroId, opcion);
                 }
               }
-            }
+            });
+          }
+          
+          // Buscar en campo centros
+          if (data.centros && Array.isArray(data.centros)) {
+            // Similar a opcionesOriginales
+            data.centros.forEach(centro => {
+              if (typeof centro === 'string') {
+                centrosEncontrados.add(centro);
+                console.log(`Añadido desde centros (string): ${centro}`);
+              } else if (centro && typeof centro === 'object') {
+                const centroId = centro.id || centro.centroId || centro.docId;
+                if (centroId) {
+                  centrosEncontrados.add(centroId);
+                  console.log(`Añadido desde centros (objeto): ${centroId}`);
+                  // Guardar información completa
+                  centrosInfoCompletaMap.set(centroId, centro);
+                }
+              }
+            });
           }
         });
         
-        // Convertir a array para ordenar por timestamp
-        const historialDocs = Object.values(todosLosDocumentos);
+        // Convertir Set a Array
+        centrosParaSolicitud = Array.from(centrosEncontrados);
+        console.log(`Total de centros encontrados en historial: ${centrosParaSolicitud.length}`);
+        console.log("Centros encontrados:", centrosParaSolicitud);
         
-        // Si después de revisar todo el historial no se encontraron centros,
-        // y si hay algún historial disponible, intentar inferir el centro original
-        if (centrosParaSolicitud.length === 0 && historialDocs.length > 0) {
-          // Ordenar por timestamp (descendente)
-          historialDocs.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-          
-          // Buscar el primer documento que tenga centroId o centroAsignado
-          for (const doc of historialDocs) {
-            if (doc.centroId) {
-              centrosParaSolicitud.push(doc.centroId);
-              console.log("Usando centroId del historial como opción:", doc.centroId);
-              break;
-            } else if (doc.centroAsignado) {
-              // Intentar encontrar el ID del centro por nombre
-              const centroNombre = doc.centroAsignado.toLowerCase().trim();
-              const centroEncontrado = availablePlazas.find(
-                centro => (centro.nombre && centro.nombre.toLowerCase().trim() === centroNombre) ||
-                          (centro.centro && centro.centro.toLowerCase().trim() === centroNombre)
-              );
-              
-              if (centroEncontrado) {
-                centrosParaSolicitud.push(centroEncontrado.id);
-                console.log("Encontrado centro por nombre en historial:", centroEncontrado.id);
-              break;
-              }
-            }
-          }
-        }
+        // Convertir Map a Array para centrosInfoCompleta
+        centrosInfoCompleta = Array.from(centrosInfoCompletaMap.values());
       }
       
       console.log("Resultado final - centros para reasignación:", centrosParaSolicitud);
@@ -2328,14 +2346,30 @@ const Admin = ({
 
   // Renderizar sección de asignaciones existentes
   const renderAsignacionesExistentes = () => {
-    // Filtrar asignaciones por búsqueda
-    const asignacionesFiltradas = assignments.filter(asig => 
-      !searchTermAsignaciones || 
-      (asig.order && asig.order.toString().includes(searchTermAsignaciones)) ||
-      (asig.numeroOrden && asig.numeroOrden.toString().includes(searchTermAsignaciones)) ||
-      (asig.centro && asig.centro.toLowerCase().includes(searchTermAsignaciones.toLowerCase())) ||
-      (asig.nombreCentro && asig.nombreCentro.toLowerCase().includes(searchTermAsignaciones.toLowerCase()))
-    );
+    // Determinar qué asignaciones mostrar
+    let asignacionesFiltradas = [];
+    
+    if (mostrarHistorialReasignaciones) {
+      // Si estamos mostrando el historial de reasignaciones
+      asignacionesFiltradas = historialReasignaciones;
+    } else {
+      // Filtrado normal
+      // Filtrar asignaciones por búsqueda
+      asignacionesFiltradas = assignments.filter(asig => 
+        !searchTermAsignaciones || 
+        (asig.order && asig.order.toString().includes(searchTermAsignaciones)) ||
+        (asig.numeroOrden && asig.numeroOrden.toString().includes(searchTermAsignaciones)) ||
+        (asig.centro && asig.centro.toLowerCase().includes(searchTermAsignaciones.toLowerCase())) ||
+        (asig.nombreCentro && asig.nombreCentro.toLowerCase().includes(searchTermAsignaciones.toLowerCase()))
+      );
+      
+      // Aplicar filtro de reasignaciones si está activo
+      if (filtroReasignaciones) {
+        asignacionesFiltradas = asignacionesFiltradas.filter(asig => 
+          asig.reasignado === true || asig.estado === 'REASIGNADO'
+        );
+      }
+    }
 
     return (
       <div style={{ marginTop: '30px' }}>
@@ -2345,8 +2379,35 @@ const Admin = ({
           alignItems: 'center',
           marginBottom: '15px' 
         }}>
-          <h3>Asignaciones Realizadas</h3>
+          <h3>{mostrarHistorialReasignaciones ? 'Historial de Reasignaciones' : 'Asignaciones Realizadas'}</h3>
           <div style={{display: 'flex', gap: '10px'}}>
+            {!mostrarHistorialReasignaciones && (
+              <label style={{display: 'flex', alignItems: 'center', gap: '5px', marginRight: '10px'}}>
+                <input
+                  type="checkbox"
+                  checked={filtroReasignaciones}
+                  onChange={(e) => setFiltroReasignaciones(e.target.checked)}
+                />
+                Mostrar solo reasignaciones
+              </label>
+            )}
+            
+            <button
+              onClick={mostrarHistorialReasignaciones ? 
+                () => setMostrarHistorialReasignaciones(false) : 
+                recuperarReasignacionesHistorial}
+              style={{
+                padding: '8px 12px',
+                backgroundColor: mostrarHistorialReasignaciones ? '#e67e22' : '#3498db',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer'
+              }}
+            >
+              {mostrarHistorialReasignaciones ? 'Volver a Asignaciones' : 'Recuperar Reasignaciones'}
+            </button>
+            
             <button
               onClick={async () => {
                 // Recargar datos completos
@@ -2479,19 +2540,14 @@ const Admin = ({
                         )
                       }
                       onChange={(e) => {
-                        // Limpiar console.log innecesarios al seleccionar/deseleccionar
                         const isChecked = e.target.checked;
                         
                         if (!isChecked) {
-                          // Si desmarcamos, simplemente limpiamos todas las selecciones
                           setAsignacionesSeleccionadas({});
                         } else {
-                          // Si marcamos, creamos un nuevo objeto con las asignaciones válidas
                           const newSeleccionadas = {};
                           
-                          // Solo incluir asignaciones válidas (no las no asignables)
                           asignacionesFiltradas.forEach(a => {
-                            // Si no tiene docId pero tiene id, usamos el id como docId
                             if (!a.docId && a.id) {
                               a.docId = a.id;
                             }
@@ -2501,7 +2557,6 @@ const Admin = ({
                             }
                           });
                           
-                          // Verificar que no haya keys indefinidas
                           if (Object.keys(newSeleccionadas).some(key => key === "undefined")) {
                             console.error("Se detectaron claves 'undefined' en las selecciones");
                             delete newSeleccionadas["undefined"];
@@ -2514,6 +2569,7 @@ const Admin = ({
                   </th>
                   <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>Nº Orden</th>
                   <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>Centro Asignado</th>
+                  <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>Estado</th>
                   <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>Plazas</th>
                   <th style={{ padding: '10px', textAlign: 'left', borderBottom: '1px solid #ddd' }}>Fecha Asignación</th>
                   <th style={{ padding: '10px', textAlign: 'center', borderBottom: '1px solid #ddd' }}>Acciones</th>
@@ -2527,22 +2583,17 @@ const Admin = ({
                     idx={idx}
                     asignacionesSeleccionadas={asignacionesSeleccionadas}
                     onSeleccionChange={(docId, isChecked) => {
-                      console.log(`Cambiando selección de asignación ${docId} a: ${isChecked}`);
-                      
-                      // Verificar que el docId no sea undefined
                       if (!docId) {
                         console.warn("Se intentó cambiar la selección de una asignación con docId undefined");
                         return;
                       }
                       
                       if (isChecked) {
-                        // Agregar la asignación seleccionada
                         setAsignacionesSeleccionadas(prev => ({
                           ...prev,
                           [docId]: true
                         }));
                       } else {
-                        // Quitar la asignación deseleccionada
                         setAsignacionesSeleccionadas(prev => {
                           const newState = {...prev};
                           delete newState[docId];
@@ -3169,7 +3220,7 @@ const Admin = ({
         
         // Si no se encuentra el centro, crear un objeto "placeholder"
         if (!centro) {
-            return {
+          return {
             id: centroId,
             nombre: `Opción ${index + 1}`,
             centro: `Opción ${index + 1}`,
@@ -4205,27 +4256,22 @@ const Admin = ({
   // Función para recargar todos los datos forzando una actualización completa
   const recargarDatosCompletos = async () => {
     try {
-      setInternalProcessingMessage("Recargando datos completamente...");
-      // Primero llamamos a cargarDatosDesdeFirebase para actualizar las colecciones en memoria
+      setInternalProcessingMessage("Recargando datos...");
+      
+      // Recargar datos desde Firebase
       await cargarDatosDesdeFirebase();
       
-      // Forzar la actualización del estado reasignado en todas las asignaciones
-      const asignacionesActualizadas = assignments.map(asignacion => {
-        if (asignacion.estado === 'REASIGNADO' && !asignacion.reasignado) {
-          return { ...asignacion, reasignado: true };
-        }
-        return asignacion;
-      });
+      // Si estamos mostrando el historial de reasignaciones, actualizarlo también
+      if (mostrarHistorialReasignaciones) {
+        await recuperarReasignacionesHistorial();
+      }
       
-      // Actualizar el Dashboard con datos frescos
-      console.log(`Datos recargados completamente: ${asignacionesActualizadas.length} asignaciones, ${asignacionesActualizadas.filter(a => a.reasignado).length} reasignadas`);
-      
-      showNotification("Datos recargados completamente", "success");
-    } catch (error) {
-      console.error("Error al recargar datos completos:", error);
-      showNotification(`Error al recargar datos: ${error.message}`, "error");
-    } finally {
       setInternalProcessingMessage("");
+      showNotification("Datos recargados correctamente", "success");
+    } catch (error) {
+      console.error("Error al recargar datos:", error);
+      setInternalProcessingMessage("");
+      showNotification("Error al recargar datos: " + error.message, "error");
     }
   };
   
@@ -4322,6 +4368,91 @@ const Admin = ({
         </div>
       </div>
     );
+  };
+
+  // Función para recuperar reasignaciones desde el historial
+  const recuperarReasignacionesHistorial = async () => {
+    try {
+      setInternalProcessingMessage("Recuperando reasignaciones del historial...");
+      
+      // Obtener todas las reasignaciones del historial
+      const historialRef = collection(db, "historialSolicitudes");
+      const q = query(historialRef, where("estado", "==", "REASIGNADO"));
+      const snapshot = await getDocs(q);
+      
+      const reasignaciones = [];
+      const batch = writeBatch(db);
+      
+      for (const docSnapshot of snapshot.docs) {
+        const data = docSnapshot.data();
+        
+        // Crear nueva asignación basada en el historial
+        const nuevaAsignacion = {
+          order: data.orden || data.numeroOrden,
+          numeroOrden: data.orden || data.numeroOrden,
+          centerId: data.centroId,
+          centro: data.centroAsignado,
+          nombreCentro: data.centroAsignado,
+          localidad: data.localidad || "",
+          municipio: data.municipio || "",
+          timestamp: data.timestamp || Date.now(),
+          reasignado: true,
+          estado: "REASIGNADO",
+          centroOriginal: data.centroOriginal || "",
+          centroPrevio: data.centroOriginal || "",
+          // Añadir campos adicionales para asegurar que se reconozca como reasignación
+          esReasignacion: true,
+          fechaReasignacion: data.fechaHistorico || new Date().toISOString(),
+          // Guardar información del centro original para referencia
+          centroIdOriginal: data.centroIdAnterior || null,
+          // Añadir un campo para identificar que viene del historial
+          recuperadaDelHistorial: true,
+          // Añadir campos adicionales para compatibilidad con cargarDatosDesdeFirebase
+          id: data.centroId, // Asegurar que id y centerId sean iguales
+          fechaAsignacion: data.fechaHistorico || new Date().toISOString()
+        };
+        
+        // Verificar campos undefined
+        Object.keys(nuevaAsignacion).forEach(key => {
+          if (nuevaAsignacion[key] === undefined) {
+            if (key.includes('Id') || key === 'order' || key === 'numeroOrden') {
+              nuevaAsignacion[key] = "0";
+            } else if (key === 'timestamp') {
+              nuevaAsignacion[key] = Date.now();
+            } else if (typeof nuevaAsignacion[key] === 'boolean') {
+              nuevaAsignacion[key] = false;
+            } else {
+              nuevaAsignacion[key] = "";
+            }
+          }
+        });
+        
+        // Guardar en la colección de asignaciones
+        const asignacionRef = doc(collection(db, "asignaciones"));
+        batch.set(asignacionRef, nuevaAsignacion);
+        
+        reasignaciones.push({
+          ...nuevaAsignacion,
+          docId: asignacionRef.id
+        });
+      }
+      
+      // Ejecutar todas las operaciones en batch
+      await batch.commit();
+      
+      // Actualizar el estado historialReasignaciones
+      setHistorialReasignaciones(reasignaciones);
+      
+      // Activar la vista de historial de reasignaciones
+      setMostrarHistorialReasignaciones(true);
+      
+      setInternalProcessingMessage("");
+      showNotification(`Se recuperaron ${reasignaciones.length} reasignaciones del historial`, "success");
+    } catch (error) {
+      console.error("Error al recuperar reasignaciones:", error);
+      setInternalProcessingMessage("");
+      showNotification(`Error al recuperar reasignaciones: ${error.message}`, "error");
+    }
   };
 
   // Actualizar el return principal para incluir el nuevo tab
