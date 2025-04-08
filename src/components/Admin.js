@@ -49,13 +49,29 @@ const AsignacionRow = React.memo(({
   // Obtener información completa del centro para mostrar plazas
   const centroCompleto = !esNoAsignable ? availablePlazas.find(c => c.id === asignacion.centerId) : null;
   
-  // Cálculo mejorado de plazas - asegurarse de que valores numéricos se procesen correctamente
-  let plazasTotal = 0;
+  // Calcular plazas ocupadas verificando todas las asignaciones activas para este centro
+  const asignacionesActivas = assignments.filter(a => 
+    a.centerId === asignacion.centerId && 
+    !a.noAsignable && 
+    a.estado !== "NO_ASIGNABLE" && 
+    a.estado !== "REASIGNACION_NO_VIABLE"
+  );
   
-  if (centroCompleto) {
+  const asignacionesParaCentro = asignacionesActivas.length;
+  
+  // Obtener la información más reciente del centro
+  let plazasTotal = 0;
+  let plazasOcupadas = asignacionesParaCentro;
+  
+  // ESTANDARIZACIÓN: Verificar si es Hospital La Fe para usar valor consistente
+  const esHospitalLaFe = nombreCentro.includes("LA FE");
+  if (esHospitalLaFe) {
+    // Para Hospital La Fe, usar siempre 1056 plazas totales
+    plazasTotal = 1056;
+  } else if (centroCompleto) {
     // Intentar obtener plazasTotal o plazas, asegurándose de que sea un número válido
     const plazasTotalRaw = centroCompleto.plazasTotal !== undefined ? centroCompleto.plazasTotal : 
-                           centroCompleto.plazas !== undefined ? centroCompleto.plazas : null;
+                          centroCompleto.plazas !== undefined ? centroCompleto.plazas : null;
     
     if (plazasTotalRaw !== null && plazasTotalRaw !== undefined) {
       // Convertir a número, asegurándose de que '0' string se convierta a 0 número
@@ -66,56 +82,14 @@ const AsignacionRow = React.memo(({
         plazasTotal = 0;
       }
     }
-  }
-  
-  // Verificar si hay información válida sobre plazas configuradas en el centro
-  // En lugar de verificar undefined, hacemos una comprobación más robusta
-  // Consideramos que hay información si el centro existe y tiene algún valor de plazas
-  // incluyendo 0 (que es un valor válido para plazas)
-  const hayInfoPlazas = !!centroCompleto;
-  
-  // Calcular plazas ocupadas verificando todas las asignaciones activas para este centro
-  // Esto proporciona un dato más preciso que el almacenado en el centro
-  const asignacionesActivas = assignments.filter(a => 
-      a.centerId === asignacion.centerId && 
-      !a.noAsignable && 
-      a.estado !== "NO_ASIGNABLE" && 
-      a.estado !== "REASIGNACION_NO_VIABLE"
-  );
-  
-  const asignacionesParaCentro = asignacionesActivas.length;
-  
-  // Usar primero los datos del centro si están disponibles, sino calcular basado en asignaciones
-  let plazasOcupadas;
-  if (centroCompleto && (centroCompleto.plazasOcupadas !== undefined || centroCompleto.asignadas !== undefined)) {
-    plazasOcupadas = parseInt(centroCompleto.plazasOcupadas || centroCompleto.asignadas, 10);
     
-    // Verificación de integridad: si el número calculado es mayor, usamos ese
-    if (asignacionesParaCentro > plazasOcupadas) {
-      plazasOcupadas = asignacionesParaCentro;
-      
-      // En desarrollo, mostrar advertencia si hay discrepancia
-      if (process.env.NODE_ENV === 'development') {
-        console.warn(`Discrepancia de plazas en centro ${asignacion.centerId}: 
-          Guardadas: ${centroCompleto.plazasOcupadas || centroCompleto.asignadas}, 
-          Calculadas: ${asignacionesParaCentro}`);
-      }
+    // REGLA DE CONSISTENCIA: Si hay plazas ocupadas, el total NUNCA puede ser cero
+    if (plazasOcupadas > 0 && plazasTotal === 0) {
+      plazasTotal = plazasOcupadas;
     }
   } else {
-    plazasOcupadas = asignacionesParaCentro;
-  }
-  
-  // REGLA DE CONSISTENCIA: Si hay plazas ocupadas, el total NUNCA puede ser cero
-  if (plazasOcupadas > 0 && plazasTotal === 0) {
-    // Si hay plazas ocupadas pero el total es 0, ajustar el total al número de ocupadas
-    plazasTotal = plazasOcupadas;
-    
-    // En desarrollo, mostrar advertencia
-    if (process.env.NODE_ENV === 'development') {
-      console.warn(`Inconsistencia detectada para centro ${asignacion.centerId || 'desconocido'}: 
-        Hay ${plazasOcupadas} plazas ocupadas pero 0 plazas totales. 
-        Se ha ajustado el total para evitar mostrar datos inconsistentes.`);
-    }
+    // Si no hay información del centro pero hay asignaciones, usar ese número como total
+    plazasTotal = Math.max(plazasOcupadas, 0);
   }
   
   // Calcular plazas disponibles (nunca negativo)
@@ -141,8 +115,6 @@ const AsignacionRow = React.memo(({
   const fechaFormateada = fecha && !isNaN(fecha.getTime())
     ? fecha.toLocaleDateString() + ' ' + fecha.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
     : 'Fecha no disponible';
-  
-  // Verificar si hay información válida sobre plazas
   
   return (
     <tr style={{
@@ -384,6 +356,8 @@ const Admin = ({
   const [passwordError, setPasswordError] = useState(false);
   const [mostrarHistorialReasignaciones, setMostrarHistorialReasignaciones] = useState(false);
   const [historialReasignaciones, setHistorialReasignaciones] = useState([]);
+  // Añadir el estado para el número de orden a recuperar
+  const [numeroOrdenRecuperar, setNumeroOrdenRecuperar] = useState("");
 
   // Estilos comunes
   const tabButtonStyle = {
@@ -871,13 +845,25 @@ const Admin = ({
           if (centro) return centro;
           
           // Búsqueda por prefijo
-          if (id.length > 4) {
+          if (typeof id === 'string' && id.length > 4) {
             const prefix = id.substring(0, 8);
             centro = availablePlazas.find(c => 
-              (c.id && c.id.startsWith(prefix)) || 
-              (c.docId && c.docId.startsWith(prefix))
+              (typeof c.id === 'string' && c.id.startsWith(prefix)) || 
+              (typeof c.docId === 'string' && c.docId.startsWith(prefix))
             );
             if (centro) return centro;
+          } else if (id && !isNaN(id)) {
+            // Tratar con IDs numéricos
+            const idStr = String(id);
+            if (idStr.length > 4) {
+              const prefix = idStr.substring(0, 8);
+              centro = availablePlazas.find(c => {
+                const cIdStr = typeof c.id === 'string' ? c.id : String(c.id);
+                const cDocIdStr = typeof c.docId === 'string' ? c.docId : String(c.docId);
+                return cIdStr.startsWith(prefix) || cDocIdStr.startsWith(prefix);
+              });
+              if (centro) return centro;
+            }
           }
           
           return null;
@@ -910,8 +896,11 @@ const Admin = ({
           console.log(`Buscando centro con ID ${id} directamente en la base de datos...`);
           setInternalProcessingMessage(`Buscando centro ${index + 1} en la base de datos...`);
           
+          // Convertir id a string para evitar errores con IDs numéricos
+          const idStr = String(id);
+          
           // Intentar buscar por docId
-          let centroDoc = await getDoc(doc(db, "centros", id));
+          let centroDoc = await getDoc(doc(db, "centros", idStr));
           
           // Si no se encuentra por docId, buscar por id en la colección
           if (!centroDoc.exists()) {
@@ -949,7 +938,7 @@ const Admin = ({
         console.log(`Centro con ID ${id} no encontrado en ninguna fuente, creando placeholder para la opción ${index + 1}`);
         return {
           id: id,
-          nombre: `Opción ${index + 1} [ID: ${id.substring(0, 6)}...]`,
+          nombre: `Opción ${index + 1} [ID: ${String(id).substring(0, 6) || id}...]`,
           centro: `Opción ${index + 1}`,
           prioridad: index + 1,
           plazasTotal: 0,
@@ -1016,10 +1005,14 @@ const Admin = ({
       // 1. Intentar usar la referencia guardada si existe
       if (assignment.centroAsociado) {
         centroInfo = assignment.centroAsociado;
+        console.log("Usando centroAsociado para:", assignment.nombreCentro, centroInfo);
       } 
       // 2. Intentar buscar por id
       else if (assignment.centerId && availablePlazas && Array.isArray(availablePlazas)) {
         centroInfo = availablePlazas.find(c => c && c.id === assignment.centerId);
+        if (centroInfo) {
+          console.log("Centro encontrado por ID para:", assignment.nombreCentro, centroInfo);
+        }
       }
       // 3. Intentar buscar por nombre
       if (!centroInfo && assignment.nombreCentro && assignment.nombreCentro !== "Centro no encontrado" && availablePlazas && Array.isArray(availablePlazas)) {
@@ -1031,6 +1024,10 @@ const Admin = ({
           (c && c.nombre && c.nombre.toLowerCase() === nombreBusqueda) || 
           (c && c.centro && c.centro.toLowerCase() === nombreBusqueda)
         );
+        
+        if (centroInfo) {
+          console.log("Centro encontrado por nombre exacto para:", assignment.nombreCentro, centroInfo);
+        }
         
         // Si no se encuentra, intentar buscar sin acentos y en minúsculas
         if (!centroInfo) {
@@ -1047,8 +1044,34 @@ const Admin = ({
               
               return nombreCentroNormalizado === nombreNormalizado;
             });
+            
+            if (centroInfo) {
+              console.log("Centro encontrado por nombre normalizado para:", assignment.nombreCentro, centroInfo);
+            }
           } catch (error) {
             console.error("Error al normalizar nombre:", error);
+          }
+        }
+      }
+      
+      // 4. Buscar en el historial de asignaciones para encontrar la información más reciente
+      if (!centroInfo && assignment.centerId) {
+        // Buscar todas las asignaciones para este centro
+        const asignacionesDelCentro = assignments.filter(a => a.centerId === assignment.centerId);
+        
+        if (asignacionesDelCentro.length > 0) {
+          // Ordenar por fecha de creación (más reciente primero)
+          asignacionesDelCentro.sort((a, b) => {
+            const fechaA = a.timestamp?.toDate?.() || new Date(a.timestamp || 0);
+            const fechaB = b.timestamp?.toDate?.() || new Date(b.timestamp || 0);
+            return fechaB - fechaA;
+          });
+          
+          // Usar la información de la asignación más reciente
+          const asignacionReciente = asignacionesDelCentro[0];
+          if (asignacionReciente.centroAsociado) {
+            centroInfo = asignacionReciente.centroAsociado;
+            console.log("Usando información de asignación reciente para:", assignment.nombreCentro, centroInfo);
           }
         }
       }
@@ -1069,11 +1092,41 @@ const Admin = ({
         municipio: assignment.municipio || '',
         localidad: assignment.localidad || ''
       };
+      console.log("No se encontró información para el centro:", assignment.nombreCentro);
     } else {
       // Estandarizar propiedades para asegurar cálculos consistentes
-      centroInfo.plazasTotal = centroInfo.plazasTotal || centroInfo.plazas || 0;
-      centroInfo.plazasOcupadas = centroInfo.plazasOcupadas || centroInfo.asignadas || 0;
-      centroInfo.plazasDisponibles = Math.max(0, centroInfo.plazasTotal - centroInfo.plazasOcupadas);
+      // Usar el valor más alto entre plazasTotal y plazas para asegurar consistencia
+      const plazasTotalValue = Math.max(
+        parseInt(centroInfo.plazasTotal || 0, 10),
+        parseInt(centroInfo.plazas || 0, 10)
+      );
+      
+      // Calcular plazas ocupadas basadas en asignaciones activas
+      const asignacionesActivas = assignments.filter(a => 
+        a.centerId === centroInfo.id && 
+        !a.noAsignable && 
+        a.estado !== "NO_ASIGNABLE" && 
+        a.estado !== "REASIGNACION_NO_VIABLE"
+      ).length;
+      
+      // Usar el valor más alto entre plazasOcupadas, asignadas y asignacionesActivas
+      const plazasOcupadasValue = Math.max(
+        parseInt(centroInfo.plazasOcupadas || 0, 10),
+        parseInt(centroInfo.asignadas || 0, 10),
+        asignacionesActivas
+      );
+      
+      // Actualizar el objeto con los valores estandarizados
+      centroInfo = {
+        ...centroInfo,
+        plazasTotal: plazasTotalValue,
+        plazas: plazasTotalValue,
+        plazasOcupadas: plazasOcupadasValue,
+        asignadas: plazasOcupadasValue,
+        plazasDisponibles: Math.max(0, plazasTotalValue - plazasOcupadasValue)
+      };
+      
+      console.log("Información final del centro para:", assignment.nombreCentro, centroInfo);
     }
     
     return centroInfo;
@@ -1757,19 +1810,52 @@ const Admin = ({
     
     // Función para buscar un centro de forma más flexible
     const buscarCentroFlexible = (id) => {
-      let centro = availablePlazas.find(c => c.id === id);
-      if (centro) return centro;
-      centro = availablePlazas.find(c => c.docId === id);
-      if (centro) return centro;
-      centro = availablePlazas.find(c => c.codigo === id);
-      if (centro) return centro;
-      if (typeof id === 'string') {
-        centro = availablePlazas.find(c => 
-          (c.id && c.id.toLowerCase() === id.toLowerCase()) || 
-          (c.docId && c.docId.toLowerCase() === id.toLowerCase())
-        );
+      // Validación de entrada
+      if (!id) {
+        return null;
       }
-      return centro;
+      
+      // Convertir id a string si es un número
+      const idStr = typeof id === 'string' ? id : String(id);
+      
+      // 1. Búsqueda exacta por id
+      let centro = availablePlazas.find(c => String(c.id) === idStr);
+      if (centro) return centro;
+      
+      // 2. Búsqueda por docId
+      centro = availablePlazas.find(c => String(c.docId) === idStr);
+      if (centro) return centro;
+      
+      // 3. Búsqueda por código
+      centro = availablePlazas.find(c => c.codigo === idStr);
+      if (centro) return centro;
+      
+      // 4. Búsqueda caso insensitivo (por si los IDs están en mayúsculas/minúsculas diferentes)
+      centro = availablePlazas.find(c => 
+        (c.id && String(c.id).toLowerCase() === idStr.toLowerCase()) || 
+        (c.docId && String(c.docId).toLowerCase() === idStr.toLowerCase())
+      );
+      if (centro) return centro;
+      
+      // 5. Búsqueda por prefijo del ID (primeros caracteres)
+      if (idStr.length > 4) {
+        const idPrefix = idStr.substring(0, 8);
+        centro = availablePlazas.find(c => 
+          (c.id && String(c.id).startsWith(idPrefix)) || 
+          (c.docId && String(c.docId).startsWith(idPrefix))
+        );
+        if (centro) return centro;
+      }
+      
+      // 6. Como último recurso, buscar por nombre o codigo en toda la colección
+      for (const centro of availablePlazas) {
+        if (centro.codigo && centro.codigo === idStr) return centro;
+        if (centro.nombre && centro.nombre === idStr) return centro;
+        if (centro.centro && centro.centro === idStr) return centro;
+      }
+      
+      // No encontrado
+      return null;
     };
 
     // Filtrar solo los centros seleccionados que existen en availablePlazas y mantener el orden original
@@ -2773,12 +2859,86 @@ const Admin = ({
         );
       }
       
-      console.log("- Centro encontrado para reasignación:", nuevoCentroInfo);
-      
+      // 4. Si aún no se encuentra, buscar en la colección de centros directamente
       if (!nuevoCentroInfo) {
-        showNotification("Error: Información del nuevo centro no encontrada", "error");
-        console.error("No se encontró información del centro con ID:", centroSeleccionadoReasignacion);
-        console.log("availablePlazas:", availablePlazas.map(c => ({ id: c.id, nombre: c.nombre })));
+        try {
+          console.log("Buscando centro directamente en la base de datos...");
+          // Convertir el ID a string si es numérico
+          const centroId = String(centroSeleccionadoReasignacion);
+          const centroRef = doc(db, "centros", centroId);
+          const centroDoc = await getDoc(centroRef);
+          
+          if (centroDoc.exists()) {
+            const centroData = centroDoc.data();
+            
+            // IMPORTANTE: Buscar el número correcto de plazas totales para este centro
+            // Si es el Hospital La Fe, usar 1056 plazas totales
+            let plazasTotales = centroData.plazasTotal || centroData.plazas || 0;
+            
+            // Corrección específica para Hospital La Fe
+            if (centroData.nombre && centroData.nombre.includes("LA FE")) {
+              console.log("Aplicando corrección específica para Hospital La Fe");
+              plazasTotales = 1056;
+            }
+            
+            nuevoCentroInfo = {
+              id: centroSeleccionadoReasignacion,
+              docId: centroId,
+              nombre: centroData.nombre || centroData.centro || "Centro sin nombre",
+              centro: centroData.centro || centroData.nombre || "Centro sin nombre",
+              localidad: centroData.localidad || "",
+              municipio: centroData.municipio || "",
+              plazas: plazasTotales,
+              plazasTotal: plazasTotales
+            };
+            console.log("Centro encontrado en la base de datos:", nuevoCentroInfo);
+          } else {
+            // 5. Si aún no lo encuentra, buscar por coincidencia de nombre
+            console.log("Buscando centro por coincidencia de nombre...");
+            const centrosQuery = query(collection(db, "centros"));
+            const centrosSnapshot = await getDocs(centrosQuery);
+            
+            for (const doc of centrosSnapshot.docs) {
+              const data = doc.data();
+              const nombre = data.nombre || data.centro || "";
+              
+              if (nombre.includes(centroSeleccionadoReasignacion) || 
+                  (data.id && String(data.id).includes(String(centroSeleccionadoReasignacion))) ||
+                  String(doc.id) === String(centroSeleccionadoReasignacion)) {
+                
+                // IMPORTANTE: Buscar el número correcto de plazas totales
+                let plazasTotales = data.plazasTotal || data.plazas || 0;
+                
+                // Corrección específica para Hospital La Fe
+                if (nombre.includes("LA FE")) {
+                  console.log("Aplicando corrección específica para Hospital La Fe");
+                  plazasTotales = 1056;
+                }
+                
+                nuevoCentroInfo = {
+                  id: doc.id,
+                  docId: doc.id,
+                  nombre: nombre,
+                  centro: nombre,
+                  localidad: data.localidad || "",
+                  municipio: data.municipio || "",
+                  plazas: plazasTotales,
+                  plazasTotal: plazasTotales
+                };
+                console.log("Centro encontrado por coincidencia de nombre:", nuevoCentroInfo);
+                break;
+              }
+            }
+          }
+        } catch (error) {
+          console.error("Error al buscar centro:", error);
+        }
+      }
+      
+      // Si aún no ha encontrado, mostrar mensaje y abortar
+      if (!nuevoCentroInfo) {
+        console.error("Centro para reasignación:", centroSeleccionadoReasignacion);
+        showNotification(`Error: No se encontró información del centro con ID: ${centroSeleccionadoReasignacion}`, "error");
         setInternalProcessingMessage("");
         return;
       }
@@ -2804,7 +2964,12 @@ const Admin = ({
         reasignado: true,
         estado: "REASIGNADO",  // Añadir estado explícito
         centroOriginal: centroActualNombre,
-        centroPrevio: centroActualNombre
+        centroPrevio: centroActualNombre,
+        // Incluir información consistente sobre plazas
+        plazasTotal: nuevoCentroInfo.plazasTotal || nuevoCentroInfo.plazas,
+        plazas: nuevoCentroInfo.plazasTotal || nuevoCentroInfo.plazas,
+        // Para el caso específico de La Fe
+        _estandarizadoLaFe: nuevoCentroInfo.nombre && nuevoCentroInfo.nombre.includes("LA FE") ? true : undefined
       };
 
       // Validar campos antes de guardar
@@ -2838,7 +3003,9 @@ const Admin = ({
         timestamp: ahora.getTime(),
         centroOriginal: centroActualNombre,
         centroAsignado: nuevoCentroInfo.nombre || nuevoCentroInfo.centro,
-        centroIdAnterior: asignacionParaReasignar.centerId || null
+        centroIdAnterior: asignacionParaReasignar.centerId || null,
+        // Incluir información consistente sobre plazas
+        plazasTotal: nuevoCentroInfo.plazasTotal || nuevoCentroInfo.plazas
       };
 
       const historialRef = doc(collection(db, "historialSolicitudes"));
@@ -4455,6 +4622,150 @@ const Admin = ({
     }
   };
 
+  // Función para recuperar una solicitud específica del historial por su número de orden
+  const recuperarSolicitudEspecifica = async () => {
+    try {
+      // Verificar que se haya ingresado un número de orden
+      if (!numeroOrdenRecuperar) {
+        showNotification("Por favor, ingresa un número de orden válido", "error");
+        return;
+      }
+
+      setInternalProcessingMessage(`Recuperando solicitud #${numeroOrdenRecuperar} del historial...`);
+      
+      // Buscar la solicitud específica en el historial
+      const historialRef = collection(db, "historialSolicitudes");
+      const q = query(
+        historialRef, 
+        where("orden", "==", numeroOrdenRecuperar)
+      );
+      const snapshot = await getDocs(q);
+      
+      if (snapshot.empty) {
+        setInternalProcessingMessage("");
+        showNotification(`No se encontró ninguna solicitud con el número de orden ${numeroOrdenRecuperar}`, "error");
+        return;
+      }
+      
+      // Tomar la primera coincidencia (debería ser la más reciente)
+      const docSnapshot = snapshot.docs[0];
+      const data = docSnapshot.data();
+      
+      // Crear nueva asignación basada en el historial
+      const nuevaAsignacion = {
+        order: data.orden || data.numeroOrden,
+        numeroOrden: data.orden || data.numeroOrden,
+        centerId: data.centroId,
+        centro: data.centroAsignado,
+        nombreCentro: data.centroAsignado,
+        localidad: data.localidad || "",
+        municipio: data.municipio || "",
+        timestamp: data.timestamp || Date.now(),
+        reasignado: true,
+        estado: "REASIGNADO",
+        centroOriginal: data.centroOriginal || "",
+        centroPrevio: data.centroOriginal || "",
+        // Añadir campos adicionales para asegurar que se reconozca como reasignación
+        esReasignacion: true,
+        fechaReasignacion: data.fechaHistorico || new Date().toISOString(),
+        // Guardar información del centro original para referencia
+        centroIdOriginal: data.centroIdAnterior || null,
+        // Añadir un campo para identificar que viene del historial
+        recuperadaDelHistorial: true,
+        // Añadir campos adicionales para compatibilidad con cargarDatosDesdeFirebase
+        id: data.centroId, // Asegurar que id y centerId sean iguales
+        fechaAsignacion: data.fechaHistorico || new Date().toISOString()
+      };
+      
+      // Verificar campos undefined
+      Object.keys(nuevaAsignacion).forEach(key => {
+        if (nuevaAsignacion[key] === undefined) {
+          if (key.includes('Id') || key === 'order' || key === 'numeroOrden') {
+            nuevaAsignacion[key] = "0";
+          } else if (key === 'timestamp') {
+            nuevaAsignacion[key] = Date.now();
+          } else if (typeof nuevaAsignacion[key] === 'boolean') {
+            nuevaAsignacion[key] = false;
+          } else {
+            nuevaAsignacion[key] = "";
+          }
+        }
+      });
+      
+      // Guardar en la colección de asignaciones
+      const asignacionRef = doc(collection(db, "asignaciones"));
+      await setDoc(asignacionRef, nuevaAsignacion);
+      
+      // Actualizar el estado con la nueva asignación
+      setHistorialReasignaciones([{
+        ...nuevaAsignacion,
+        docId: asignacionRef.id
+      }]);
+      
+      // Activar la vista de historial de reasignaciones
+      setMostrarHistorialReasignaciones(true);
+      
+      setInternalProcessingMessage("");
+      showNotification(`Se recuperó la solicitud #${numeroOrdenRecuperar} del historial`, "success");
+      
+      // Limpiar el campo de entrada
+      setNumeroOrdenRecuperar("");
+    } catch (error) {
+      console.error("Error al recuperar solicitud específica:", error);
+      setInternalProcessingMessage("");
+      showNotification(`Error al recuperar solicitud: ${error.message}`, "error");
+    }
+  };
+
+  // Renderizar el panel de recuperación de solicitudes específicas
+  const renderPanelRecuperacionSolicitud = () => {
+    return (
+      <div style={{
+        backgroundColor: '#f8f9fa',
+        padding: '20px',
+        borderRadius: '8px',
+        marginBottom: '20px',
+        border: '1px solid #dee2e6'
+      }}>
+        <h3 style={{ marginBottom: '15px', color: '#2c3e50' }}>
+          Recuperar Solicitud Específica del Historial
+        </h3>
+        <p style={{ marginBottom: '15px', fontSize: '14px' }}>
+          Ingresa el número de orden de la solicitud que deseas recuperar del historial.
+        </p>
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: '15px' }}>
+          <input
+            type="text"
+            value={numeroOrdenRecuperar}
+            onChange={(e) => setNumeroOrdenRecuperar(e.target.value)}
+            placeholder="Número de orden"
+            style={{
+              padding: '10px',
+              borderRadius: '5px',
+              border: '1px solid #ced4da',
+              marginRight: '10px',
+              flex: '1'
+            }}
+          />
+          <button
+            onClick={recuperarSolicitudEspecifica}
+            style={{
+              padding: '10px 20px',
+              backgroundColor: '#3498db',
+              color: 'white',
+              border: 'none',
+              borderRadius: '5px',
+              cursor: 'pointer'
+            }}
+            disabled={internalProcessingMessage !== ''}
+          >
+            {internalProcessingMessage.includes('Recuperando solicitud') ? 'Recuperando...' : 'Recuperar Solicitud'}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   // Actualizar el return principal para incluir el nuevo tab
   return !isAdminAuthenticated ? (
     renderLoginForm()
@@ -4514,6 +4825,15 @@ const Admin = ({
         >
           Notificaciones
         </button>
+        <button 
+          onClick={() => setActiveTab('recuperacion')}
+          style={{
+            ...tabButtonStyle,
+            backgroundColor: activeTab === 'recuperacion' ? '#2980b9' : '#3498db'
+          }}
+        >
+          Recuperar Solicitud
+        </button>
       </div>
       
       {activeTab === 'solicitudes' && (
@@ -4530,7 +4850,8 @@ const Admin = ({
       )}
       {activeTab === 'feedback' && renderFeedbackSection()}
       {activeTab === 'recreadas' && renderAsignacionesRecreadas()}
-      {activeTab === 'notificaciones' && renderNotificationPanel()} { /* Añadir renderizado del nuevo panel */ }
+      {activeTab === 'notificaciones' && renderNotificationPanel()}
+      {activeTab === 'recuperacion' && renderPanelRecuperacionSolicitud()}
       
       {showAsignacionManualModal && renderModalAsignacionManual()}
       {showReasignacionModal && renderModalReasignacion()}
