@@ -51,10 +51,10 @@ const AsignacionRow = React.memo(({
   
   // Calcular plazas ocupadas verificando todas las asignaciones activas para este centro
   const asignacionesActivas = assignments.filter(a => 
-    a.centerId === asignacion.centerId && 
-    !a.noAsignable && 
-    a.estado !== "NO_ASIGNABLE" && 
-    a.estado !== "REASIGNACION_NO_VIABLE"
+      a.centerId === asignacion.centerId && 
+      !a.noAsignable && 
+      a.estado !== "NO_ASIGNABLE" && 
+      a.estado !== "REASIGNACION_NO_VIABLE"
   );
   
   const asignacionesParaCentro = asignacionesActivas.length;
@@ -1831,7 +1831,7 @@ const Admin = ({
       if (centro) return centro;
       
       // 4. Búsqueda caso insensitivo (por si los IDs están en mayúsculas/minúsculas diferentes)
-      centro = availablePlazas.find(c => 
+        centro = availablePlazas.find(c => 
         (c.id && String(c.id).toLowerCase() === idStr.toLowerCase()) || 
         (c.docId && String(c.docId).toLowerCase() === idStr.toLowerCase())
       );
@@ -2440,14 +2440,14 @@ const Admin = ({
       asignacionesFiltradas = historialReasignaciones;
     } else {
       // Filtrado normal
-      // Filtrar asignaciones por búsqueda
+    // Filtrar asignaciones por búsqueda
       asignacionesFiltradas = assignments.filter(asig => 
-        !searchTermAsignaciones || 
-        (asig.order && asig.order.toString().includes(searchTermAsignaciones)) ||
-        (asig.numeroOrden && asig.numeroOrden.toString().includes(searchTermAsignaciones)) ||
-        (asig.centro && asig.centro.toLowerCase().includes(searchTermAsignaciones.toLowerCase())) ||
-        (asig.nombreCentro && asig.nombreCentro.toLowerCase().includes(searchTermAsignaciones.toLowerCase()))
-      );
+      !searchTermAsignaciones || 
+      (asig.order && asig.order.toString().includes(searchTermAsignaciones)) ||
+      (asig.numeroOrden && asig.numeroOrden.toString().includes(searchTermAsignaciones)) ||
+      (asig.centro && asig.centro.toLowerCase().includes(searchTermAsignaciones.toLowerCase())) ||
+      (asig.nombreCentro && asig.nombreCentro.toLowerCase().includes(searchTermAsignaciones.toLowerCase()))
+    );
       
       // Aplicar filtro de reasignaciones si está activo
       if (filtroReasignaciones) {
