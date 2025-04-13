@@ -524,487 +524,89 @@ function App() {
 
   // Función para cargar datos directamente desde Firebase
   const cargarDatosDesdeFirebase = async () => {
-    console.log("Iniciando carga de datos desde Firebase...");
-    
+    // Definir la función log fuera del bloque try
+    const log = (message, level = 'info') => {
+      if (level === 'error') {
+        console.error(message);
+      } else if (level === 'warn') {
+        console.warn(message);
+      } else {
+        // Solo mostrar logs importantes
+        if (message.includes('Error') || 
+            message.includes('Warning') || 
+            message.includes('Finalmente') || 
+            message.includes('Procesando')) {
+          console.log(message);
+        }
+      }
+    };
+
     try {
-      // DIAGNÓSTICO: Verificar qué colecciones existen
-      console.log("Verificando colecciones disponibles en Firebase...");
+      log('Iniciando carga de datos desde Firebase...');
+
+      // Cargar centros
+      const centrosSnapshot = await getDocs(collection(db, "centros"));
+      const centrosData = {};
       
-      // Cargar centros - probar diferentes nombres de colección
-      console.log("Intentando cargar centros...");
-      let centrosSnapshot = await getDocs(collection(db, "centros"));
-      
-      if (centrosSnapshot.empty) {
-        console.warn("⚠️ No se encontraron centros en la colección 'centros'");
-        // Intentar con nombre alternativo
-        const centrosAltRef = collection(db, "centrosTrabajo");
-        centrosSnapshot = await getDocs(centrosAltRef);
-        
-        if (centrosSnapshot.empty) {
-          console.error("❌ No se encontraron centros en ninguna colección");
-        } else {
-          console.log("✅ Se encontraron centros en la colección 'centrosTrabajo':", centrosSnapshot.size);
-        }
-      } else {
-        console.log("✅ Se encontraron centros en la colección 'centros':", centrosSnapshot.size);
-      }
-      
-      // Cargar asignaciones para calcular correctamente las plazas asignadas
-      console.log("Intentando cargar asignaciones para contar plazas ocupadas...");
-      let asignacionesSnapshot = await getDocs(collection(db, "asignaciones"));
-      
-      if (asignacionesSnapshot.empty) {
-        console.warn("⚠️ No se encontraron asignaciones en la colección 'asignaciones'");
-        // Intentar con nombre alternativo
-        const asignacionesAltRef = collection(db, "asignacionesActuales");
-        asignacionesSnapshot = await getDocs(asignacionesAltRef);
-        
-        if (asignacionesSnapshot.empty) {
-          console.error("❌ No se encontraron asignaciones en ninguna colección");
-        } else {
-          console.log("✅ Se encontraron asignaciones en la colección 'asignacionesActuales':", asignacionesSnapshot.size);
-        }
-      } else {
-        console.log("✅ Se encontraron asignaciones en la colección 'asignaciones':", asignacionesSnapshot.size);
-      }
-      
-      // Cargar asignaciones recreadas para filtrarlas
-      let idsAsignacionesRecreadas = new Set();
-      try {
-        const asignacionesRecreadasSnapshot = await getDocs(collection(db, "asignacionesRecreadas"));
-        if (!asignacionesRecreadasSnapshot.empty) {
-          asignacionesRecreadasSnapshot.forEach(doc => {
-            const data = doc.data();
-            if (data && !data.eliminada && data.asignacionId) {
-              idsAsignacionesRecreadas.add(data.asignacionId);
-            }
-          });
-          console.log(`Se encontraron ${idsAsignacionesRecreadas.size} asignaciones recreadas que serán filtradas`);
-        }
-      } catch (error) {
-        console.warn("No se pudieron cargar las asignaciones recreadas:", error);
-      }
-      
-      // Contar asignaciones por centro (excluyendo las recreadas)
-      const asignacionesPorCentro = {};
-      let asignacionesValidas = [];
-      asignacionesSnapshot.forEach(doc => {
-        const data = doc.data();
-        // Excluir asignaciones recreadas
-        if (idsAsignacionesRecreadas.has(doc.id)) {
-          console.log(`Filtrando asignación recreada: ${doc.id}`);
-          return;
-        }
-        
-        asignacionesValidas.push({
-          id: doc.id,
-          docId: doc.id,
-          ...data
-        });
-        
-        if (data && data.centerId) {
-          const centroId = data.centerId;
-          asignacionesPorCentro[centroId] = (asignacionesPorCentro[centroId] || 0) + 1;
-        }
-      });
-      
-      // Asegurar que cada asignación tenga la propiedad reasignado correctamente definida
-      asignacionesValidas = asignacionesValidas.map(asignacion => {
-        // Establecer reasignado = true si el estado es REASIGNADO, aunque la propiedad no esté definida
-        if (asignacion.estado === 'REASIGNADO' && !asignacion.reasignado) {
-          return { ...asignacion, reasignado: true };
-        }
-        return asignacion;
+      centrosSnapshot.forEach(doc => {
+        const centro = doc.data();
+        centrosData[doc.id] = {
+          ...centro,
+          docId: doc.id
+        };
       });
 
-      console.log("Conteo de asignaciones por centro:", asignacionesPorCentro);
-      
-      // Creamos estructuras para detectar duplicados
-      const idsUnicos = new Set();
-      const codigosUnicos = new Set();
-      const nombresUnicos = new Map(); // Usamos Map para guardar {nombreNormalizado: id}
-      const todosCentros = [];
-      
-      // Primera pasada: recopilar y normalizar todos los centros
-      centrosSnapshot.forEach(doc => {
-        const data = doc.data();
-        
-        // Normalizar el nombre para detectar duplicados
-        const nombre = data.nombre || data.centro || "Centro sin nombre";
-        const nombreNormalizado = nombre.toLowerCase()
-          .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // Eliminar acentos
-          .replace(/\s+/g, ' ').trim(); // Normalizar espacios
-        
-        // Obtener código si existe
-        const codigo = data.codigoCentro || data.codigo || "";
-        
-        // Datos normalizados del centro
-        const plazasTotal = parseInt(data.plazas || data.plazasTotal || 0, 10);
-        const plazasAsignadas = asignacionesPorCentro[doc.id] || 0;
-        const plazasDisponibles = Math.max(0, plazasTotal - plazasAsignadas);
-        
-        // Añadir a la lista completa con metadatos para filtrado posterior
-        todosCentros.push({
-          id: doc.id, // Mantener como string, no convertir a número
-          docId: doc.id, // Mantener referencia al documento original
-          nombre,
-          nombreNormalizado,
-          codigo,
-          plazas: plazasTotal,
-          asignadas: plazasAsignadas,
-          plazasDisponibles,
-          plazasOcupadas: plazasAsignadas,
+      // Procesar centros
+      const centrosProcesados = Object.values(centrosData).map(centro => {
+        const plazasTotal = parseInt(centro.plazasTotal || centro.plazas || '0', 10);
+        const plazasOcupadas = parseInt(centro.plazasOcupadas || centro.asignadas || '0', 10);
+        const plazasDisponibles = Math.max(0, plazasTotal - plazasOcupadas);
+
+        return {
+          ...centro,
           plazasTotal,
-          direccion: data.direccion || "",
-          codigoCentro: codigo,
-          estadoCentro: data.estadoCentro || "Activo",
-          municipio: data.municipio || "",
-          localidad: data.localidad || "",
-          // Información de duplicidad (se llenará después)
-          esDuplicado: false,
-          duplicadoDe: null
-        });
-      });
-      
-      console.log(`Se encontraron ${todosCentros.length} centros en total antes de filtrar`);
-      
-      // Segunda pasada: marcar duplicados
-      for (let i = 0; i < todosCentros.length; i++) {
-        const centro = todosCentros[i];
-        
-        // Si ya está marcado como duplicado, continuar
-        if (centro.esDuplicado) continue;
-        
-        // Verificar si el ID ya fue procesado
-        if (idsUnicos.has(centro.id)) {
-          centro.esDuplicado = true;
-          continue;
-        }
-        
-        // Verificar si el código ya fue procesado (solo si tiene código)
-        if (centro.codigo && codigosUnicos.has(centro.codigo)) {
-          // Marcar como posible duplicado, pero seguir procesando
-          console.warn(`Posible duplicado por código: ${centro.codigo} - ${centro.nombre}`);
-        }
-        
-        // Verificar si el nombre normalizado ya fue procesado
-        if (nombresUnicos.has(centro.nombreNormalizado)) {
-          const idOriginal = nombresUnicos.get(centro.nombreNormalizado);
-          console.warn(`Duplicado por nombre: "${centro.nombre}" duplica a ID=${idOriginal}`);
-          centro.esDuplicado = true;
-          centro.duplicadoDe = idOriginal;
-          continue;
-        }
-        
-        // Si llegamos aquí, este centro es único hasta ahora
-        idsUnicos.add(centro.id);
-        if (centro.codigo) codigosUnicos.add(centro.codigo);
-        nombresUnicos.set(centro.nombreNormalizado, centro.id);
-      }
-      
-      // Tercera pasada: filtrar duplicados y limitar a 366 centros
-      const centrosFiltrados = todosCentros.filter(centro => !centro.esDuplicado);
-      
-      console.log(`Después de eliminar duplicados, quedan ${centrosFiltrados.length} centros`);
-      
-      // Si todavía tenemos más de 366 centros, limitamos por prioridad
-      // (asumimos que los centros con más plazas son más importantes)
-      let centrosFinales = centrosFiltrados;
-      if (centrosFinales.length > 366) {
-        console.warn(`Aún hay más centros (${centrosFinales.length}) de los esperados (366). Limitando...`);
-        
-        // Ordenar por número de plazas (mayor a menor) y tomar los primeros 366
-        centrosFinales = [...centrosFinales].sort((a, b) => b.plazasTotal - a.plazasTotal).slice(0, 366);
-      }
-      
-      // Convertir a objeto para mantener compatibilidad con el resto del código
-      let centrosData = {};
-      centrosFinales.forEach(centro => {
-        centrosData[centro.id] = centro;
-      });
-      
-      console.log(`Finalmente se cargarán ${Object.keys(centrosData).length} centros`);
-      
-      // Si no se encontraron centros, intentar crear algunos por defecto para diagnóstico
-      if (Object.keys(centrosData).length === 0) {
-        console.warn("⚠️ Creando centros de prueba para diagnóstico");
-        centrosData["centro1"] = {
-          id: "centro1",
-          nombre: "Centro de Prueba 1",
-          plazas: 10,
-          asignadas: 0,
-          plazasDisponibles: 10,
-          plazasOcupadas: 0,
-          plazasTotal: 10,
-          direccion: "Dirección de prueba",
-          codigoCentro: "CP001",
-          estadoCentro: "Activo"
+          plazasOcupadas,
+          plazasDisponibles
         };
-        
-        centrosData["centro2"] = {
-          id: "centro2",
-          nombre: "Centro de Prueba 2",
-          plazas: 7,
-          asignadas: 2,
-          plazasDisponibles: 5,
-          plazasOcupadas: 2,
-          plazasTotal: 7,
-          direccion: "Otra dirección",
-          codigoCentro: "CP002",
-          estadoCentro: "Activo"
-        };
-      }
-      
-      console.log("Centros procesados:", Object.keys(centrosData).length);
-      
-      
-      // Cargar asignaciones para mostrar en el panel de admin
-      console.log("Procesando asignaciones para mostrar...");
-      
-      // Usar las asignaciones válidas ya filtradas en lugar de volver a cargar
-      let assignmentsData = {};
-      asignacionesValidas.forEach(asignacion => {
-        assignmentsData[asignacion.id] = asignacion;
       });
+
+      // Cargar asignaciones
+      const asignacionesSnapshot = await getDocs(collection(db, "asignaciones"));
+      const asignacionesData = {};
       
-      // Crear índices de búsqueda para centros (por ID y por nombre)
-      const centrosPorId = {};
-      const centrosPorNombre = {};
-      
-      // Indexar centros por ID y por nombre para búsqueda eficiente
-      Object.values(centrosData).forEach(centro => {
-        // Indexar por ID
-        centrosPorId[centro.id] = centro;
-        
-        // Indexar por nombre (normalizado a mayúsculas sin acentos)
-        if (centro.nombre) {
-          // Normalizar el nombre para búsqueda insensible a mayúsculas/minúsculas y acentos
-          const nombreNormalizado = centro.nombre.toUpperCase()
-            .normalize("NFD").replace(/[\u0300-\u036f]/g, ""); // Eliminar acentos
-          centrosPorNombre[nombreNormalizado] = centro;
-        }
-        
-        // Indexar también por centro (si existe y es diferente del nombre)
-        if (centro.centro && centro.centro !== centro.nombre) {
-          const centroNormalizado = centro.centro.toUpperCase()
-            .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-          centrosPorNombre[centroNormalizado] = centro;
-        }
-      });
-      
-      console.log("Centros indexados:", {
-        porId: Object.keys(centrosPorId).length,
-        porNombre: Object.keys(centrosPorNombre).length
-      });
-      
-      let asignacionesData = {};
       asignacionesSnapshot.forEach(doc => {
-        const data = doc.data();
-        console.log("Asignación encontrada:", doc.id, data);
-        if (data) {
-          // Buscar centro por ID
-          let centroBuscado = centrosPorId[data.centerId];
-          
-          // Si no se encuentra por ID, intentar buscar por nombre centro
-          if (!centroBuscado && data.centro) {
-            // Normalizar nombre a mayúsculas sin acentos para la búsqueda
-            const centroNormalizado = data.centro.toUpperCase()
-              .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-            centroBuscado = centrosPorNombre[centroNormalizado];
-            
-            if (centroBuscado) {
-              console.log(`Centro encontrado por campo 'centro': "${data.centro}" corresponde a ID=${centroBuscado.id}`);
-            }
-          }
-          
-          // Si aún no se encuentra, intentar buscar por ID como nombre
-          if (!centroBuscado && data.centerId && typeof data.centerId === 'string') {
-            const idComoNombre = data.centerId.toUpperCase()
-              .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-            centroBuscado = centrosPorNombre[idComoNombre];
-            
-            if (centroBuscado) {
-              console.log(`Centro encontrado por centerId como nombre: "${data.centerId}" corresponde a ID=${centroBuscado.id}`);
-            }
-          }
-          
-          // Si no se encuentra, intentar por centerName si existe
-          if (!centroBuscado && data.centerName) {
-            const nombreNormalizado = data.centerName.toUpperCase()
-              .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-            centroBuscado = centrosPorNombre[nombreNormalizado];
-            
-            if (centroBuscado) {
-              console.log(`Centro encontrado por centerName: "${data.centerName}" corresponde a ID=${centroBuscado.id}`);
-            }
-          }
-          
-          // Ahora elegir el mejor nombre disponible para mostrar
-          let nombreMostrar = "Centro no encontrado";
-          
-          if (centroBuscado) {
-            // Priorizar el nombre del centro encontrado
-            nombreMostrar = centroBuscado.nombre;
-          } else if (data.centro) {
-            // Si no se encontró el centro pero tenemos campo 'centro', usar ese
-            nombreMostrar = data.centro;
-          } else if (data.centerName) {
-            // Si tenemos centerName, usar ese
-            nombreMostrar = data.centerName;
-          } else if (data.centerId && typeof data.centerId === 'string' && data.centerId.length > 5) {
-            // Si el centerId parece ser un nombre (es string y largo), usar ese
-            nombreMostrar = data.centerId;
-          }
-          
-          asignacionesData[doc.id] = {
-            id: doc.id,
-            numeroOrden: data.order || data.numeroOrden || 0,
-            centerId: data.centerId || data.centro || "",
-            centroPrevio: data.centroPrevio || data.centroAnterior || "",
-            nombreCentro: nombreMostrar,
-            timestamp: data.timestamp || Date.now(),
-            fechaAsignacion: data.fechaAsignacion || new Date().toISOString(),
-            // Guardar referencia al centro real para calcular plazas disponibles
-            centroAsociado: centroBuscado,
-            // Asegurar que reasignado se maneje correctamente
-            estado: data.estado || "ASIGNADA",
-            reasignado: data.reasignado === true || data.estado === 'REASIGNADO'
-          };
-        }
-      });
-      
-      console.log("Asignaciones procesadas:", Object.keys(asignacionesData).length);
-      
-      // Cargar solicitudes pendientes
-      console.log("Intentando cargar solicitudes pendientes...");
-      const solicitudesRef = collection(db, "solicitudesPendientes");
-      const solicitudesSnapshot = await getDocs(solicitudesRef);
-      
-      if (solicitudesSnapshot.empty) {
-        console.warn("⚠️ No se encontraron solicitudes pendientes");
-      } else {
-        console.log("✅ Se encontraron solicitudes pendientes:", solicitudesSnapshot.size);
-      }
-      
-      let solicitudesData = {};
-      solicitudesSnapshot.forEach(doc => {
-        const data = doc.data();
-        console.log("Solicitud encontrada:", doc.id, data);
-        solicitudesData[doc.id] = {
-          id: doc.id,
-          numeroOrden: data.orden || data.numeroOrden || 0,
-          centrosIds: data.centrosIds || data.centrosSeleccionados || [],
-          timestamp: data.timestamp || Date.now(),
-          fechaSolicitud: data.fechaSolicitud || new Date().toISOString(),
-          estado: data.estado || "Pendiente"
+        const asignacion = doc.data();
+        asignacionesData[doc.id] = {
+          ...asignacion,
+          docId: doc.id
         };
       });
-      
-      console.log("Solicitudes procesadas:", Object.keys(solicitudesData).length);
-      
-      // Cargar historial
-      console.log("Intentando cargar historial...");
-      const historialRef = collection(db, "historialSolicitudes");
-      const historialSnapshot = await getDocs(historialRef);
-      
-      if (historialSnapshot.empty) {
-        console.warn("⚠️ No se encontró historial de solicitudes");
-      } else {
-        console.log("✅ Se encontró historial de solicitudes:", historialSnapshot.size);
-      }
-      
-      let historialData = [];
-      historialSnapshot.forEach(doc => {
-        const data = doc.data();
-        historialData.push({
-          id: doc.id,
-          numeroOrden: data.orden || data.numeroOrden || 0,
-          centerId: data.centerId || data.centro || "",
-          centroPrevio: data.centroPrevio || "",
-          centroAnterior: data.centroAnterior || "",
-          nombreCentro: centrosData[data.centerId]?.nombre || "Centro no encontrado",
-          nombreCentroAnterior: data.centroAnterior ? (centrosData[data.centroAnterior]?.nombre || "Centro no encontrado") : "",
-          timestamp: data.timestamp || Date.now(),
-          fechaHistorico: data.fechaHistorico || new Date().toISOString(),
-          estado: data.estado || "Procesado",
-          accion: data.accion || "Asignación",
-          mensaje: data.mensaje || ""
-        });
-      });
-      
-      // Ordenar historial por timestamp (más recientes primero)
-      historialData.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-      
-      console.log("Historial procesado:", historialData.length, "registros");
-      
-      // Actualizar el estado con los datos normalizados
-      setAvailablePlazas(Object.values(centrosData));
-      setAssignments(Object.values(asignacionesData));
-      setSolicitudes(Object.values(solicitudesData));
-      setHistorialSolicitudes(historialData);
-      
-      // Actualizar también los estados nuevos
-      setCentros(centrosData);
-      setAsignaciones(asignacionesData);
-      setSolicitudesPendientes(solicitudesData);
-      
-      // Calcular contadores
-      const totalAsignaciones = Object.keys(asignacionesData).length;
-      const totalPendientes = Object.keys(solicitudesData).length;
-      const totalCentros = Object.keys(centrosData).length;
-      
-      setContadores({
-        asignaciones: totalAsignaciones,
-        pendientes: totalPendientes,
-        centros: totalCentros,
-        historial: historialData.length
-      });
-      
-      // Actualizar plazas disponibles para mostrar en el dashboard
-      let plazasDisponiblesPorCentro = {};
-      Object.values(centrosData).forEach(centro => {
-        plazasDisponiblesPorCentro[centro.id] = {
-          id: centro.id,
-          nombre: centro.nombre,
-          plazas: centro.plazas,
-          asignadas: centro.asignadas,
-          plazasDisponibles: centro.plazasDisponibles,
-          plazasTotal: centro.plazasTotal,
-          codigoCentro: centro.codigoCentro,
-          estadoCentro: centro.estadoCentro
+
+      // Procesar asignaciones
+      const asignacionesProcesadas = Object.values(asignacionesData).map(asignacion => {
+        const centro = centrosData[asignacion.centerId];
+        return {
+          ...asignacion,
+          centroInfo: centro ? {
+            nombre: centro.nombre,
+            localidad: centro.localidad,
+            municipio: centro.municipio,
+            plazasTotal: centro.plazasTotal,
+            plazasOcupadas: centro.plazasOcupadas,
+            plazasDisponibles: centro.plazasDisponibles
+          } : null
         };
       });
-      
-      setPlazasDisponibles(plazasDisponiblesPorCentro);
-      
-      // Calcular estadísticas totales
-      const totalPlazas = Object.values(centrosData).reduce((sum, c) => sum + (c.plazasTotal || c.plazas || 0), 0);
-      const totalAsignadasCount = Object.values(centrosData).reduce((sum, c) => sum + (c.asignadas || c.plazasOcupadas || 0), 0);
-      const totalDisponiblesCount = Object.values(centrosData).reduce((sum, c) => {
-        const plazasTotal = c.plazasTotal || c.plazas || 0;
-        const plazasOcupadas = c.asignadas || c.plazasOcupadas || 0;
-        return sum + Math.max(0, plazasTotal - plazasOcupadas);
-      }, 0);
-      
-      console.log("Datos de plazas actualizados. Totales:", {
-        totalCentros: Object.keys(centrosData).length,
-        totalPlazas: totalPlazas,
-        plazasAsignadas: totalAsignadasCount,
-        plazasDisponibles: totalDisponiblesCount
-      });
-      
-      console.log("Datos cargados correctamente:", {
-        centros: totalCentros,
-        asignaciones: totalAsignaciones,
-        pendientes: totalPendientes,
-        historial: historialData.length
-      });
-      
-      return true;
+
+      // Actualizar estados
+      setAvailablePlazas(centrosProcesados);
+      setAssignments(asignacionesProcesadas);
+
+      log(`Carga completada: ${centrosProcesados.length} centros y ${asignacionesProcesadas.length} asignaciones`);
+
     } catch (error) {
-      console.error("Error al cargar datos desde Firebase:", error);
-      console.error("Detalles del error:", error.code, error.message, error.stack);
-      return false;
+      log(`Error al cargar datos: ${error.message}`, 'error');
+      showNotification('Error al cargar los datos', 'error');
     }
   };
   
@@ -3765,7 +3367,20 @@ function App() {
     const configDocRef = doc(db, 'config', 'general');
     const unsubscribe = onSnapshot(configDocRef, (docSnap) => {
       if (docSnap.exists()) {
-        setGlobalNotification(docSnap.data().notificationText || '');
+        // Verificar primero si existe mensajeDashboard (el que viene del admin)
+        const docData = docSnap.data();
+        
+        // Priorizar mensajeDashboard sobre notificationText
+        const mensaje = docData.mensajeDashboard || docData.notificationText || '';
+        
+        // Solo filtrar el mensaje específico sobre reasignaciones precisas
+        if (mensaje.includes("Para tener unas reasignaciones precisas es mejor poner tres o más opciones en cada solicitud")) {
+          // Si hay otros mensajes en la base de datos, podrían configurarse aquí
+          // Por ahora, no mostramos nada cuando se detecta este mensaje específico
+          setGlobalNotification('');
+        } else {
+          setGlobalNotification(mensaje);
+        }
       } else {
         setGlobalNotification('');
       }
@@ -3774,515 +3389,382 @@ function App() {
     return () => unsubscribe();
   }, []);
 
-  // Renderizado condicional basado en la ruta
-  if (isAdminView) {
-    return (
-      <Admin 
-        assignments={assignments}
-        availablePlazas={availablePlazas}
-        solicitudes={solicitudes}
-        procesarTodasLasSolicitudes={procesarTodasLasSolicitudes}
-        procesarSolicitudesPorMinuto={procesarSolicitudesPorMinuto}
-        cargarDatosDesdeFirebase={cargarDatosDesdeFirebase}
-        eliminarSolicitudesDuplicadas={eliminarSolicitudesDuplicadas}
-        limpiarDuplicadosHistorial={limpiarDuplicadosHistorial}
-        db={db}
-        loadingProcess={loadingProcess}
-        processingMessage={processingMessage}
-        showNotification={showNotification}
-        lastProcessed={lastProcessed}
-        procesarSolicitudes={procesarSolicitudes}
-        eliminarHistorialSolicitud={eliminarHistorialSolicitud}
-      />
-    );
-  }
+  // Detectar si es dispositivo móvil
+  const isMobile = window.innerWidth <= 768;
 
-  // El renderizado normal de la aplicación original
   return (
-    <div className="App" style={styles.container}>
-      {/* Modal de contraseña para administrador */}
-      {showPasswordModal && (
-        <div className="modal-backdrop">
-          <div className="modal-content password-modal">
-            <h3>Verificación de Administrador</h3>
-            <p>Ingrese la contraseña para ejecutar la verificación</p>
-            <form onSubmit={(e) => {
-              e.preventDefault();
-              handleAdminAuth();
+    <div className="App" style={{ maxWidth: '1200px', margin: '0 auto', padding: '20px' }}>
+      {isMaintenanceMode ? (
+        // Código del modo mantenimiento aquí
+        <div>Modo mantenimiento</div>
+      ) : isAdminView ? (
+        // Código de la vista de administración aquí
+        <Admin 
+          assignments={assignments}
+          availablePlazas={availablePlazas}
+          solicitudes={solicitudes}
+          procesarTodasLasSolicitudes={procesarTodasLasSolicitudes}
+          procesarSolicitudesPorMinuto={procesarSolicitudesPorMinuto}
+          cargarDatosDesdeFirebase={cargarDatosDesdeFirebase}
+          eliminarSolicitudesDuplicadas={eliminarSolicitudesDuplicadas}
+          limpiarDuplicadosHistorial={limpiarDuplicadosHistorial}
+          db={db}
+          loadingProcess={loadingProcess}
+          processingMessage={processingMessage}
+          showNotification={showNotification}
+          lastProcessed={lastProcessed}
+          procesarSolicitudes={procesarSolicitudes}
+          eliminarHistorialSolicitud={eliminarHistorialSolicitud}
+        />
+      ) : (
+        <>
+          {/* Encabezado de la aplicación */}
+          <div style={{ marginBottom: '30px' }}>
+            <h1 style={{ 
+              textAlign: 'center', 
+              color: '#3f51b5',
+              fontSize: isMobile ? '22px' : '28px',
+              margin: '20px 0 10px' 
             }}>
-              <input 
-                type="password" 
-                value={adminPassword}
-                onChange={(e) => setAdminPassword(e.target.value)}
-                placeholder="Contraseña"
+              Sistema de Asignación de Plazas
+            </h1>
+            
+            {globalNotification && (
+              <div style={{
+                backgroundColor: '#fff3cd',
+                color: '#856404',
+                padding: '15px',
+                margin: '20px auto',
+                borderRadius: '5px',
+                border: '1px solid #ffeeba',
+                textAlign: 'center',
+                fontWeight: 'bold',
+                maxWidth: '900px'
+              }}>
+                {globalNotification}
+              </div>
+            )}
+
+            {/* Pestañas de navegación - Ocultas en móvil */}
+            {!isMobile && (
+              <nav style={styles.nav}>
+                <div 
+                  style={{
+                    ...styles.tab,
+                    ...(activeTab === 'asignaciones' ? styles.activeTab : styles.inactiveTab)
+                  }}
+                  onClick={() => setActiveTab('asignaciones')}
+                >
+                  📋 Historial de Asignaciones
+                </div>
+                <div 
+                  style={{
+                    ...styles.tab,
+                    ...(activeTab === 'solicitudes' ? styles.activeTab : styles.inactiveTab)
+                  }}
+                  onClick={() => setActiveTab('solicitudes')}
+                >
+                  🔍 Solicitudes Pendientes
+                </div>
+                <div 
+                  style={{
+                    ...styles.tab,
+                    ...(activeTab === 'plazas' ? styles.activeTab : styles.inactiveTab)
+                  }}
+                  onClick={() => setActiveTab('plazas')}
+                >
+                  🏢 Plazas Disponibles
+                </div>
+              </nav>
+            )}
+          </div>
+          
+          {/* Información de última actualización */}
+          <div style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: '15px',
+            fontSize: '14px',
+            color: '#666',
+            padding: '8px 12px',
+            backgroundColor: '#f0f8ff',
+            borderRadius: '6px'
+          }}>
+            <div style={{display: 'flex', alignItems: 'center'}}>
+              {solicitudes.length > 0 && (
+                <span style={{color: loadingProcess ? '#e74c3c' : '#2ecc71', marginRight: '15px'}}>
+                  {loadingProcess ? (
+                    <>
+                      <span style={{
+                        display: 'inline-block', 
+                        width: '12px', 
+                        height: '12px', 
+                        border: '2px solid rgba(231,76,60,0.3)', 
+                        borderRadius: '50%', 
+                        borderTopColor: '#e74c3c', 
+                        animation: 'spin 1s linear infinite',
+                        marginRight: '5px',
+                        verticalAlign: 'middle'
+                      }}></span>
+                      Procesando {solicitudes.length} solicitudes...
+                    </>
+                  ) : (
+                    <>
+                      <span style={{color: '#2ecc71', marginRight: '5px'}}>●</span>
+                      {solicitudes.length} solicitudes pendientes 
+                    </>
+                  )}
+                </span>
+              )}
+            </div>
+            <div style={{display: 'flex', alignItems: 'center', flexWrap: 'wrap'}}>
+              <span style={{fontWeight: 'bold', marginRight: '5px'}}>Última actualización:</span>
+              {lastProcessed && typeof lastProcessed.getTime === 'function' ? 
+                (() => {
+                  const hours = lastProcessed.getHours();
+                  const minutes = lastProcessed.getMinutes();
+                  // No mostrar el mensaje si son las 2:00 AM exactamente
+                  if (hours === 2 && minutes === 0) {
+                    return "Actualizado";
+                  } else {
+                    return new Intl.DateTimeFormat('es-ES', {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit',
+                      hour12: false
+                    }).format(lastProcessed);
+                  }
+                })()
+                : 'No disponible'}
+            </div>
+          </div>
+          
+          {/* Contenido según la pestaña activa */}
+          {activeTab === 'asignaciones' && (
+            <div style={styles.cardContainer}>
+              <h3 style={styles.sectionTitle}>Historial de Asignaciones</h3>
+              <Dashboard 
+                assignments={assignments} 
+                availablePlazas={availablePlazas}
+                notification={globalNotification}
               />
-              {passwordError && <p className="error-message">{passwordError}</p>}
-              <div className="modal-actions">
-                <button 
-                  type="button" 
-                  className="modal-button cancel" 
-                  onClick={() => {
-                    setShowPasswordModal(false);
-                    setAdminPassword('');
-                    setPasswordError('');
+            </div>
+          )}
+          
+          {activeTab === 'solicitudes' && (
+            <div style={styles.cardContainer}>
+              <h3 style={styles.sectionTitle}>Solicitudes Pendientes</h3>
+              <SolicitudesPendientes 
+                solicitudes={solicitudes || []} 
+                assignments={assignments || []} 
+                availablePlazas={availablePlazas || []} 
+              />
+            </div>
+          )}
+          
+          {activeTab === 'plazas' && (
+            <div style={styles.cardContainer}>
+              <h3 style={styles.sectionTitle}>Plazas Disponibles</h3>
+              {availablePlazas.length > 0 ? (
+                <PlazasDisponibles 
+                  availablePlazas={availablePlazas}
+                  assignments={assignments}
+                  searchTerm={searchTerm}
+                  setSearchTerm={setSearchTerm}
+                  orderNumber={orderNumber}
+                  setOrderNumber={setOrderNumber}
+                  centrosSeleccionados={centrosSeleccionados}
+                  setCentrosSeleccionados={setCentrosSeleccionados}
+                  handleOrderSubmit={enviarSolicitud}
+                  isProcessing={isProcessing}
+                  showNotification={showNotification}
+                />
+              ) : (
+                <div style={{ 
+                  textAlign: 'center', 
+                  padding: '40px 20px',
+                  backgroundColor: '#f5f7fa',
+                  borderRadius: '8px',
+                  color: '#5c6c7c'
+                }}>
+                  <div style={{ fontSize: '36px', marginBottom: '15px' }}>🏢</div>
+                  <div style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '10px' }}>
+                    Cargando plazas...
+                  </div>
+                  <div style={{ fontSize: '14px', marginBottom: '20px' }}>
+                    Por favor espera mientras se cargan los datos de los centros.
+                  </div>
+                  <div style={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    justifyContent: 'center',
+                    gap: '10px'
+                  }}>
+                    <div style={{ 
+                      width: '20px', 
+                      height: '20px', 
+                      border: '3px solid rgba(0,0,0,0.1)', 
+                      borderRadius: '50%', 
+                      borderTopColor: '#3498db', 
+                      animation: 'spin 1s linear infinite'
+                    }}></div>
+                    <div>Cargando datos...</div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          
+          <Footer />
+          
+          {/* Popup de notificación */}
+          {showPopup && (
+            <div style={{
+              ...styles.popup,
+              backgroundColor: popupType === 'success' ? '#d4edda' : 
+                             popupType === 'warning' ? '#fff3cd' : '#f8d7da',
+              color: popupType === 'success' ? '#155724' : 
+                    popupType === 'warning' ? '#856404' : '#721c24',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start' }}>
+                <div style={{ flex: 1 }}>{popupMessage}</div>
+                <button
+                  onClick={() => setShowPopup(false)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: '18px',
+                    marginLeft: '10px',
+                    color: 'inherit'
                   }}
                 >
-                  Cancelar
-                </button>
-                <button type="submit" className="modal-button">
-                  Verificar
+                  ×
                 </button>
               </div>
-            </form>
-          </div>
-        </div>
-      )}
-    
-      {/* Pantalla de mantenimiento durante la verificación */}
-      {isVerificationMaintenance && (
-  <div style={{
-    position: 'fixed',
-    top: 0,
-    left: 0,
-    width: '100%',
-    height: '100%',
-    backgroundColor: '#0a192f',
-    zIndex: 9999,
-    display: 'flex',
-    flexDirection: 'column',
-    justifyContent: 'center',
-    alignItems: 'center',
-    color: 'white',
-    padding: '20px'
-  }}>
-    <div style={{
-      backgroundColor: 'rgba(255, 255, 255, 0.1)',
-      borderRadius: '16px',
-      padding: '40px',
-      maxWidth: '500px',
-      width: '90%',
-      textAlign: 'center',
-      boxShadow: '0 8px 32px rgba(0, 0, 0, 0.2)',
-      backdropFilter: 'blur(8px)'
-    }}>
-      <div style={{
-        fontSize: '28px',
-        fontWeight: 'bold',
-        marginBottom: '20px',
-        color: '#64ffda'
-      }}>
-        SISTEMA EN MANTENIMIENTO
-      </div>
-      
-      <div style={{
-        fontSize: '18px',
-        lineHeight: '1.6',
-        marginBottom: '10px'
-      }}>
-        {maintenanceMessage || 'Estamos verificando y actualizando las asignaciones...'}
-      </div>
-
-      {/* Nuevo bloque para mostrar solicitudes pendientes */}
-      <div style={{ fontSize: '16px', marginBottom: '20px' }}>
-        Solicitudes pendientes: {solicitudes.length}
-      </div>
-      
-      <div style={{
-        width: '100%',
-        height: '8px',
-        backgroundColor: 'rgba(255, 255, 255, 0.1)',
-        borderRadius: '4px',
-        marginBottom: '10px',
-        overflow: 'hidden'
-      }}>
-        <div style={{
-          height: '100%',
-          width: `${maintenanceProgress}%`,
-          backgroundColor: '#64ffda',
-          borderRadius: '4px',
-          transition: 'width 0.5s ease'
-        }} />
-      </div>
-      
-      <div style={{ fontSize: '14px', color: '#8892b0' }}>
-        {maintenanceProgress}% completado
-      </div>
-      
-      <div style={{ marginTop: '30px' }}>
-        {solicitudes.length === 0 ? (
-          <div style={{
-            fontSize: '16px',
-            color: '#64ffda',
-            marginBottom: '20px'
-          }}>
-            ✅ No hay solicitudes pendientes. El mantenimiento ha finalizado.
-          </div>
-        ) : (
-          <div style={{
-            fontSize: '16px',
-            color: '#ffd700',
-            marginBottom: '20px'
-          }}>
-            ⚠️ Hay {solicitudes.length} solicitudes pendientes por procesar.
-          </div>
-        )}
-        
-        <div style={{ display: 'flex', justifyContent: 'center', gap: '10px' }}>
-          <button 
-            onClick={() => setIsVerificationMaintenance(false)}
-            style={{
-              padding: '10px 20px',
-              backgroundColor: '#64ffda',
-              color: '#0a192f',
-              border: 'none',
-              borderRadius: '4px',
-              fontWeight: 'bold',
-              cursor: 'pointer'
-            }}
-          >
-            Continuar
-          </button>
+            </div>
+          )}
           
-          <button 
-            onClick={() => window.location.reload()}
-            style={{
-              padding: '10px 20px',
-              backgroundColor: 'transparent',
-              color: '#64ffda',
-              border: '1px solid #64ffda',
-              borderRadius: '4px',
-              fontWeight: 'bold',
-              cursor: 'pointer'
-            }}
-          >
-            Recargar página
-          </button>
-        </div>
-      </div>
-    </div>
-  </div>
-)}
-
-      
-      <div style={styles.header}>
-        <h1 style={{
-          ...styles.title,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: '15px',
-          fontSize: '2.2rem',
-          color: '#2c3e50',
-          textShadow: '2px 2px 4px rgba(0,0,0,0.1)',
-          padding: '20px 0',
-          margin: '0',
-          fontFamily: "'Helvetica Neue', Arial, sans-serif",
-          letterSpacing: '0.5px'
-        }}>
-          <span role="img" aria-label="enfermera" style={{
-            fontSize: '2.5rem',
-            filter: 'drop-shadow(2px 2px 4px rgba(0,0,0,0.1))'
-          }}>👩‍⚕️</span>
-          Sistema de Asignación de Plazas
-          <span role="img" aria-label="hospital" style={{
-            fontSize: '2.5rem',
-            filter: 'drop-shadow(2px 2px 4px rgba(0,0,0,0.1))'
-          }}>🏥</span>
-        </h1>
-        
-        { /* Mostrar notificación global si existe */}
-        {globalNotification && (
-          <div style={{
-            backgroundColor: '#fff3cd',
-            color: '#856404',
-            padding: '15px',
-            margin: '20px auto',
-            borderRadius: '5px',
-            border: '1px solid #ffeeba',
-            textAlign: 'center',
-            fontWeight: 'bold',
-            maxWidth: '900px' // Limitar ancho
-          }}>
-            {globalNotification}
-          </div>
-        )}
-
-        <nav style={styles.nav}>
-          <div 
-            style={{
-              ...styles.tab,
-              ...(activeTab === 'asignaciones' ? styles.activeTab : styles.inactiveTab)
-            }}
-            onClick={() => setActiveTab('asignaciones')}
-          >
-            📋 Historial de Asignaciones
-          </div>
-          <div 
-            style={{
-              ...styles.tab,
-              ...(activeTab === 'solicitudes' ? styles.activeTab : styles.inactiveTab)
-            }}
-            onClick={() => setActiveTab('solicitudes')}
-          >
-            🔍 Solicitudes Pendientes
-          </div>
-          <div 
-            style={{
-              ...styles.tab,
-              ...(activeTab === 'plazas' ? styles.activeTab : styles.inactiveTab)
-            }}
-            onClick={() => setActiveTab('plazas')}
-          >
-            🏢 Plazas Disponibles
-          </div>
-        </nav>
-      </div>
-      
-      {/* Información de última actualización */}
-      <div style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: '15px',
-        fontSize: '14px',
-        color: '#666',
-        padding: '8px 12px',
-        backgroundColor: '#f0f8ff',
-        borderRadius: '6px'
-      }}>
-        <div>
-  
-          {(() => {
-             const totalPlazas = availablePlazas ? availablePlazas.reduce((acc, centro) => acc + parseInt(centro.plazasTotal || centro.plazas || '0', 10), 0) : 7066;
-             const totalPlazasDisponibles = availablePlazas ? availablePlazas.reduce((acc, centro) => {
-                const total = parseInt(centro.plazasTotal || centro.plazas || '0', 10);
-                const ocupadas = parseInt(centro.plazasOcupadas || centro.asignadas || '0', 10);
-                return acc + Math.max(0, total - ocupadas);
-             }, 0) : (7066 - assignments.length);
-             return (
-               <span style={{fontWeight: 'bold', marginRight: '5px'}}>
-                 Plazas disponibles: {totalPlazasDisponibles} de {totalPlazas}
-               </span>
-             );
-          })()}
-        </div>
-        <div style={{display: 'flex', alignItems: 'center',flexWrap: 'wrap'}}>
-          {solicitudes.length > 0 && (
-            <span style={{marginRight: '10px', color: loadingProcess ? '#e74c3c' : '#2ecc71'}}>
-              {loadingProcess ? (
-                <>
-                  <span style={{
-                    display: 'inline-block', 
-                    width: '12px', 
-                    height: '12px', 
-                    border: '2px solid rgba(231,76,60,0.3)', 
-                    borderRadius: '50%', 
-                    borderTopColor: '#e74c3c', 
-                    animation: 'spin 1s linear infinite',
-                    marginRight: '5px',
-                    verticalAlign: 'middle'
-                  }}></span>
-                  Procesando {solicitudes.length} solicitudes...
-                </>
-              ) : (
-                <>
-                  <span style={{color: '#2ecc71', marginRight: '5px'}}>●</span>
-                  {solicitudes.length} solicitudes pendientes 
-                </>
-              )}
-            </span>
-          )}
-          <span style={{fontWeight: 'bold', marginRight: '5px'}}>Última actualización:</span>
-          {lastProcessed && typeof lastProcessed.getTime === 'function' ? 
-            (() => {
-              const hours = lastProcessed.getHours();
-              const minutes = lastProcessed.getMinutes();
-              // No mostrar el mensaje si son las 2:00 AM exactamente
-              if (hours === 2 && minutes === 0) {
-                return "Actualizado";
-              } else {
-                return new Intl.DateTimeFormat('es-ES', {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                  second: '2-digit',
-                  hour12: false
-                }).format(lastProcessed);
-              }
-            })()
-            : 'No disponible'}
-        </div>
-      </div>
-      
-      {/* Contenido según la pestaña activa */}
-      {activeTab === 'asignaciones' && (
-        <div style={styles.cardContainer}>
-          <h3 style={styles.sectionTitle}>Historial de Asignaciones</h3>
-          <Dashboard 
-            assignments={assignments} 
-            availablePlazas={availablePlazas}
-          />
-        </div>
-      )}
-      
-      {activeTab === 'solicitudes' && (
-        <div style={styles.cardContainer}>
-          <h3 style={styles.sectionTitle}>Solicitudes Pendientes</h3>
-          <SolicitudesPendientes 
-            solicitudes={solicitudes || []} 
-            assignments={assignments || []} 
-            availablePlazas={availablePlazas || []} 
-          />
-        </div>
-      )}
-      
-      {activeTab === 'plazas' && (
-        <div style={styles.cardContainer}>
-          <h3 style={styles.sectionTitle}>Plazas Disponibles</h3>
-          {availablePlazas.length > 0 ? (
-            <PlazasDisponibles 
-              availablePlazas={availablePlazas}
-              assignments={assignments}
-              searchTerm={searchTerm}
-              setSearchTerm={setSearchTerm}
-              orderNumber={orderNumber}
-              setOrderNumber={setOrderNumber}
-              centrosSeleccionados={centrosSeleccionados}
-              setCentrosSeleccionados={setCentrosSeleccionados}
-              handleOrderSubmit={enviarSolicitud}
-              isProcessing={isProcessing}
-              showNotification={showNotification}
-            />
-          ) : (
-            <div style={{ 
-              textAlign: 'center', 
-              padding: '40px 20px',
-              backgroundColor: '#f5f7fa',
-              borderRadius: '8px',
-              color: '#5c6c7c'
-            }}>
-              <div style={{ fontSize: '36px', marginBottom: '15px' }}>🏢</div>
-              <div style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '10px' }}>
-                Cargando plazas...
-              </div>
-              <div style={{ fontSize: '14px', marginBottom: '20px' }}>
-                Por favor espera mientras se cargan los datos de los centros.
-              </div>
-              <div style={{ 
-                display: 'flex', 
-                alignItems: 'center', 
-                justifyContent: 'center',
-                gap: '10px'
-              }}>
-                <div style={{ 
-                  width: '20px', 
-                  height: '20px', 
-                  border: '3px solid rgba(0,0,0,0.1)', 
-                  borderRadius: '50%', 
-                  borderTopColor: '#3498db', 
-                  animation: 'spin 1s linear infinite'
-                }}></div>
-                <div>Cargando datos...</div>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-      
-      <Footer />
-      
-      {/* Popup de notificación */}
-      {showPopup && (
-        <div style={{
-          ...styles.popup,
-          backgroundColor: popupType === 'success' ? '#d4edda' : 
-                          popupType === 'warning' ? '#fff3cd' : '#f8d7da',
-          color: popupType === 'success' ? '#155724' : 
-                popupType === 'warning' ? '#856404' : '#721c24',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'flex-start' }}>
-            <div style={{ flex: 1 }}>{popupMessage}</div>
-            <button
-              onClick={() => setShowPopup(false)}
-              style={{
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-                fontSize: '18px',
-                marginLeft: '10px',
-                color: 'inherit'
-              }}
-            >
-              ×
-            </button>
-          </div>
-        </div>
-      )}
-      
-      {(loadingProcess || loadingCSV) && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          width: '100%',
-          height: '100%',
-          backgroundColor: 'rgba(0,0,0,0.5)',
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          zIndex: 999
-        }}>
-          <div style={{
-            backgroundColor: 'white',
-            padding: '20px',
-            borderRadius: '10px',
-            boxShadow: '0 0 20px rgba(0,0,0,0.2)',
-            maxWidth: '500px',
-            width: '90%',
-            textAlign: 'center'
-          }}>
-            <div style={{ marginBottom: '15px', fontSize: '18px' }}>
-              {loadingCSV ? 'Cargando datos...' : 'Procesando solicitudes...'}
-            </div>
-            <div>{processingMessage}</div>
+          {/* Menú móvil - Visible solo en dispositivos móviles */}
+          {isMobile && (
             <div style={{
+              position: 'fixed',
+              bottom: '0',
+              left: '0',
+              right: '0',
+              backgroundColor: '#ffffff',
+              borderTop: '1px solid #e2e8f0',
+              padding: '10px',
+              display: 'flex',
+              justifyContent: 'space-around',
+              alignItems: 'center',
+              zIndex: 1000,
+              boxShadow: '0 -2px 10px rgba(0,0,0,0.1)'
+            }}>
+              <div 
+                onClick={() => setActiveTab('asignaciones')}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  color: activeTab === 'asignaciones' ? '#3f51b5' : '#4a5568',
+                  fontWeight: activeTab === 'asignaciones' ? 'bold' : 'normal',
+                  cursor: 'pointer',
+                  fontSize: '12px',
+                  padding: '8px'
+                }}
+              >
+                <span style={{ fontSize: '24px', marginBottom: '4px' }}>📋</span>
+                Historial
+              </div>
+              <div 
+                onClick={() => setActiveTab('solicitudes')}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  color: activeTab === 'solicitudes' ? '#3f51b5' : '#4a5568',
+                  fontWeight: activeTab === 'solicitudes' ? 'bold' : 'normal',
+                  cursor: 'pointer',
+                  fontSize: '12px',
+                  padding: '8px'
+                }}
+              >
+                <span style={{ fontSize: '24px', marginBottom: '4px' }}>📝</span>
+                Solicitudes
+              </div>
+              <div 
+                onClick={() => setActiveTab('plazas')}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  color: activeTab === 'plazas' ? '#3f51b5' : '#4a5568',
+                  fontWeight: activeTab === 'plazas' ? 'bold' : 'normal',
+                  cursor: 'pointer',
+                  fontSize: '12px',
+                  padding: '8px'
+                }}
+              >
+                <span style={{ fontSize: '24px', marginBottom: '4px' }}>🏥</span>
+                Plazas
+              </div>
+            </div>
+          )}
+
+          {/* Modal de lanzamiento */}
+          {(loadingProcess || loadingCSV) && (
+            <div style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
               width: '100%',
-              height: '4px',
-              backgroundColor: '#f1f1f1',
-              borderRadius: '2px',
-              marginTop: '15px',
-              overflow: 'hidden',
-              position: 'relative'
+              height: '100%',
+              backgroundColor: 'rgba(0,0,0,0.5)',
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+              zIndex: 999
             }}>
               <div style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                height: '100%',
-                width: '30%',
-                backgroundColor: '#3498db',
-                borderRadius: '2px',
-                animation: 'loading 1.5s infinite ease-in-out'
-              }}></div>
+                backgroundColor: 'white',
+                padding: '20px',
+                borderRadius: '10px',
+                boxShadow: '0 0 20px rgba(0,0,0,0.2)',
+                maxWidth: '500px',
+                width: '90%',
+                textAlign: 'center'
+              }}>
+                <div style={{ marginBottom: '15px', fontSize: '18px' }}>
+                  {loadingCSV ? 'Cargando datos...' : 'Procesando solicitudes...'}
+                </div>
+                <div>{processingMessage}</div>
+                <div style={{
+                  width: '100%',
+                  height: '4px',
+                  backgroundColor: '#f1f1f1',
+                  borderRadius: '2px',
+                  marginTop: '15px',
+                  overflow: 'hidden',
+                  position: 'relative'
+                }}>
+                  <div style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    height: '100%',
+                    width: '30%',
+                    backgroundColor: '#3498db',
+                    borderRadius: '2px',
+                    animation: 'loading 1.5s infinite ease-in-out'
+                  }}></div>
+                </div>
+              </div>
             </div>
-          </div>
-    </div>
+          )}
+        </>
       )}
-      
-      {/* Estilos CSS */}
-      <style>{`
-        @keyframes slideIn {
-          0% { transform: translateX(100%); opacity: 0; }
-          100% { transform: translateX(0); opacity: 1; }
-        }
-        @keyframes loading {
-          0% { left: -30%; }
-          100% { left: 100%; }
-        }
-        @keyframes spin {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
-        }
-      `}</style>
     </div>
   );
 }

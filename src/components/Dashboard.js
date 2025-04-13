@@ -189,6 +189,10 @@ const Dashboard = ({ assignments = [], availablePlazas = [], notification = '' }
       // Si no hemos visto este número de orden antes, lo agregamos
       if (!ordenesVistos[numeroOrden]) {
         ordenesVistos[numeroOrden] = true;
+        // Asegurar que cada asignación tenga un ID único estable
+        if (!asignacion.uniqueId) {
+          asignacion.uniqueId = `${numeroOrden}-${asignacion.timestamp || Date.now()}`;
+        }
         asignacionesSinDuplicados.push(asignacion);
       }
     }
@@ -287,6 +291,11 @@ const Dashboard = ({ assignments = [], availablePlazas = [], notification = '' }
       backgroundColor: '#f4f6f9',
       borderRadius: '8px',
       boxShadow: '0 4px 8px rgba(0,0,0,0.1)'
+    },
+    containerMobile: {
+      padding: '10px',
+      borderRadius: '0',
+      boxShadow: 'none'
     },
     infoContainer: {
       display: 'flex',
@@ -468,6 +477,69 @@ const Dashboard = ({ assignments = [], availablePlazas = [], notification = '' }
       alignItems: 'center',
       gap: '8px',
       marginBottom: '8px'
+    },
+    mobileContainer: {
+      display: 'none'
+    },
+    mobileContainerVisible: {
+      display: 'block',
+      position: 'fixed',
+      bottom: '0',
+      left: '0',
+      right: '0',
+      backgroundColor: '#ffffff',
+      borderTop: '1px solid #e2e8f0',
+      padding: '10px',
+      display: 'flex',
+      justifyContent: 'space-around',
+      alignItems: 'center',
+      zIndex: 1000
+    },
+    mobileMenuItem: {
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      color: '#4a5568',
+      textDecoration: 'none',
+      fontSize: '12px',
+      padding: '8px'
+    },
+    mobileIcon: {
+      fontSize: '24px',
+      marginBottom: '4px'
+    },
+    mobileTable: {
+      width: '100%',
+      borderCollapse: 'collapse'
+    },
+    mobileTableMobile: {
+      display: 'block',
+      overflowX: 'auto',
+      WebkitOverflowScrolling: 'touch'
+    },
+    mobileTableRow: {
+      display: 'table-row'
+    },
+    mobileTableRowMobile: {
+      display: 'block',
+      marginBottom: '10px',
+      border: '1px solid #e2e8f0',
+      borderRadius: '8px',
+      backgroundColor: '#ffffff'
+    },
+    mobileTableCell: {
+      display: 'table-cell',
+      padding: '8px',
+      textAlign: 'left'
+    },
+    mobileTableCellMobile: {
+      display: 'block',
+      padding: '8px',
+      textAlign: 'left',
+      borderBottom: '1px solid #e2e8f0',
+      '&:last-child': {
+        borderBottom: 'none'
+      }
     }
   };
   
@@ -481,19 +553,59 @@ const Dashboard = ({ assignments = [], availablePlazas = [], notification = '' }
     noAsignables: asignacionesSinDuplicados.filter(a => a.estado === "NO_ASIGNABLE" || a.estado === "REASIGNACION_NO_VIABLE").length
   };
   
+  // Calcular plazas totales y disponibles
+  const plazasEstadisticas = (() => {
+    if (!Array.isArray(availablePlazas) || availablePlazas.length === 0) {
+      return { total: 0, disponibles: 0, ocupadas: 0 };
+    }
+    
+    // Crear un Map para mantener centros únicos
+    const centrosUnicos = new Map();
+    
+    availablePlazas.forEach(centro => {
+      if (!centro) return;
+      
+      const id = centro.id || centro.codigo || centro.docId || 
+                `${centro.nombre || centro.centro || ''}-${centro.municipio || ''}`;
+      
+      if (!centrosUnicos.has(id)) {
+        centrosUnicos.set(id, centro);
+      }
+    });
+    
+    // Contar asignaciones válidas (que no son NO_ASIGNABLE)
+    const asignacionesValidas = asignacionesSinDuplicados.filter(a => 
+      a && a.estado !== "NO_ASIGNABLE" && a.estado !== "REASIGNACION_NO_VIABLE"
+    ).length;
+    
+    // Obtener el total fijo de plazas según los datos conocidos
+    const TOTAL_PLAZAS_SISTEMA = 7066;
+    
+    // Calcular valores
+    let plazasOcupadas = asignacionesValidas;
+    
+    return { 
+      total: TOTAL_PLAZAS_SISTEMA, 
+      ocupadas: plazasOcupadas,
+      disponibles: TOTAL_PLAZAS_SISTEMA - plazasOcupadas
+    };
+  })();
+  
   // Obtener lista de estados únicos para el filtro
   const estados = ['TODOS', ...new Set(asignacionesFiltradas
     .filter(a => a.estado)
     .map(a => a.estado))];
   
+  // Función para detectar si es móvil
+  const isMobile = window.innerWidth <= 768;
+
   return (
     <div style={{
       fontFamily: 'Arial, sans-serif',
       maxWidth: '1200px',
       margin: '0 auto',
-      padding: '20px'
+      padding: isMobile ? '0' : '20px'
     }}>
-      { /* Mostrar notificación si existe */}
       {notification && (
         <div style={{
           backgroundColor: '#e3f2fd',
@@ -509,27 +621,10 @@ const Dashboard = ({ assignments = [], availablePlazas = [], notification = '' }
         </div>
       )}
 
-      <div style={styles.container}>
-        {/* Aviso de datos borrados */}
-        <div style={{
-          padding: '15px',
-          backgroundColor: '#fef0f5',
-          borderRadius: '8px',
-          marginBottom: '20px',
-          borderLeft: '4px solid #e53e3e',
-          color: '#e53e3e'
-        }}>
-          <h3 style={{ margin: '0 0 10px 0', fontSize: '18px' }}>
-            ⚠️ Aviso Importante
-          </h3>
-          <p style={{ margin: '0 0 10px 0' }}>
-            Los datos han sido borrados debido a un conflicto de numeraciones. El error ha sido resuelto.
-          </p>
-          <p style={{ margin: '0', fontWeight: 'bold' }}>
-            Por favor, vuelva a introducir su solicitud.
-          </p>
-        </div>
-        
+      <div style={{
+        ...styles.container,
+        ...(isMobile ? styles.containerMobile : {})
+      }}>
         {/* Encabezado y estadísticas */}
         <div style={styles.infoContainer}>
           <div style={styles.statsContainer}>
@@ -559,116 +654,88 @@ const Dashboard = ({ assignments = [], availablePlazas = [], notification = '' }
               <div style={styles.statLabel}>No asignables</div>
             </div>
           </div>
-        </div>
-        
-        {/* Alerta para detectar centros con exceso de asignaciones */}
-        {(() => {
-          // Eliminar duplicados primero, igual que en filtrarAsignaciones
-          const asignacionesSinDuplicados = [];
-          const ordenesVistos = {};
           
-          // Ordenar por timestamp (más reciente primero)
-          const asignacionesOrdenadas = [...assignments].sort((a, b) => {
-            const timestampA = a?.timestamp || 0;
-            const timestampB = b?.timestamp || 0;
-            return timestampB - timestampA;
-          });
-          
-          // Mantener solo la versión más reciente de cada número de orden
-          for (const asignacion of asignacionesOrdenadas) {
-            if (!asignacion) continue;
+          {/* Información de plazas disponibles */}
+          <div style={{
+            backgroundColor: '#e6f7ff',
+            padding: '15px',
+            borderRadius: '6px',
+            marginTop: '15px',
+            display: 'flex',
+            flexDirection: 'column',
+            width: '100%'
+          }}>
+            <div style={{ 
+              fontWeight: 'bold', 
+              marginBottom: '8px', 
+              fontSize: '14px',
+              display: 'flex',
+              justifyContent: 'space-between' 
+            }}>
+              <span>Estado de las Plazas en el Sistema</span>
+              <span style={{ fontSize: '12px', color: '#666' }}>
+                Total: {plazasEstadisticas.total} plazas
+              </span>
+            </div>
             
-            const numeroOrden = asignacion.numeroOrden || asignacion.order;
-            if (!numeroOrden) continue;
-            
-            if (!ordenesVistos[numeroOrden]) {
-              ordenesVistos[numeroOrden] = true;
-              asignacionesSinDuplicados.push(asignacion);
-            }
-          }
-          
-          // Verificar centros con exceso
-          const centrosConExceso = asignacionesSinDuplicados
-            // Filtrar asignaciones no asignables o no viables
-            .filter(asignacion => {
-              // Excluir aquellas con noAsignable=true o estados específicos
-              return !(
-                asignacion.noAsignable === true || 
-                asignacion.estado === "NO_ASIGNABLE" || 
-                asignacion.estado === "REASIGNACION_NO_VIABLE"
-              );
-            })
-            .reduce((acc, asignacion) => {
-              if (!asignacion) return acc;
-              
-              // Agrupar por centro
-              const centroId = asignacion.centerId || asignacion.id;
-              if (!centroId) return acc;
-              
-              if (!acc[centroId]) {
-                acc[centroId] = {
-                  id: centroId,
-                  centro: asignacion.nombreCentro || asignacion.centro || 'Centro desconocido',
-                  count: 0,
-                  plazas: 0
-                };
-              }
-              
-              acc[centroId].count++;
-              
-              return acc;
-            }, {});
-          
-          // Buscar plazas disponibles para cada centro
-          for (const centroId in centrosConExceso) {
-            const centro = availablePlazas.find(p => p.id === centroId);
-            if (centro) {
-              centrosConExceso[centroId].plazas = centro.plazas || 0;
-            }
-          }
-          
-          // Filtrar solo los centros que tienen exceso
-          const excesos = Object.values(centrosConExceso).filter(
-            centro => centro.count > centro.plazas && centro.plazas > 0
-          );
-          
-          if (excesos.length > 0) {
-            return (
+            <div style={{ 
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: '8px'
+            }}>
               <div style={{
-                backgroundColor: '#fff5f5',
-                borderLeft: '4px solid #e53e3e',
+                backgroundColor: '#e8f5e9',
+                padding: '8px 12px',
                 borderRadius: '4px',
-                padding: '12px 15px',
-                marginBottom: '20px',
-                fontSize: '14px',
-                color: '#742a2a',
-                boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+                flex: 1,
+                marginRight: '10px',
+                textAlign: 'center'
               }}>
-                <div style={{fontWeight: 'bold', marginBottom: '8px', fontSize: '16px'}}>
-                  ⚠️ Se detectaron centros con exceso de asignaciones
+                <div style={{ fontWeight: 'bold', fontSize: '18px', color: '#27ae60' }}>
+                  {plazasEstadisticas.disponibles}
                 </div>
-                <div style={{marginBottom: '10px'}}>
-                  Los siguientes centros tienen más asignaciones que plazas disponibles:
-                </div>
-                <ul style={{
-                  margin: '10px 0',
-                  paddingLeft: '25px'
-                }}>
-                  {excesos.map(centro => (
-                    <li key={centro.id} style={{marginBottom: '5px'}}>
-                      <strong>{centro.centro}:</strong> {centro.count} asignaciones para {centro.plazas} plazas
-                    </li>
-                  ))}
-                </ul>
-                <div style={{marginTop: '10px', fontSize: '13px'}}>
-                  Se recomienda ejecutar la verificación y corrección automática de asignaciones.
+                <div style={{ fontSize: '12px', color: '#555' }}>
+                  Disponibles ({Math.round(plazasEstadisticas.disponibles / plazasEstadisticas.total * 100)}%)
                 </div>
               </div>
-            );
-          }
-          
-          return null;
-        })()}
+              
+              <div style={{
+                backgroundColor: '#ffebee',
+                padding: '8px 12px',
+                borderRadius: '4px',
+                flex: 1,
+                textAlign: 'center'
+              }}>
+                <div style={{ fontWeight: 'bold', fontSize: '18px', color: '#e74c3c' }}>
+                  {plazasEstadisticas.ocupadas}
+                </div>
+                <div style={{ fontSize: '12px', color: '#555' }}>
+                  Asignadas ({Math.round(plazasEstadisticas.ocupadas / plazasEstadisticas.total * 100)}%)
+                </div>
+              </div>
+            </div>
+            
+            {/* Barra de progreso */}
+            <div style={{ 
+              height: '8px', 
+              backgroundColor: '#e8f5e9', 
+              borderRadius: '4px',
+              overflow: 'hidden',
+              position: 'relative'
+            }}>
+              <div style={{ 
+                height: '100%', 
+                width: `${plazasEstadisticas.ocupadas / Math.max(1, plazasEstadisticas.total) * 100}%`, 
+                backgroundColor: '#e74c3c',
+                borderRadius: '4px',
+                position: 'absolute',
+                left: 0,
+                top: 0
+              }} />
+            </div>
+          </div>
+        </div>
         
         {/* Filtros de búsqueda */}
         <div style={styles.searchBar}>
@@ -678,7 +745,7 @@ const Dashboard = ({ assignments = [], availablePlazas = [], notification = '' }
             value={searchTerm}
             onChange={(e) => {
               setSearchTerm(e.target.value);
-              setCurrentPage(1); // Reiniciar página al buscar
+              setCurrentPage(1);
             }}
             style={styles.input}
           />
@@ -687,7 +754,7 @@ const Dashboard = ({ assignments = [], availablePlazas = [], notification = '' }
             value={filtroEstado}
             onChange={(e) => {
               setFiltroEstado(e.target.value);
-              setCurrentPage(1); // Reiniciar página al filtrar
+              setCurrentPage(1);
             }}
             style={styles.select}
           >
@@ -699,73 +766,45 @@ const Dashboard = ({ assignments = [], availablePlazas = [], notification = '' }
           </select>
         </div>
         
-        {/* Tabla de asignaciones */}
+        {/* Tabla única */}
         <div style={styles.tableContainer}>
-          <table style={styles.table}>
+          <table style={{
+            ...styles.table,
+            ...(isMobile ? styles.mobileTableMobile : {})
+          }}>
             <thead>
               <tr>
-                <th 
-                  style={styles.tableHeader} 
-                  onClick={() => handleSort('order')}
-                >
-                  <div style={styles.orderContainer}>
-                    Nº Orden
-                    <span style={styles.sortIcon}>
-                      {sortConfig.key === 'order' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
-                    </span>
-                  </div>
-                </th>
-                <th 
-                  style={styles.tableHeader}
-                  onClick={() => handleSort('centro')}
-                >
-                  Centro 
-                  <span style={styles.sortIcon}>
-                    {sortConfig.key === 'centro' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
-                  </span>
-                </th>
-                <th 
-                  style={styles.tableHeader}
-                  onClick={() => handleSort('localidad')}
-                >
-                  Ubicación
-                  <span style={{fontSize: '12px', fontWeight: 'normal', display: 'block'}}>
-                    Localidad / Municipio
-                  </span>
-                  <span style={styles.sortIcon}>
-                    {sortConfig.key === 'localidad' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
-                  </span>
-                </th>
-                <th 
-                  style={styles.tableHeader}
-                  onClick={() => handleSort('timestamp')}
-                >
-                  Fecha
-                  <span style={styles.sortIcon}>
-                    {sortConfig.key === 'timestamp' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
-                  </span>
-                </th>
+                <th style={styles.tableHeader}>Nº Orden</th>
+                <th style={styles.tableHeader}>Centro</th>
+                <th style={styles.tableHeader}>Ubicación</th>
+                <th style={styles.tableHeader}>Fecha</th>
               </tr>
             </thead>
             <tbody>
-              {currentItems.map((asignacion, index) => {
-                // Determinar estilo de fila según estado
-                let rowStyle = {};
+              {currentItems.length > 0 ? currentItems.map((asignacion, index) => {
+                // Generar una clave única y estable para cada asignación
+                const key = asignacion.uniqueId || 
+                           `order-${asignacion.numeroOrden || asignacion.order}-${index}`;
                 
-                if (asignacion.estado === "NO_ASIGNABLE" || asignacion.estado === "REASIGNACION_NO_VIABLE") {
-                  rowStyle = { backgroundColor: '#fff5f5' }; // Fondo rojo claro
-                } else if (asignacion.reasignado) {
-                  rowStyle = { backgroundColor: '#fff9fb' }; // Fondo rosa claro
-                }
-                
+                // Formatear fecha
+                const fecha = formatearFecha(asignacion.timestamp);
+                           
                 return (
-                  <tr key={asignacion.docId || index} style={rowStyle}>
-                    <td style={styles.tableCell}>
+                  <tr key={key} style={{
+                    ...(isMobile ? styles.mobileTableRowMobile : {})
+                  }}>
+                    <td style={{
+                      ...styles.tableCell,
+                      ...(isMobile ? styles.mobileTableCellMobile : {})
+                    }}>
                       <div style={styles.orderContainer}>
                         <div style={styles.orderBadge}>{asignacion.numeroOrden || asignacion.order}</div>
                       </div>
                     </td>
-                    <td style={styles.tableCell}>
+                    <td style={{
+                      ...styles.tableCell,
+                      ...(isMobile ? styles.mobileTableCellMobile : {})
+                    }}>
                       <div>
                         {asignacion.estado === "NO_ASIGNABLE" ? (
                           <div>
@@ -831,7 +870,10 @@ const Dashboard = ({ assignments = [], availablePlazas = [], notification = '' }
                         )}
                       </div>
                     </td>
-                    <td style={styles.tableCell}>
+                    <td style={{
+                      ...styles.tableCell,
+                      ...(isMobile ? styles.mobileTableCellMobile : {})
+                    }}>
                       <div>
                         {asignacion.localidad && (
                           <div style={{fontWeight: 'medium'}}>{asignacion.localidad}</div>
@@ -853,16 +895,18 @@ const Dashboard = ({ assignments = [], availablePlazas = [], notification = '' }
                         )}
                       </div>
                     </td>
-                    <td style={styles.tableCell}>
-                      {formatearFecha(asignacion.timestamp)}
+                    <td style={{
+                      ...styles.tableCell,
+                      ...(isMobile ? styles.mobileTableCellMobile : {})
+                    }}>
+                      {fecha}
                     </td>
                   </tr>
                 );
-              })}
-              {currentItems.length === 0 && (
+              }) : (
                 <tr>
-                  <td colSpan="4" style={{...styles.tableCell, textAlign: 'center', padding: '30px 15px'}}>
-                    No se encontraron asignaciones que coincidan con los filtros.
+                  <td colSpan="4" style={{ padding: '20px', textAlign: 'center' }}>
+                    No hay resultados que coincidan con su búsqueda
                   </td>
                 </tr>
               )}
@@ -871,71 +915,79 @@ const Dashboard = ({ assignments = [], availablePlazas = [], notification = '' }
         </div>
         
         {/* Paginación */}
-        {totalPages > 1 && (
-          <div style={styles.pagination}>
-            <div>
-              Mostrando {indexOfFirstItem + 1}-{Math.min(indexOfLastItem, asignacionesFiltradas.length)} de {asignacionesFiltradas.length}
-            </div>
-            <div>
-              <button 
-                style={styles.pageButton} 
-                onClick={() => handlePageChange(1)}
-                disabled={currentPage === 1}
-              >
-                «
-              </button>
-              <button 
-                style={styles.pageButton}
-                onClick={() => handlePageChange(currentPage - 1)}
-                disabled={currentPage === 1}
-              >
-                ‹
-              </button>
-              
-              {/* Generar botones de paginación */}
-              {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-                let pageNumber;
-                if (totalPages <= 5) {
-                  pageNumber = i + 1;
-                } else if (currentPage <= 3) {
-                  pageNumber = i + 1;
-                } else if (currentPage >= totalPages - 2) {
-                  pageNumber = totalPages - 4 + i;
-                } else {
-                  pageNumber = currentPage - 2 + i;
-                }
-                
-                return (
-                  <button
-                    key={pageNumber}
-                    style={{
-                      ...styles.pageButton,
-                      ...(currentPage === pageNumber ? styles.activePageButton : {})
-                    }}
-                    onClick={() => handlePageChange(pageNumber)}
-                  >
-                    {pageNumber}
-                  </button>
-                );
-              })}
-              
-              <button 
-                style={styles.pageButton}
-                onClick={() => handlePageChange(currentPage + 1)}
-                disabled={currentPage === totalPages}
-              >
-                ›
-              </button>
-              <button 
-                style={styles.pageButton}
-                onClick={() => handlePageChange(totalPages)}
-                disabled={currentPage === totalPages}
-              >
-                »
-              </button>
-            </div>
+        <div style={styles.pagination}>
+          <div style={styles.paginationInfo}>
+            Mostrando {indexOfFirstItem + 1} - {Math.min(indexOfLastItem, asignacionesFiltradas.length)} de {asignacionesFiltradas.length} asignaciones
           </div>
-        )}
+          
+          <div style={styles.paginationControls}>
+            <button 
+              key="pagination-first"
+              style={styles.pageButton} 
+              onClick={() => handlePageChange(1)}
+              disabled={currentPage === 1}
+            >
+              «
+            </button>
+            <button 
+              key="pagination-prev"
+              style={styles.pageButton}
+              onClick={() => handlePageChange(currentPage - 1)}
+              disabled={currentPage === 1}
+            >
+              ‹
+            </button>
+            
+            {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+              let pageNumber;
+              
+              // Calcular qué botones de página mostrar (máximo 5)
+              if (totalPages <= 5) {
+                // Si hay 5 o menos páginas, mostrar todas
+                pageNumber = i + 1;
+              } else if (currentPage <= 3) {
+                // Si estamos en las primeras páginas, mostrar 1-5
+                pageNumber = i + 1;
+              } else if (currentPage >= totalPages - 2) {
+                // Si estamos cerca del final, mostrar las últimas 5
+                pageNumber = totalPages - 4 + i;
+              } else {
+                // Mostrar 2 antes y 2 después de la página actual
+                pageNumber = currentPage - 2 + i;
+              }
+              
+              return (
+                <button
+                  key={`pagination-${pageNumber}`}
+                  style={{
+                    ...styles.pageButton,
+                    ...(currentPage === pageNumber ? styles.activePageButton : {})
+                  }}
+                  onClick={() => handlePageChange(pageNumber)}
+                >
+                  {pageNumber}
+                </button>
+              );
+            })}
+            
+            <button 
+              key="pagination-next"
+              style={styles.pageButton}
+              onClick={() => handlePageChange(currentPage + 1)}
+              disabled={currentPage === totalPages}
+            >
+              ›
+            </button>
+            <button 
+              key="pagination-last"
+              style={styles.pageButton}
+              onClick={() => handlePageChange(totalPages)}
+              disabled={currentPage === totalPages}
+            >
+              »
+            </button>
+          </div>
+        </div>
         
         {/* Leyenda explicativa */}
         <div style={styles.leyendaContainer}>
@@ -955,7 +1007,6 @@ const Dashboard = ({ assignments = [], availablePlazas = [], notification = '' }
             </div>
           </div>
         </div>
-    
       </div>
     </div>
   );

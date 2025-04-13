@@ -1,6 +1,6 @@
 // Import the functions you need from the SDKs you need
 import { initializeApp } from "firebase/app";
-import { getFirestore, enableIndexedDbPersistence } from "firebase/firestore";
+import { getFirestore, enableIndexedDbPersistence, enableMultiTabIndexedDbPersistence } from "firebase/firestore";
 import { getAnalytics } from "firebase/analytics";
 import { getAuth } from "firebase/auth";
 // TODO: Add SDKs for Firebase products that you want to use
@@ -26,18 +26,23 @@ const db = getFirestore(app);
 // Obtener instancia de Auth
 const auth = getAuth(app);
 
-// Habilitar persistencia para que funcione offline
-try {
-  enableIndexedDbPersistence(db)
-    .catch((err) => {
-      if (err.code === 'failed-precondition') {
-        // console.warn('La persistencia falló: múltiples pestañas abiertas');
-      } else if (err.code === 'unimplemented') {
-        // console.warn('El navegador no soporta persistencia');
-      }
-    });
-} catch (error) {
-  // console.warn('Error al configurar persistencia:', error);
-}
+// Configurar persistencia con soporte para múltiples pestañas
+const setupPersistence = async () => {
+  try {
+    await enableMultiTabIndexedDbPersistence(db);
+    console.log('Persistencia habilitada con soporte para múltiples pestañas');
+  } catch (err) {
+    if (err.code === 'failed-precondition') {
+      console.warn('La persistencia falló: múltiples pestañas abiertas');
+    } else if (err.code === 'unimplemented') {
+      console.warn('El navegador no soporta persistencia');
+    } else {
+      console.error('Error al configurar persistencia:', err);
+    }
+  }
+};
+
+// Llamar a la función de configuración
+setupPersistence();
 
 export { db, app, auth }; 

@@ -145,7 +145,7 @@ const PlazasDisponibles = ({
     
     // Verificar si hay centros seleccionados sin plazas y activar modo manual
     const centrosSinPlazas = centrosSeleccionados.filter(centroId => {
-      const centro = availablePlazas.find(plaza => plaza.centroid === centroId);
+      const centro = centrosUnicos.find(plaza => plaza.id === centroId);
       return centro && centro.plazas < 1;
     });
     
@@ -184,9 +184,53 @@ const PlazasDisponibles = ({
   const departamentoOptions = getUniqueOptions('departamento');
   const municipioOptions = getUniqueOptions('municipio');
   
+  // Procesar centros para asegurar unicidad
+  const procesarCentrosUnicos = () => {
+    // Usar un Map para garantizar centros únicos por ID
+    const centrosMap = new Map();
+    
+    // Filtrar elementos nulos o indefinidos
+    const plazasValidas = availablePlazas.filter(plaza => plaza && typeof plaza === 'object');
+    
+    // Recorrer todas las plazas disponibles
+    plazasValidas.forEach(plaza => {
+      // Crear un ID único basado en código o combinación de datos
+      const codigo = plaza.codigo || '';
+      const id = plaza.id || plaza.docId || '';
+      const uniqueId = codigo || id || `${plaza.centro || plaza.nombre || plaza.nombreCentro || ''}-${plaza.municipio || ''}`.trim();
+      
+      if (!uniqueId) return; // Ignorar entradas sin identificación
+      
+      // Si el centro ya existe en el Map, no lo agregamos de nuevo
+      if (!centrosMap.has(uniqueId)) {
+        centrosMap.set(uniqueId, {
+          ...plaza,
+          // Asegurar que tenga un ID consistente
+          id: uniqueId,
+          // Normalizar propiedades que podrían tener nombres diferentes
+          nombre: plaza.nombre || plaza.centro || plaza.nombreCentro || '',
+          codigo: plaza.codigo || '',
+          municipio: plaza.municipio || '',
+          localidad: plaza.localidad || '',
+          plazas: parseInt(plaza.plazas || 0, 10),
+          asignadas: parseInt(plaza.asignadas || 0, 10)
+        });
+      }
+    });
+    
+    // Convertir el Map a un array
+    return Array.from(centrosMap.values());
+  };
+  
+  // Obtener centros únicos
+  const centrosUnicos = procesarCentrosUnicos();
+  
+  // Determinar si había duplicados
+  const hayDuplicados = availablePlazas.length > centrosUnicos.length;
+  
   // Filtrar y ordenar plazas
   const getFilteredPlazas = () => {
-    return availablePlazas.filter(plaza => {
+    return centrosUnicos.filter(plaza => {
       // Filtrar por término de búsqueda
       if (searchTerm) {
         const searchTermLower = searchTerm.toLowerCase();
@@ -229,7 +273,7 @@ const PlazasDisponibles = ({
     if (aDisponibles !== bDisponibles) return bDisponibles - aDisponibles;
     
     // Finalmente por nombre del centro
-    return a.centro?.localeCompare(b.centro || '') || 0;
+    return a.nombre?.localeCompare(b.nombre || '') || 0;
   });
   
   // Calcular el total de páginas
@@ -240,9 +284,9 @@ const PlazasDisponibles = ({
   const indexOfFirstItem = indexOfLastItem - itemsPerPage;
   const currentPlazas = sortedPlazas.slice(indexOfFirstItem, indexOfLastItem);
   
-  // Calcular totales
-  const totalPlazas = availablePlazas.reduce((sum, plaza) => sum + (plaza.plazas || 0), 0);
-  const totalAsignadas = availablePlazas.reduce((sum, plaza) => sum + (plaza.asignadas || 0), 0);
+  // Calcular totales usando los centros únicos
+  const totalPlazas = centrosUnicos.reduce((sum, plaza) => sum + (plaza.plazas || 0), 0);
+  const totalAsignadas = centrosUnicos.reduce((sum, plaza) => sum + (plaza.asignadas || 0), 0);
   const totalDisponibles = totalPlazas - totalAsignadas;
   
   // Función para generar el rango de paginación
@@ -279,6 +323,13 @@ const PlazasDisponibles = ({
       
       if (!selectedId) {
         console.error("ID de centro inválido:", e.target.value);
+        return;
+      }
+      
+      // Verificar que el centro exista en la lista de centros únicos
+      const centroExiste = centrosUnicos.some(centro => centro.id === selectedId);
+      if (!centroExiste) {
+        console.error("Centro no encontrado en la lista de centros únicos:", selectedId);
         return;
       }
       
@@ -325,6 +376,24 @@ const PlazasDisponibles = ({
           border: '1px solid #f5c6cb'
         }}>
           {errorMessage}
+        </div>
+      )}
+      
+      {/* Mostrar alerta de duplicados si es necesario */}
+      {hayDuplicados && (
+        <div style={{
+          padding: '10px 15px',
+          margin: '10px 0',
+          borderRadius: '4px',
+          backgroundColor: '#fff3cd',
+          color: '#856404',
+          border: '1px solid #ffeeba',
+          fontSize: '14px'
+        }}>
+          <p style={{ margin: 0 }}>
+            <strong>Aviso:</strong> Se han eliminado {availablePlazas.length - centrosUnicos.length} centros duplicados. 
+            Mostrando {centrosUnicos.length} centros únicos.
+          </p>
         </div>
       )}
       
@@ -425,10 +494,10 @@ const PlazasDisponibles = ({
                 color: '#333'
               }}>
                 {centrosSeleccionados.map((id, index) => {
-                  const centro = availablePlazas.find(p => p.id === id);
+                  const centro = centrosUnicos.find(p => p.id === id);
                   return centro ? (
                     <li key={id} style={{ marginBottom: '8px' }}>
-                      <strong>{centro.nombre || centro.nombreCentro || centro.centro}</strong> 
+                      <strong>{centro.nombre}</strong> 
                       {centro.localidad && (
                         <span style={{ color: '#555', marginLeft: '5px' }}>- {centro.localidad}</span>
                       )}
@@ -637,7 +706,7 @@ const PlazasDisponibles = ({
                 // Calcular plazas disponibles
                 const disponibles = Math.max(0, plaza.plazas - (plaza.asignadas || 0));
                 
-                // Verificar si está en la lista de seleccionados y su orden
+                // Verificar si está en la lista de seleccionados
                 const seleccionado = centrosSeleccionados.includes(plaza.id);
                 
                 // Determinar el color de fondo según disponibilidad y selección
@@ -650,12 +719,9 @@ const PlazasDisponibles = ({
                   rowColor = '#fff3cd'; // Amarillo para centros con pocas plazas
                 }
                 
-                // Generar una clave única utilizando docId (si existe) o combinación de id e índice
-                const uniqueKey = plaza.docId || `plaza-${plaza.id}-${index}`;
-                
                 return (
                   <tr 
-                    key={uniqueKey}
+                    key={plaza.id}
                     style={{ 
                       backgroundColor: rowColor,
                       transition: 'background-color 0.2s ease'
