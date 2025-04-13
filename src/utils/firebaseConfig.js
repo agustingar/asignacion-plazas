@@ -28,18 +28,18 @@ const auth = getAuth(app);
 
 // Configurar persistencia con soporte para múltiples pestañas
 const setupPersistence = async () => {
-  try {
+try {
     await enableMultiTabIndexedDbPersistence(db);
     console.log('Persistencia habilitada con soporte para múltiples pestañas');
   } catch (err) {
-    if (err.code === 'failed-precondition') {
+      if (err.code === 'failed-precondition') {
       console.warn('La persistencia falló: múltiples pestañas abiertas');
-    } else if (err.code === 'unimplemented') {
+      } else if (err.code === 'unimplemented') {
       console.warn('El navegador no soporta persistencia');
     } else {
       console.error('Error al configurar persistencia:', err);
-    }
-  }
+      }
+}
 };
 
 // Llamar a la función de configuración

@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { Pagination } from '@mui/material';
-import { writeBatch, doc, collection, getDocs, setDoc, increment, query, where, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { writeBatch, doc, collection, getDocs, setDoc, increment, query, where, updateDoc, serverTimestamp, deleteDoc, getDoc } from 'firebase/firestore';
 import { procesarInfoCentro, buscarCentroFlexible } from '../../utils/centerUtils';
 import { auth } from '../../utils/firebaseConfig';
 
@@ -64,6 +64,305 @@ const AssignmentManager = ({
   useEffect(() => {
     setAvailablePlazas(initialAvailablePlazas);
   }, [initialAvailablePlazas]);
+
+  // Función para eliminar una asignación y sus solicitudes asociadas
+  const eliminarAsignacionCompleta = async (asignacion) => {
+    // Validación adicional para evitar errores
+    if (!asignacion) {
+      showNotification && showNotification('Error: Asignación inválida', 'error');
+      return;
+    }
+
+    // Verificar que la asignación tenga un ID válido
+    if (!asignacion.id && !asignacion.docId) {
+      showNotification && showNotification('Error: La asignación no tiene ID', 'error');
+      return;
+    }
+
+    // Asegurar que tengamos un ID válido como cadena
+    const asignacionId = String(asignacion.id || asignacion.docId || '');
+    if (!asignacionId) {
+      showNotification && showNotification('Error: ID de asignación inválido', 'error');
+      return;
+    }
+
+    try {
+      setProcesando(true);
+      const orden = asignacion.order || asignacion.numeroOrden;
+      
+      if (!orden && orden !== 0) {
+        showNotification && showNotification('Error: No se pudo determinar el número de orden', 'error');
+        setProcesando(false);
+        return;
+      }
+      
+      // Asegurar que orden sea una cadena para las consultas de Firestore
+      const ordenStr = String(orden);
+      
+      // 1. Confirmar con el usuario
+      if (!window.confirm(`¿Estás seguro de eliminar la asignación con número de orden ${ordenStr}? Esta acción eliminará también todas las solicitudes asociadas.`)) {
+        setProcesando(false);
+        return;
+      }
+
+      showNotification && showNotification('Eliminando asignación y solicitudes...', 'info');
+
+      // 2. Actualizar el contador en el centro (restar una plaza ocupada)
+      const centro = availablePlazas.find(c => c.id === asignacion.centroId);
+      if (centro && centro.docId) {
+        // Calcular nuevas plazas ocupadas, asegurando que no sea un valor negativo
+        const nuevasPlazasOcupadas = Math.max(0, (parseInt(centro.plazasOcupadas || 0) - 1));
+        const nuevasAsignadas = Math.max(0, (parseInt(centro.asignadas || 0) - 1));
+        
+        try {
+          await updateDoc(doc(db, "centros", String(centro.docId)), { 
+            plazasOcupadas: nuevasPlazasOcupadas,
+            asignadas: nuevasAsignadas
+          });
+          console.log(`Actualizado centro ${centro.centro || centro.nombre}: ${nuevasPlazasOcupadas} plazas ocupadas`);
+        } catch (updateErr) {
+          console.error("Error al actualizar centro:", updateErr);
+          // Continuar con el resto de la operación
+        }
+      }
+
+      // 3. Eliminar la asignación de la colección de asignaciones
+      try {
+        // Obtener primero la referencia correcta al documento
+        const asignacionRef = doc(db, "asignaciones", asignacionId);
+        
+        // Verificar si existe antes de eliminar
+        const asignacionDoc = await getDoc(asignacionRef);
+        
+        if (asignacionDoc.exists()) {
+          await deleteDoc(asignacionRef);
+          console.log(`Eliminada asignación con ID: ${asignacionId}`);
+        } else {
+          // Si no existe con ese ID, buscar por orden
+          const asignacionesPorOrdenRef = collection(db, "asignaciones");
+          let asignacionesPorOrdenQuery = query(asignacionesPorOrdenRef, where("order", "==", ordenStr));
+          let asignacionesPorOrdenSnapshot = await getDocs(asignacionesPorOrdenQuery);
+          
+          // Si no hay resultados, intentar con number
+          if (asignacionesPorOrdenSnapshot.empty && !isNaN(Number(ordenStr))) {
+            asignacionesPorOrdenQuery = query(asignacionesPorOrdenRef, where("order", "==", Number(ordenStr)));
+            asignacionesPorOrdenSnapshot = await getDocs(asignacionesPorOrdenQuery);
+          }
+          
+          // Eliminar todas las asignaciones encontradas con ese orden
+          if (!asignacionesPorOrdenSnapshot.empty) {
+            for (const doc of asignacionesPorOrdenSnapshot.docs) {
+              await deleteDoc(doc.ref);
+              console.log(`Eliminada asignación con ID: ${doc.id} (encontrada por orden ${ordenStr})`);
+            }
+          } else {
+            console.warn(`No se encontró la asignación con ID: ${asignacionId} ni con orden: ${ordenStr}`);
+          }
+        }
+      } catch (deleteErr) {
+        console.error("Error al eliminar asignación:", deleteErr);
+        showNotification && showNotification(`Error al eliminar asignación: ${deleteErr.message}`, 'error');
+        setProcesando(false);
+        return; // Salir si no se pudo eliminar la asignación principal
+      }
+
+      // 4. Buscar y eliminar solicitudes pendientes con ese número de orden
+      try {
+        const solicitudesPendientesRef = collection(db, "solicitudesPendientes");
+        
+        // Intentar consulta con ambos tipos de datos para ser más robustos
+        let solicitudesPendientesSnapshot;
+        
+        // Primero intentar con string
+        try {
+          const solicitudesPendientesQuery = query(solicitudesPendientesRef, where("orden", "==", ordenStr));
+          solicitudesPendientesSnapshot = await getDocs(solicitudesPendientesQuery);
+        } catch (err) {
+          console.warn("Error al consultar con string:", err);
+          solicitudesPendientesSnapshot = { empty: true, docs: [] };
+        }
+        
+        // Si no hay resultados y es un número válido, intentar con number
+        if (solicitudesPendientesSnapshot.empty && !isNaN(Number(ordenStr))) {
+          try {
+            const numeroOrden = Number(ordenStr);
+            const solicitudesPendientesQueryNum = query(solicitudesPendientesRef, where("orden", "==", numeroOrden));
+            solicitudesPendientesSnapshot = await getDocs(solicitudesPendientesQueryNum);
+          } catch (err) {
+            console.warn("Error al consultar con number:", err);
+            // Mantener el snapshot anterior
+          }
+        }
+        
+        let contadorSolicitudesPendientes = 0;
+        // Eliminar cada solicitud pendiente encontrada
+        if (solicitudesPendientesSnapshot && solicitudesPendientesSnapshot.docs) {
+          for (const docSnapshot of solicitudesPendientesSnapshot.docs) {
+            try {
+              await deleteDoc(doc(db, "solicitudesPendientes", docSnapshot.id));
+              contadorSolicitudesPendientes++;
+              console.log(`Eliminada solicitud pendiente con ID: ${docSnapshot.id}`);
+            } catch (deleteErr) {
+              console.error("Error al eliminar solicitud:", deleteErr);
+            }
+          }
+        }
+        
+        // 5. Buscar y eliminar entradas del historial de solicitudes con el mismo enfoque
+        const historialSolicitudesRef = collection(db, "historialSolicitudes");
+        
+        // Buscar por orden en string
+        let historialSolicitudesQuery = query(historialSolicitudesRef, where("orden", "==", ordenStr));
+        let historialSolicitudesSnapshot = await getDocs(historialSolicitudesQuery);
+        
+        // Si no hay resultados, probar con número
+        if (historialSolicitudesSnapshot.empty && !isNaN(Number(ordenStr))) {
+          historialSolicitudesQuery = query(historialSolicitudesRef, where("orden", "==", Number(ordenStr)));
+          historialSolicitudesSnapshot = await getDocs(historialSolicitudesQuery);
+        }
+        
+        let contadorHistorial = 0;
+        
+        // Eliminar las entradas encontradas
+        if (!historialSolicitudesSnapshot.empty) {
+          console.log(`Encontradas ${historialSolicitudesSnapshot.size} entradas en historialSolicitudes para orden ${ordenStr}`);
+          
+          for (const docSnapshot of historialSolicitudesSnapshot.docs) {
+            try {
+              await deleteDoc(docSnapshot.ref);
+              contadorHistorial++;
+              console.log(`Eliminada entrada del historial con ID: ${docSnapshot.id}`);
+            } catch (deleteErr) {
+              console.error(`Error al eliminar entrada del historial ${docSnapshot.id}:`, deleteErr);
+            }
+          }
+        } else {
+          console.log(`No se encontraron entradas en historialSolicitudes para orden ${ordenStr}`);
+        }
+        
+        // Buscar también por centroId si está disponible
+        if (asignacion.centroId) {
+          let historialPorCentroQuery = query(historialSolicitudesRef, where("centroId", "==", asignacion.centroId));
+          let historialPorCentroSnapshot = await getDocs(historialPorCentroQuery);
+          
+          if (!historialPorCentroSnapshot.empty) {
+            console.log(`Encontradas ${historialPorCentroSnapshot.size} entradas adicionales por centroId ${asignacion.centroId}`);
+            
+            for (const docSnapshot of historialPorCentroSnapshot.docs) {
+              // Verificar que corresponda a la misma orden para no eliminar otras asignaciones
+              const data = docSnapshot.data();
+              const docOrden = data.orden;
+              
+              if (docOrden == orden || docOrden == ordenStr) {
+                try {
+                  await deleteDoc(docSnapshot.ref);
+                  contadorHistorial++;
+                  console.log(`Eliminada entrada adicional del historial con ID: ${docSnapshot.id}`);
+                } catch (deleteErr) {
+                  console.error(`Error al eliminar entrada adicional del historial ${docSnapshot.id}:`, deleteErr);
+                }
+              }
+            }
+          }
+        }
+        
+        // 6. Registrar en el historial la eliminación
+        try {
+          const historialRef = doc(collection(db, "historialSolicitudes"));
+          await setDoc(historialRef, {
+            orden: ordenStr,
+            centroId: asignacion.centroId || "",
+            centroAsignado: asignacion.centro || asignacion.nombreCentro || "Centro desconocido",
+            estado: "ELIMINADA",
+            mensaje: `Asignación eliminada manualmente por administrador`,
+            fechaHistorico: new Date().toISOString(),
+            timestamp: Date.now(),
+            usuarioActualizacion: auth.currentUser?.email || "Administrador"
+          });
+        } catch (historialErr) {
+          console.error("Error al registrar en historial:", historialErr);
+        }
+        
+        // 7. Actualizar el estado local de asignaciones
+        setAsignaciones(prevAsignaciones => {
+          if (!Array.isArray(prevAsignaciones)) return [];
+          return prevAsignaciones.filter(a => a.id !== asignacionId && a.docId !== asignacionId);
+        });
+        
+        // 8. Actualizar el estado local de plazas disponibles
+        if (centro) {
+          setAvailablePlazas(prevPlazas => {
+            if (!Array.isArray(prevPlazas)) return [];
+            return prevPlazas.map(p => {
+              if (p.id === centro.id) {
+                const nuevasOcupadas = Math.max(0, parseInt(p.plazasOcupadas || 0) - 1);
+                const nuevasAsignadas = Math.max(0, parseInt(p.asignadas || 0) - 1);
+                return {
+                  ...p,
+                  plazasOcupadas: nuevasOcupadas,
+                  asignadas: nuevasAsignadas
+                };
+              }
+              return p;
+            });
+          });
+        }
+        
+        // 9. Actualizar también el historial de asignaciones en memoria
+        setHistorialAsignaciones(prev => {
+          if (!Array.isArray(prev)) return [];
+          return prev.filter(a => a.docId !== asignacionId && a.id !== asignacionId);
+        });
+        
+        const mensaje = `Asignación eliminada correctamente. ${
+          contadorSolicitudesPendientes > 0 ? `Se eliminaron ${contadorSolicitudesPendientes} solicitudes pendientes. ` : ''
+        }${
+          contadorHistorial > 0 ? `Se eliminaron ${contadorHistorial} entradas del historial.` : ''
+        }`;
+        
+        showNotification && showNotification(mensaje, 'success');
+        
+        // Recargar datos para asegurar que todo está actualizado correctamente
+        try {
+          console.log("Recargando datos después de eliminar asignación...");
+          
+          // Forzar recarga inmediata del estado local
+          const asignacionesActualizadas = asignaciones.filter(a => 
+            a.id !== asignacionId && 
+            a.docId !== asignacionId && 
+            a.order !== orden && 
+            a.numeroOrden !== orden
+          );
+          setAsignaciones(asignacionesActualizadas);
+          
+          // Programar recarga completa con delay para permitir que Firestore se actualice
+          setTimeout(() => {
+            // Intentar la recarga completa
+            try {
+              cargarTodosLosDatos();
+            } catch (reloadErr) {
+              console.error("Error en recarga programada:", reloadErr);
+            }
+          }, 1500);
+        } catch (syncErr) {
+          console.error("Error al sincronizar estado local:", syncErr);
+        }
+      } catch (queryError) {
+        console.error("Error al realizar consultas:", queryError);
+        showNotification && showNotification(`Error al eliminar datos relacionados: ${queryError.message}`, 'warning');
+        
+        // A pesar del error, actualizar el estado local
+        setAsignaciones(prevAsignaciones => 
+          prevAsignaciones.filter(a => a.id !== asignacionId && a.docId !== asignacionId)
+        );
+      }
+    } catch (error) {
+      console.error("Error al eliminar asignación:", error);
+      showNotification && showNotification(`Error al eliminar asignación: ${error.message}`, 'error');
+    } finally {
+      setProcesando(false);
+    }
+  };
 
   // Cargar el historial de asignaciones si es necesario
   useEffect(() => {
@@ -1188,21 +1487,44 @@ const AssignmentManager = ({
       </div>
 
       {/* Botón para recargar datos */}
-      <div style={{ marginBottom: '15px' }}>
+      <div style={{ marginBottom: '15px', display: 'flex', gap: '10px', alignItems: 'center' }}>
         <button
           onClick={cargarTodosLosDatos}
-          disabled={cargandoHistorial}
+          disabled={cargandoHistorial || procesando}
           style={{
             padding: '8px 16px',
-            backgroundColor: cargandoHistorial ? '#95a5a6' : '#3498db',
+            backgroundColor: (cargandoHistorial || procesando) ? '#95a5a6' : '#3498db',
             color: 'white',
             border: 'none',
             borderRadius: '4px',
-            cursor: cargandoHistorial ? 'not-allowed' : 'pointer'
+            cursor: (cargandoHistorial || procesando) ? 'not-allowed' : 'pointer'
           }}
         >
           {cargandoHistorial ? 'Actualizando...' : 'Actualizar datos'}
         </button>
+        
+        {procesando && (
+          <div style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            backgroundColor: '#fff3cd', 
+            padding: '8px 12px', 
+            borderRadius: '4px',
+            color: '#856404',
+            border: '1px solid #ffeeba'
+          }}>
+            <div style={{ 
+              width: '16px', 
+              height: '16px', 
+              border: '2px solid rgba(133, 100, 4, 0.3)', 
+              borderTopColor: '#856404', 
+              borderRadius: '50%', 
+              animation: 'spin 1s linear infinite',
+              marginRight: '8px'
+            }} />
+            <span>Procesando operación...</span>
+          </div>
+        )}
       </div>
 
       {/* Tabla de asignaciones */}
@@ -1370,20 +1692,38 @@ const AssignmentManager = ({
                         </button>
                         {/* Solo mostrar botón de eliminar para asignaciones normales */}
                         {!esReasignada && !esReasignacionNoViable && (
-                          <button 
-                            onClick={() => onEliminar(asignacion)}
-                            style={{
-                              padding: '6px 12px',
-                              backgroundColor: '#e74c3c',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '4px',
-                              cursor: 'pointer'
-                            }}
-                            title="Eliminar esta asignación"
-                          >
-                            Eliminar
-                          </button>
+                        <button 
+                            onClick={() => eliminarAsignacionCompleta(asignacion)}
+                            disabled={procesando}
+                          style={{
+                            padding: '6px 12px',
+                              backgroundColor: procesando ? '#cccccc' : '#e74c3c',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                              cursor: procesando ? 'not-allowed' : 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '5px'
+                          }}
+                          title="Eliminar esta asignación"
+                        >
+                            {procesando ? (
+                              <>
+                                <div style={{ 
+                                  width: '14px', 
+                                  height: '14px', 
+                                  border: '2px solid rgba(255,255,255,0.3)', 
+                                  borderTopColor: 'white', 
+                                  borderRadius: '50%', 
+                                  animation: 'spin 1s linear infinite'
+                                }} />
+                                Procesando...
+                              </>
+                            ) : (
+                              'Eliminar'
+                            )}
+                        </button>
                         )}
                       </div>
                     ) : (
@@ -1510,6 +1850,16 @@ const AssignmentManager = ({
           </div>
         </div>
       )}
+      
+      {/* Estilos CSS para la animación */}
+      <style>
+        {`
+          @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+          }
+        `}
+      </style>
     </div>
   );
 };
